@@ -15,8 +15,15 @@ import (
 )
 
 const (
-	ProtocolVersion = "2025-11-25"
-	maximumMessage  = 1024 * 1024
+	ProtocolVersion               = "2026-07-28"
+	LegacyProtocolVersion         = "2025-11-25"
+	LegacyPreviousProtocolVersion = "2025-06-18"
+	maximumMessage                = 1024 * 1024
+
+	metaProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
+	metaClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	metaClientInfo         = "io.modelcontextprotocol/clientInfo"
+	metaServerInfo         = "io.modelcontextprotocol/serverInfo"
 )
 
 type Backend interface {
@@ -60,6 +67,7 @@ type response struct {
 type responseError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 type initializeParams struct {
@@ -72,6 +80,27 @@ type initializeResult struct {
 	ProtocolVersion string                 `json:"protocolVersion"`
 	Capabilities    map[string]any         `json:"capabilities"`
 	ServerInfo      implementationMetadata `json:"serverInfo"`
+}
+
+type modernResultFields struct {
+	ResultType string         `json:"resultType,omitempty"`
+	Meta       map[string]any `json:"_meta,omitempty"`
+}
+
+type discoverResult struct {
+	modernResultFields
+	SupportedVersions []string       `json:"supportedVersions"`
+	Capabilities      map[string]any `json:"capabilities"`
+	Instructions      string         `json:"instructions,omitempty"`
+	TTLMilliseconds   int            `json:"ttlMs"`
+	CacheScope        string         `json:"cacheScope"`
+}
+
+type listToolsResult struct {
+	modernResultFields
+	Tools           []toolDefinition `json:"tools"`
+	TTLMilliseconds int              `json:"ttlMs"`
+	CacheScope      string           `json:"cacheScope"`
 }
 
 type implementationMetadata struct {
@@ -94,10 +123,11 @@ type toolAnnotations struct {
 }
 
 type callToolParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Meta      json.RawMessage `json:"_meta,omitempty"`
-	Task      json.RawMessage `json:"task,omitempty"`
+	Name           string          `json:"name"`
+	Arguments      json.RawMessage `json:"arguments,omitempty"`
+	Meta           json.RawMessage `json:"_meta,omitempty"`
+	InputResponses json.RawMessage `json:"inputResponses,omitempty"`
+	RequestState   json.RawMessage `json:"requestState,omitempty"`
 }
 
 type textContent struct {
@@ -106,6 +136,7 @@ type textContent struct {
 }
 
 type callToolResult struct {
+	modernResultFields
 	Content           []textContent `json:"content"`
 	StructuredContent any           `json:"structuredContent,omitempty"`
 	IsError           bool          `json:"isError,omitempty"`
@@ -134,8 +165,8 @@ type toolErrorDetails struct {
 }
 
 type sessionState struct {
-	initializeAccepted bool
-	ready              bool
+	legacyInitializeAccepted bool
+	legacyReady              bool
 }
 
 func (s Server) Run(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -191,32 +222,74 @@ func (s Server) handle(ctx context.Context, incoming request, state *sessionStat
 
 	switch incoming.Method {
 	case "initialize":
-		if incoming.ID == nil || state.initializeAccepted {
+		modern, metadataFailure := validateModernMetadata(incoming.Params)
+		if metadataFailure != nil {
+			if incoming.ID == nil {
+				return response{}, false
+			}
+			return protocolErrorWithData(
+				incoming.ID,
+				metadataFailure.Code,
+				metadataFailure.Message,
+				metadataFailure.Data), true
+		}
+		if modern {
+			if incoming.ID == nil {
+				return response{}, false
+			}
+			return protocolError(incoming.ID, -32601, "Method not found"), true
+		}
+		if incoming.ID == nil || state.legacyInitializeAccepted {
 			return protocolError(incoming.ID, -32600, "Invalid initialize request"), incoming.ID != nil
 		}
 		var params initializeParams
-		if err := decodePermissiveParams(incoming.Params, &params); err != nil || params.ProtocolVersion == "" {
+		if err := decodePermissiveParams(incoming.Params, &params); err != nil ||
+			params.ProtocolVersion == "" || !validJSONObject(params.Capabilities) ||
+			!validImplementation(params.ClientInfo) {
 			return protocolError(incoming.ID, -32602, "Invalid initialize parameters"), true
 		}
-		state.initializeAccepted = true
+		state.legacyInitializeAccepted = true
 		return success(incoming.ID, initializeResult{
-			ProtocolVersion: negotiateProtocolVersion(params.ProtocolVersion),
+			ProtocolVersion: negotiateLegacyProtocolVersion(params.ProtocolVersion),
 			Capabilities:    map[string]any{"tools": map[string]any{}},
 			ServerInfo:      implementationMetadata{Name: s.Name, Version: s.Version},
 		}), true
 	case "notifications/initialized":
-		if state.initializeAccepted {
-			state.ready = true
+		if state.legacyInitializeAccepted {
+			state.legacyReady = true
 		}
 		return response{}, false
-	case "ping":
+	}
+
+	modern, metadataFailure := validateModernMetadata(incoming.Params)
+	if metadataFailure != nil {
 		if incoming.ID == nil {
 			return response{}, false
 		}
-		return success(incoming.ID, map[string]any{}), true
+		return protocolErrorWithData(
+			incoming.ID,
+			metadataFailure.Code,
+			metadataFailure.Message,
+			metadataFailure.Data), true
+	}
+	if incoming.Method == "server/discover" {
+		if incoming.ID == nil {
+			return response{}, false
+		}
+		if !modern {
+			return protocolError(incoming.ID, -32602, "Modern request metadata is required"), true
+		}
+		return success(incoming.ID, discoverResult{
+			modernResultFields: s.modernResultFields(),
+			SupportedVersions:  []string{ProtocolVersion},
+			Capabilities:       map[string]any{"tools": map[string]any{}},
+			Instructions:       "Read Switchyard daemon status and connection diagnostics.",
+			TTLMilliseconds:    0,
+			CacheScope:         "public",
+		}), true
 	}
 
-	if !state.ready {
+	if !modern && !state.legacyReady {
 		if incoming.ID == nil {
 			return response{}, false
 		}
@@ -227,10 +300,23 @@ func (s Server) handle(ctx context.Context, incoming request, state *sessionStat
 	}
 
 	switch incoming.Method {
+	case "ping":
+		if modern {
+			return protocolError(incoming.ID, -32601, "Method not found"), true
+		}
+		return success(incoming.ID, map[string]any{}), true
 	case "tools/list":
+		if modern {
+			return success(incoming.ID, listToolsResult{
+				modernResultFields: s.modernResultFields(),
+				Tools:              toolDefinitions(),
+				TTLMilliseconds:    0,
+				CacheScope:         "public",
+			}), true
+		}
 		return success(incoming.ID, map[string]any{"tools": toolDefinitions()}), true
 	case "tools/call":
-		result, protocolFailure := s.callTool(ctx, incoming.Params)
+		result, protocolFailure := s.callTool(ctx, incoming.Params, modern)
 		if protocolFailure != nil {
 			return protocolError(incoming.ID, protocolFailure.Code, protocolFailure.Message), true
 		}
@@ -240,9 +326,13 @@ func (s Server) handle(ctx context.Context, incoming request, state *sessionStat
 	}
 }
 
-func (s Server) callTool(ctx context.Context, rawParams json.RawMessage) (callToolResult, *responseError) {
+func (s Server) callTool(
+	ctx context.Context,
+	rawParams json.RawMessage,
+	modern bool,
+) (callToolResult, *responseError) {
 	var params callToolParams
-	if err := decodeParams(rawParams, &params); err != nil || params.Name == "" || len(params.Task) != 0 {
+	if err := decodeParams(rawParams, &params); err != nil || params.Name == "" {
 		return callToolResult{}, &responseError{Code: -32602, Message: "Invalid tool call parameters"}
 	}
 
@@ -254,20 +344,20 @@ func (s Server) callTool(ctx context.Context, rawParams json.RawMessage) (callTo
 		}
 		snapshot, err := s.Backend.Status(ctx)
 		if err != nil {
-			return daemonToolError(err), nil
+			return s.decorateCallResult(daemonToolError(err), modern), nil
 		}
 		footer, err := BuildEnvironmentContext(snapshot, arguments.EnvironmentID)
 		if err != nil {
-			return callToolResult{
+			return s.decorateCallResult(callToolResult{
 				Content: []textContent{{Type: "text", Text: "The requested environment was not found."}},
 				StructuredContent: toolErrorOutput{Error: toolErrorDetails{
 					Code:    "ENVIRONMENT_NOT_FOUND",
 					Message: "The requested environment was not found.",
 				}},
 				IsError: true,
-			}, nil
+			}, modern), nil
 		}
-		return callToolResult{
+		return s.decorateCallResult(callToolResult{
 			Content: []textContent{{
 				Type: "text",
 				Text: fmt.Sprintf(
@@ -276,7 +366,7 @@ func (s Server) callTool(ctx context.Context, rawParams json.RawMessage) (callTo
 					len(snapshot.Environments)),
 			}},
 			StructuredContent: statusOutput{Status: snapshot, EnvironmentContext: footer},
-		}, nil
+		}, modern), nil
 	case "switchyard_doctor":
 		var arguments struct{}
 		if err := decodeOptionalObject(params.Arguments, &arguments); err != nil {
@@ -287,11 +377,11 @@ func (s Server) callTool(ctx context.Context, rawParams json.RawMessage) (callTo
 		if !report.Healthy {
 			text = "Switchyard connection checks need attention."
 		}
-		return callToolResult{
+		return s.decorateCallResult(callToolResult{
 			Content:           []textContent{{Type: "text", Text: text}},
 			StructuredContent: doctorOutput{Doctor: report},
 			IsError:           !report.Healthy,
-		}, nil
+		}, modern), nil
 	default:
 		return callToolResult{}, &responseError{Code: -32602, Message: "Unknown tool"}
 	}
@@ -345,6 +435,87 @@ func daemonToolError(err error) callToolResult {
 	}
 }
 
+func (s Server) modernResultFields() modernResultFields {
+	return modernResultFields{
+		ResultType: "complete",
+		Meta: map[string]any{
+			metaServerInfo: implementationMetadata{Name: s.Name, Version: s.Version},
+		},
+	}
+}
+
+func (s Server) decorateCallResult(result callToolResult, modern bool) callToolResult {
+	if modern {
+		result.modernResultFields = s.modernResultFields()
+	}
+	return result
+}
+
+func validateModernMetadata(contents json.RawMessage) (bool, *responseError) {
+	if len(contents) == 0 || bytes.Equal(bytes.TrimSpace(contents), []byte("null")) {
+		return false, nil
+	}
+	var parameters map[string]json.RawMessage
+	if err := json.Unmarshal(contents, &parameters); err != nil || parameters == nil {
+		return false, &responseError{Code: -32602, Message: "Invalid request parameters"}
+	}
+	rawMetadata, hasMetadata := parameters["_meta"]
+	if !hasMetadata {
+		return false, nil
+	}
+	var metadata map[string]json.RawMessage
+	if err := json.Unmarshal(rawMetadata, &metadata); err != nil || metadata == nil {
+		return false, &responseError{Code: -32602, Message: "Invalid request metadata"}
+	}
+	rawVersion, hasVersion := metadata[metaProtocolVersion]
+	rawCapabilities, hasCapabilities := metadata[metaClientCapabilities]
+	_, hasClientInfo := metadata[metaClientInfo]
+	if !hasVersion && !hasCapabilities && !hasClientInfo {
+		return false, nil
+	}
+	if !hasVersion || !hasCapabilities {
+		return false, &responseError{Code: -32602, Message: "Required request metadata is missing"}
+	}
+	var version string
+	if err := json.Unmarshal(rawVersion, &version); err != nil || version == "" {
+		return false, &responseError{Code: -32602, Message: "Invalid protocol version metadata"}
+	}
+	if version != ProtocolVersion {
+		return false, &responseError{
+			Code:    -32022,
+			Message: "Unsupported protocol version",
+			Data: map[string]any{
+				"supported": []string{ProtocolVersion},
+				"requested": version,
+			},
+		}
+	}
+	if !validJSONObject(rawCapabilities) {
+		return false, &responseError{Code: -32602, Message: "Invalid client capabilities metadata"}
+	}
+	if rawClientInfo, exists := metadata[metaClientInfo]; exists && !validImplementation(rawClientInfo) {
+		return false, &responseError{Code: -32602, Message: "Invalid client information metadata"}
+	}
+	return true, nil
+}
+
+func validJSONObject(contents json.RawMessage) bool {
+	if len(contents) == 0 {
+		return false
+	}
+	var object map[string]json.RawMessage
+	return json.Unmarshal(contents, &object) == nil && object != nil
+}
+
+func validImplementation(contents json.RawMessage) bool {
+	if !validJSONObject(contents) {
+		return false
+	}
+	var implementation implementationMetadata
+	return json.Unmarshal(contents, &implementation) == nil &&
+		implementation.Name != "" && implementation.Version != ""
+}
+
 func decodeParams(contents json.RawMessage, destination any) error {
 	if len(contents) == 0 || bytes.Equal(bytes.TrimSpace(contents), []byte("null")) {
 		return errors.New("parameters are required")
@@ -368,12 +539,12 @@ func decodePermissiveParams(contents json.RawMessage, destination any) error {
 	return requireDecodeEnd(decoder)
 }
 
-func negotiateProtocolVersion(requested string) string {
+func negotiateLegacyProtocolVersion(requested string) string {
 	switch requested {
-	case ProtocolVersion, "2025-06-18":
+	case LegacyProtocolVersion, LegacyPreviousProtocolVersion:
 		return requested
 	default:
-		return ProtocolVersion
+		return LegacyProtocolVersion
 	}
 }
 
@@ -399,6 +570,10 @@ func success(id *json.RawMessage, result any) response {
 }
 
 func protocolError(id *json.RawMessage, code int, message string) response {
+	return protocolErrorWithData(id, code, message, nil)
+}
+
+func protocolErrorWithData(id *json.RawMessage, code int, message string, data any) response {
 	if id == nil {
 		nullID := json.RawMessage("null")
 		id = &nullID
@@ -406,6 +581,6 @@ func protocolError(id *json.RawMessage, code int, message string) response {
 	return response{
 		JSONRPC: "2.0",
 		ID:      id,
-		Error:   &responseError{Code: code, Message: message},
+		Error:   &responseError{Code: code, Message: message, Data: data},
 	}
 }

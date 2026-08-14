@@ -1,6 +1,7 @@
 package apiclient
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -160,6 +161,34 @@ func TestDiscoverNeverReportsTokenContents(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatal("error exposed token contents")
+	}
+}
+
+func TestDiscoverRequiresCanonicalBase64URLToken(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	canonical := testToken()
+	nonCanonical := canonical[:len(canonical)-1] + "Z"
+	canonicalBytes, err := base64.RawURLEncoding.DecodeString(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonCanonicalBytes, err := base64.RawURLEncoding.DecodeString(nonCanonical)
+	if err != nil || !bytes.Equal(nonCanonicalBytes, canonicalBytes) {
+		t.Fatal("test token is not a non-canonical spelling of the canonical token")
+	}
+	paths := writeRuntimeFiles(t, RuntimeDescriptor{
+		SchemaVersion:    RuntimeDescriptorSchemaVersion,
+		Endpoint:         "http://127.0.0.1:43123",
+		DaemonInstanceID: "daemon_test",
+		DaemonVersion:    "0.1.0-dev",
+		PID:              123,
+		ProcessStartedAt: now,
+		GeneratedAt:      now,
+	}, nonCanonical)
+
+	_, err = Discover(paths, DiscoveryPolicy{Now: func() time.Time { return now }})
+	if CodeOf(err) != ErrorRuntimeTokenInvalid {
+		t.Fatalf("error code: got %q, want %q", CodeOf(err), ErrorRuntimeTokenInvalid)
 	}
 }
 

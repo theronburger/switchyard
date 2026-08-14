@@ -21,12 +21,7 @@ const (
 	defaultRequestTimeout = 5 * time.Second
 )
 
-type Handshake struct {
-	SchemaVersion           int    `json:"schemaVersion"`
-	DaemonInstanceID        string `json:"daemonInstanceId"`
-	DaemonVersion           string `json:"daemonVersion"`
-	SupportedSchemaVersions []int  `json:"supportedSchemaVersions"`
-}
+type Handshake = contractv1.Handshake
 
 type ClientOptions struct {
 	Transport             http.RoundTripper

@@ -13,9 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 )
 
-const RuntimeDescriptorSchemaVersion = 1
+const RuntimeDescriptorSchemaVersion = contractv1.SchemaVersion
 
 const (
 	maximumDescriptorBytes = 64 * 1024
@@ -29,15 +31,7 @@ type RuntimePaths struct {
 	Token      string
 }
 
-type RuntimeDescriptor struct {
-	SchemaVersion    int       `json:"schemaVersion"`
-	Endpoint         string    `json:"endpoint"`
-	DaemonInstanceID string    `json:"daemonInstanceId"`
-	DaemonVersion    string    `json:"daemonVersion"`
-	PID              int       `json:"pid"`
-	ProcessStartedAt time.Time `json:"processStartedAt"`
-	GeneratedAt      time.Time `json:"generatedAt"`
-}
+type RuntimeDescriptor = contractv1.RuntimeDescriptor
 
 type ProcessIdentityVerifier func(pid int, startedAt time.Time) error
 
@@ -221,6 +215,9 @@ func decodeToken(contents []byte) (string, error) {
 	decoded, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(decoded) < minimumTokenBytes {
 		return "", newCodedError(ErrorRuntimeTokenInvalid, fmt.Errorf("token is not valid base64url entropy"))
+	}
+	if base64.RawURLEncoding.EncodeToString(decoded) != token {
+		return "", newCodedError(ErrorRuntimeTokenInvalid, fmt.Errorf("token is not canonically encoded"))
 	}
 	return token, nil
 }
