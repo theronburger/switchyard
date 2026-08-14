@@ -182,6 +182,25 @@ runner.check("additive fields are ignored") {
     try expect(snapshot.daemon.state == .unknown, "unknown daemon state did not map to .unknown")
 }
 
+runner.check("fractional RFC 3339 timestamps decode") {
+    let json = """
+    {
+      "schemaVersion": 1,
+      "endpoint": "http://127.0.0.1:49402",
+      "daemonInstanceId": "daemon_fractional",
+      "daemonVersion": "0.1.0-dev",
+      "pid": 42,
+      "processStartedAt": "2026-08-14T10:00:00.123456Z",
+      "generatedAt": "2026-08-14T12:00:00.123456789+02:00"
+    }
+    """
+    let descriptor = try ContractDecoder().decode(EndpointDescriptor.self, from: Data(json.utf8))
+    try expect(
+        abs(descriptor.generatedAt.timeIntervalSince(descriptor.processStartedAt)) < 0.000_001,
+        "equivalent fractional timestamps decoded differently"
+    )
+}
+
 runner.check("environment context footer decodes with caps") {
     let json = """
     {
@@ -310,6 +329,45 @@ runner.check("endpoint descriptor loader enforces owner-only files") {
         throw CheckError("expected unreadable for a missing descriptor")
     } catch let error as EndpointDescriptorError {
         try expect(error == .unreadable(missingURL.path), "expected unreadable, got \(error)")
+    }
+}
+
+runner.check("runtime file reader rejects symlinks non-files and oversized data") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let privateURL = directory.appending(path: "private")
+    fileManager.createFile(
+        atPath: privateURL.path,
+        contents: Data("private".utf8),
+        attributes: [.posixPermissions: 0o600]
+    )
+    let contents = try readSecureRuntimeFile(at: privateURL, maximumBytes: 64)
+    try expect(contents == Data("private".utf8), "secure file contents changed")
+
+    let symlinkURL = directory.appending(path: "link")
+    try fileManager.createSymbolicLink(at: symlinkURL, withDestinationURL: privateURL)
+    do {
+        _ = try readSecureRuntimeFile(at: symlinkURL, maximumBytes: 64)
+        throw CheckError("runtime symlink was accepted")
+    } catch let error as SecureFileError {
+        try expect(error.problem == .symlink, "expected symlink refusal, got \(error)")
+    }
+
+    do {
+        _ = try readSecureRuntimeFile(at: directory, maximumBytes: 64)
+        throw CheckError("runtime directory was accepted as a file")
+    } catch let error as SecureFileError {
+        try expect(error.problem == .notRegular, "expected non-file refusal, got \(error)")
+    }
+
+    do {
+        _ = try readSecureRuntimeFile(at: privateURL, maximumBytes: 4)
+        throw CheckError("oversized runtime file was accepted")
+    } catch let error as SecureFileError {
+        try expect(error.problem == .oversized(limitBytes: 4), "expected size refusal, got \(error)")
     }
 }
 

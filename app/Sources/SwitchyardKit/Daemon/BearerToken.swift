@@ -37,17 +37,24 @@ public struct BearerToken: Sendable, Equatable {
         fileManager: FileManager = .default,
         requirePrivatePermissions: Bool = true
     ) throws -> BearerToken {
-        if requirePrivatePermissions {
-            let permissions = try ownerOnlyPermissions(at: url, fileManager: fileManager)
-            if let permissions {
-                throw BearerTokenError.insecurePermissions(octal: permissions)
-            }
-        }
-        let contents: String
+        _ = fileManager
+        let data: Data
         do {
-            contents = try String(contentsOf: url, encoding: .utf8)
+            data = try readSecureRuntimeFile(
+                at: url,
+                maximumBytes: 4 * 1024,
+                requireOwnerOnlyPermissions: requirePrivatePermissions
+            )
+        } catch let error as SecureFileError {
+            if case .insecurePermissions(let octal) = error.problem {
+                throw BearerTokenError.insecurePermissions(octal: octal)
+            }
+            throw BearerTokenError.unreadable(url.path)
         } catch {
             throw BearerTokenError.unreadable(url.path)
+        }
+        guard let contents = String(data: data, encoding: .utf8) else {
+            throw BearerTokenError.invalidFormat
         }
         return try BearerToken(rawValue: contents)
     }
@@ -82,23 +89,4 @@ public enum BearerTokenError: Error, Equatable, CustomStringConvertible {
             return "daemon token file must be owner-only (0600), found \(octal)"
         }
     }
-}
-
-/// Returns `nil` when the file is owner-only, otherwise the offending octal
-/// permission string. Throws when attributes cannot be read at all.
-func ownerOnlyPermissions(at url: URL, fileManager: FileManager) throws -> String? {
-    let attributes: [FileAttributeKey: Any]
-    do {
-        attributes = try fileManager.attributesOfItem(atPath: url.path)
-    } catch {
-        throw BearerTokenError.unreadable(url.path)
-    }
-    guard let permissions = attributes[.posixPermissions] as? NSNumber else {
-        return nil
-    }
-    let mode = permissions.intValue & 0o777
-    if mode != 0o600 {
-        return String(mode, radix: 8)
-    }
-    return nil
 }

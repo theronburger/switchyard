@@ -152,20 +152,19 @@ public struct EndpointDescriptorLoader: Sendable {
     }
 
     public func load(from url: URL, fileManager: FileManager = .default) throws -> EndpointDescriptor {
-        if requirePrivatePermissions {
-            let permissions: String?
-            do {
-                permissions = try ownerOnlyPermissions(at: url, fileManager: fileManager)
-            } catch {
-                throw EndpointDescriptorError.unreadable(url.path)
-            }
-            if let permissions {
-                throw EndpointDescriptorError.insecurePermissions(octal: permissions)
-            }
-        }
+        _ = fileManager
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try readSecureRuntimeFile(
+                at: url,
+                maximumBytes: 64 * 1024,
+                requireOwnerOnlyPermissions: requirePrivatePermissions
+            )
+        } catch let error as SecureFileError {
+            if case .insecurePermissions(let octal) = error.problem {
+                throw EndpointDescriptorError.insecurePermissions(octal: octal)
+            }
+            throw EndpointDescriptorError.unreadable(url.path)
         } catch {
             throw EndpointDescriptorError.unreadable(url.path)
         }
