@@ -149,6 +149,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
+	discoveredRepositories := discoverRepositoryInventory(ctx, time.Now().UTC())
 
 	token, err := daemon.LoadOrCreateToken(paths.token, rand.Reader)
 	if err != nil {
@@ -191,7 +192,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	}()
 	listenerOwned = false
 
-	if err := publishInitialSnapshot(ctx, store, instanceID, startedAt); err != nil {
+	if err := publishInitialSnapshot(ctx, store, instanceID, startedAt, discoveredRepositories); err != nil {
 		if ctx.Err() != nil {
 			return shutdownServerAndWait(server, serveErrors, nil)
 		}
@@ -263,6 +264,7 @@ func publishInitialSnapshot(
 	store *state.Store,
 	instanceID string,
 	startedAt time.Time,
+	discoveredRepositories repositoryInventory,
 ) error {
 	snapshot, err := store.ReadSnapshot(ctx)
 	if errors.Is(err, state.ErrNoSnapshot) {
@@ -290,6 +292,7 @@ func publishInitialSnapshot(
 	if snapshot.Alerts == nil {
 		snapshot.Alerts = []contractv1.Alert{}
 	}
+	snapshot = mergeRepositoryInventory(snapshot, discoveredRepositories)
 	_, err = store.CommitSnapshot(ctx, snapshot)
 	return err
 }
