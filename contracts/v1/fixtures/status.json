@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "snapshotRevision": 42,
+  "generatedAt": "2026-08-14T10:00:00Z",
+  "daemon": {
+    "instanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+    "version": "0.1.0-dev",
+    "state": "ready",
+    "startedAt": "2026-08-14T09:00:00Z"
+  },
+  "repositories": [
+    {
+      "id": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
+      "displayName": "marketplace",
+      "rootPath": "/Users/example/Developer/marketplace",
+      "adapter": "marketplace",
+      "remote": "example/marketplace",
+      "worktrees": [
+        {
+          "id": "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX",
+          "path": "/Users/example/Developer/marketplace-worktrees/demo-environment",
+          "branch": "feature/demo-environment",
+          "headRevision": "0123456789abcdef0123456789abcdef01234567",
+          "isPrimary": false,
+          "git": {
+            "hasTrackedChanges": false,
+            "hasUntrackedFiles": false,
+            "hasUnpushedCommits": false,
+            "locked": false,
+            "prunable": false
+          }
+        }
+      ]
+    }
+  ],
+  "environments": [
+    {
+      "id": "env_01J5EZ5VXM3B4RYQ6WP8QH8T4A",
+      "revision": 17,
+      "repositoryId": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
+      "worktreeId": "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX",
+      "displayName": "Demo environment",
+      "desiredState": "running",
+      "observedState": "running",
+      "health": "degraded",
+      "services": [
+        {
+          "id": "organizer",
+          "displayName": "Organizer",
+          "kind": "web",
+          "desiredState": "running",
+          "observedState": "running",
+          "health": "healthy",
+          "portLeaseIds": ["port_organizer_http"],
+          "run": {
+            "id": "run_01J5EZ6XDJQ3RT09H42TJFWCNR",
+            "startedAt": "2026-08-14T09:55:00Z",
+            "restartCount": 0,
+            "processCount": 7,
+            "cpuPercent": 8.2,
+            "memoryBytes": 1400000000
+          }
+        },
+        {
+          "id": "nonprofit-service",
+          "displayName": "Nonprofit Service",
+          "kind": "api",
+          "desiredState": "running",
+          "observedState": "exited",
+          "health": "unhealthy",
+          "portLeaseIds": ["port_nonprofit_http", "port_nonprofit_lambda"],
+          "run": {
+            "id": "run_01J5EZ8A8YFEZ2F8AAYF26ME6B",
+            "startedAt": "2026-08-14T09:55:05Z",
+            "restartCount": 2,
+            "processCount": 0,
+            "cpuPercent": 0,
+            "memoryBytes": 0
+          }
+        }
+      ],
+      "portLeases": [
+        {
+          "id": "port_organizer_http",
+          "serviceId": "organizer",
+          "purpose": "http",
+          "host": "127.0.0.1",
+          "port": 7005,
+          "state": "active",
+          "acquiredAt": "2026-08-14T09:54:00Z"
+        },
+        {
+          "id": "port_nonprofit_http",
+          "serviceId": "nonprofit-service",
+          "purpose": "http",
+          "host": "127.0.0.1",
+          "port": 7019,
+          "state": "active",
+          "acquiredAt": "2026-08-14T09:54:00Z"
+        },
+        {
+          "id": "port_nonprofit_lambda",
+          "serviceId": "nonprofit-service",
+          "purpose": "lambda",
+          "host": "127.0.0.1",
+          "port": 8019,
+          "state": "active",
+          "acquiredAt": "2026-08-14T09:54:00Z"
+        }
+      ],
+      "infrastructureLeases": [
+        {
+          "id": "infra_elasticmq",
+          "serviceId": "nonprofit-service",
+          "displayName": "ElasticMQ",
+          "kind": "container",
+          "scope": "environment",
+          "state": "ready",
+          "ownership": "owned"
+        }
+      ],
+      "urls": {
+        "organizer": "http://127.0.0.1:7005",
+        "nonprofit-service": "http://127.0.0.1:7019"
+      },
+      "resources": {
+        "cpuPercent": 8.2,
+        "memoryBytes": 1400000000
+      },
+      "attentionAlertIds": ["alert_01J5EZ9SS6BPE3YAP6WFNWAFET"]
+    }
+  ],
+  "operations": [
+    {
+      "id": "operation_01J5EZB0N30N1AM9NZDW48XDB3",
+      "kind": "startEnvironment",
+      "state": "succeeded",
+      "environmentId": "env_01J5EZ5VXM3B4RYQ6WP8QH8T4A",
+      "environmentRevision": 17,
+      "createdAt": "2026-08-14T09:53:00Z",
+      "updatedAt": "2026-08-14T09:55:06Z"
+    }
+  ],
+  "alerts": [
+    {
+      "id": "alert_01J5EZ9SS6BPE3YAP6WFNWAFET",
+      "environmentId": "env_01J5EZ5VXM3B4RYQ6WP8QH8T4A",
+      "serviceId": "nonprofit-service",
+      "severity": "error",
+      "code": "SERVICE_EXITED",
+      "summary": "Nonprofit service exited with status 1",
+      "status": "active",
+      "firstSeenAt": "2026-08-14T09:58:00Z",
+      "lastSeenAt": "2026-08-14T09:58:00Z",
+      "occurrences": 1
+    }
+  ]
+}
