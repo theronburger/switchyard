@@ -12,6 +12,10 @@ func (snapshot StatusSnapshot) Validate() error {
 	if snapshot.Daemon.InstanceID == "" {
 		return fmt.Errorf("daemon instance id is required")
 	}
+	if snapshot.Repositories == nil || snapshot.Environments == nil ||
+		snapshot.Operations == nil || snapshot.Alerts == nil {
+		return fmt.Errorf("status snapshot collections must be JSON arrays, not null")
+	}
 
 	repositories := make(map[string]Repository, len(snapshot.Repositories))
 	worktrees := make(map[string]Worktree)
@@ -21,6 +25,9 @@ func (snapshot StatusSnapshot) Validate() error {
 		}
 		if _, exists := repositories[repository.ID]; exists {
 			return fmt.Errorf("duplicate repository id %q", repository.ID)
+		}
+		if repository.Worktrees == nil {
+			return fmt.Errorf("repository %q worktrees must be a JSON array, not null", repository.ID)
 		}
 		repositories[repository.ID] = repository
 		for _, worktree := range repository.Worktrees {
@@ -50,6 +57,13 @@ func (snapshot StatusSnapshot) Validate() error {
 		}
 		if environment.Revision < 0 {
 			return fmt.Errorf("environment %q revision must not be negative", environment.ID)
+		}
+		if environment.Services == nil || environment.PortLeases == nil ||
+			environment.InfrastructureLeases == nil || environment.AttentionAlertIDs == nil {
+			return fmt.Errorf("environment %q collections must be JSON arrays, not null", environment.ID)
+		}
+		if environment.URLs == nil {
+			return fmt.Errorf("environment %q urls must be a JSON object, not null", environment.ID)
 		}
 		if err := validateEnvironment(environment); err != nil {
 			return err
@@ -92,6 +106,9 @@ func validateEnvironment(environment Environment) error {
 		}
 		if _, exists := services[service.ID]; exists {
 			return fmt.Errorf("duplicate service id %q in environment %q", service.ID, environment.ID)
+		}
+		if service.PortLeaseIDs == nil {
+			return fmt.Errorf("service %q port leases must be a JSON array, not null", service.ID)
 		}
 		services[service.ID] = service
 	}

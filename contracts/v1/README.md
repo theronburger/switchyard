@@ -7,6 +7,7 @@ Rules:
 - `schemaVersion` is the integer `1`.
 - IDs are opaque strings. Ticket, branch, and path data are display fields.
 - timestamps are RFC 3339 strings;
+- collection fields are always JSON arrays or objects, never `null`;
 - revisions are non-negative signed 64-bit integers and increase monotonically within their scope;
 - desired lifecycle, observed lifecycle, and health are separate axes;
 - public snapshots never contain credentials, environment values, full commands, PIDs, or process arguments;
