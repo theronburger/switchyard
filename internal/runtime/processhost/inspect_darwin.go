@@ -44,9 +44,18 @@ int switchyard_inspect_process(int pid, struct switchyard_process_info *result) 
 	result->user_time = task_info.ptinfo.pti_total_user;
 	result->system_time = task_info.ptinfo.pti_total_system;
 	if (proc_pidpath(pid, result->executable_path, sizeof(result->executable_path)) <= 0) {
+		if (task_info.pbsd.pbi_status == SZOMB) return 0;
 		return -1;
 	}
 	return 0;
+}
+
+int switchyard_process_status(int pid) {
+	struct proc_bsdinfo process_info;
+	memset(&process_info, 0, sizeof(process_info));
+	int received = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &process_info, sizeof(process_info));
+	if (received != sizeof(process_info)) return 0;
+	return process_info.pbi_status;
 }
 
 int switchyard_list_group(int pgid, int *pids, int bytes) {
@@ -97,23 +106,27 @@ func (systemInspector) Inspect(ctx context.Context, pid int) (ProcessSnapshot, e
 	if result != 0 {
 		return ProcessSnapshot{}, processInspectionError(pid, callErr)
 	}
+	snapshot := ProcessSnapshot{
+		Identity: ProcessIdentity{
+			PID:            int(processInfo.pid),
+			ParentPID:      int(processInfo.ppid),
+			ProcessGroupID: int(processInfo.pgid),
+			StartedAt:      time.Unix(int64(processInfo.started_sec), int64(processInfo.started_usec)*int64(time.Microsecond)).UTC(),
+		},
+		Status:      processStatus(int(processInfo.status)),
+		MemoryBytes: uint64(processInfo.memory_bytes),
+		CPUTime:     time.Duration(uint64(processInfo.user_time) + uint64(processInfo.system_time)),
+	}
+	if snapshot.Status == "zombie" {
+		return snapshot, nil
+	}
 	arguments, err := inspectProcessArguments(pid)
 	if err != nil {
 		return ProcessSnapshot{}, err
 	}
 	executablePath := C.GoString(&processInfo.executable_path[0])
-	return ProcessSnapshot{
-		Identity: ProcessIdentity{
-			PID:                int(processInfo.pid),
-			ParentPID:          int(processInfo.ppid),
-			ProcessGroupID:     int(processInfo.pgid),
-			StartedAt:          time.Unix(int64(processInfo.started_sec), int64(processInfo.started_usec)*int64(time.Microsecond)).UTC(),
-			CommandFingerprint: fingerprintCommand(executablePath, arguments),
-		},
-		Status:      processStatus(int(processInfo.status)),
-		MemoryBytes: uint64(processInfo.memory_bytes),
-		CPUTime:     time.Duration(uint64(processInfo.user_time) + uint64(processInfo.system_time)),
-	}, nil
+	snapshot.Identity.CommandFingerprint = fingerprintCommand(executablePath, arguments)
+	return snapshot, nil
 }
 
 func (inspector systemInspector) ListGroup(ctx context.Context, processGroupID int) ([]ProcessSnapshot, error) {
@@ -154,6 +167,9 @@ func (inspector systemInspector) ListGroup(ctx context.Context, processGroupID i
 			}
 			if err != nil {
 				return nil, err
+			}
+			if snapshot.Status == "zombie" {
+				continue
 			}
 			if snapshot.Identity.ProcessGroupID == processGroupID {
 				snapshots = append(snapshots, snapshot)
@@ -218,6 +234,12 @@ func readNullTerminated(contents []byte, offset int) (string, int, bool) {
 func processInspectionError(pid int, callErr error) error {
 	if errors.Is(callErr, syscall.ESRCH) || errors.Is(callErr, syscall.ENOENT) {
 		return fmt.Errorf("%w: pid %d", ErrProcessNotFound, pid)
+	}
+	if errors.Is(callErr, syscall.EINVAL) {
+		status := C.switchyard_process_status(C.int(pid))
+		if status == 0 || status == C.SZOMB {
+			return fmt.Errorf("%w: pid %d", ErrProcessNotFound, pid)
+		}
 	}
 	return fmt.Errorf("inspect process %d: %w", pid, callErr)
 }
