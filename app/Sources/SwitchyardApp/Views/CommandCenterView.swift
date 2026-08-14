@@ -14,11 +14,7 @@ struct CommandCenterView: View {
         }
         .navigationTitle("Switchyard")
         .toolbar { toolbarContent }
-        .task {
-            if model.phase == .idle {
-                await model.refresh()
-            }
-        }
+        .task { model.startPolling() }
         .frame(minWidth: 900, minHeight: 560)
     }
 
@@ -149,14 +145,16 @@ struct CommandCenterView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Picker("Fixture", selection: scenarioBinding) {
-                ForEach(FixtureScenario.allCases) { scenario in
-                    Text(scenario.displayName).tag(scenario)
+        if model.isFixtureMode {
+            ToolbarItem(placement: .navigation) {
+                Picker("Fixture", selection: scenarioBinding) {
+                    ForEach(FixtureScenario.allCases) { scenario in
+                        Text(scenario.displayName).tag(scenario)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .help("Development data source: \(model.scenario.blurb)")
             }
-            .pickerStyle(.segmented)
-            .help("Development data source: \(model.scenario.blurb)")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {

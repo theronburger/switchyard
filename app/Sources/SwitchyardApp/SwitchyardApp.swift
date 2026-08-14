@@ -3,7 +3,13 @@ import SwitchyardKit
 
 @main
 struct SwitchyardApp: App {
-    @State private var model = AppModel()
+    @State private var model: AppModel
+
+    init() {
+        let model = AppModel(configuration: .resolve())
+        model.startPolling()
+        _model = State(initialValue: model)
+    }
 
     var body: some Scene {
         MenuBarExtra {
@@ -15,6 +21,7 @@ struct SwitchyardApp: App {
 
         Window("Switchyard", id: "command-center") {
             CommandCenterView(model: model)
+                .task { model.startPolling() }
         }
         .defaultSize(width: 1100, height: 700)
 

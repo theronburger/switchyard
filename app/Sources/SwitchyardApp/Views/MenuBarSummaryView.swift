@@ -16,11 +16,7 @@ struct MenuBarSummaryView: View {
         }
         .padding(12)
         .frame(width: 320)
-        .task {
-            if model.phase == .idle {
-                await model.refresh()
-            }
-        }
+        .task { model.startPolling() }
     }
 
     private var header: some View {
@@ -128,6 +124,11 @@ struct MenuBarSummaryView: View {
             Button("Doctor") {
                 model.selection = .connectionDoctor
                 openWindow(id: "command-center")
+            }
+            if model.lifecycleState.canRepair {
+                Button("Repair") {
+                    Task { await model.repairAll() }
+                }
             }
             Spacer()
             Button {

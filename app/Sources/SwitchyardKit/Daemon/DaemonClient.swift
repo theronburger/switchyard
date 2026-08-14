@@ -23,7 +23,11 @@ public struct URLSessionDaemonTransport: DaemonTransport {
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
-        session = URLSession(configuration: configuration)
+        session = URLSession(
+            configuration: configuration,
+            delegate: RedirectRejectingSessionDelegate.shared,
+            delegateQueue: nil
+        )
     }
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -31,7 +35,28 @@ public struct URLSessionDaemonTransport: DaemonTransport {
         guard let http = response as? HTTPURLResponse else {
             throw DaemonClientError.malformedResponse("response was not HTTP")
         }
+        try Self.validateNoRedirect(request: request, response: http)
         return (data, http)
+    }
+
+    public static func validateNoRedirect(request: URLRequest, response: HTTPURLResponse) throws {
+        guard !(300...399).contains(response.statusCode), response.url == request.url else {
+            throw DaemonClientError.redirectRejected
+        }
+    }
+}
+
+private final class RedirectRejectingSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = RedirectRejectingSessionDelegate()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 
@@ -42,6 +67,7 @@ public enum DaemonClientError: Error, Sendable, CustomStringConvertible {
     case transportFailure(String)
     case malformedResponse(String)
     case httpStatus(Int)
+    case redirectRejected
 
     public var description: String {
         switch self {
@@ -57,6 +83,8 @@ public enum DaemonClientError: Error, Sendable, CustomStringConvertible {
             return "daemon response was malformed: \(detail)"
         case .httpStatus(let code):
             return "daemon returned unexpected HTTP status \(code)"
+        case .redirectRejected:
+            return "daemon HTTP redirects are not accepted"
         }
     }
 }

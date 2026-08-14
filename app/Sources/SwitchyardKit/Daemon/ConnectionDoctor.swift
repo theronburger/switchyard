@@ -52,83 +52,82 @@ public struct DoctorReport: Sendable, Equatable {
     }
 }
 
-/// Runs real diagnostics against the daemon's on-disk runtime files and, when
-/// they are present, the handshake itself. The transport is injectable so the
-/// doctor is verifiable without a live daemon.
-public struct LiveConnectionDoctor: Sendable {
-    public let location: DaemonEndpointLocation
-    private let transport: any DaemonTransport
+public protocol DoctorRunning: Sendable {
+    func run() async -> DoctorReport
+}
+
+public struct LiveConnectionDoctor: DoctorRunning {
+    private let serviceManager: any DaemonServiceManaging
+    private let connectionFactory: any RuntimeConnectionEstablishing
 
     public init(
-        location: DaemonEndpointLocation = .standard(),
-        transport: any DaemonTransport = URLSessionDaemonTransport()
+        serviceManager: any DaemonServiceManaging = LaunchAgentServiceManager(),
+        connectionFactory: any RuntimeConnectionEstablishing = RuntimeConnectionFactory()
     ) {
-        self.location = location
-        self.transport = transport
+        self.serviceManager = serviceManager
+        self.connectionFactory = connectionFactory
     }
 
     public func run() async -> DoctorReport {
         var checks: [DoctorCheck] = []
 
-        checks.append(DoctorCheck(
-            id: "registration",
-            title: "Login item registration",
-            outcome: .skipped("SMAppService wiring arrives with the packaged app bundle.")
-        ))
-
-        let descriptor: EndpointDescriptor?
         do {
-            let loaded = try EndpointDescriptorLoader().load(from: location.descriptorURL)
-            descriptor = loaded
+            let status = try await serviceManager.inspect()
             checks.append(DoctorCheck(
-                id: "endpoint-descriptor",
-                title: "Endpoint descriptor",
-                outcome: .passed("Daemon \(loaded.daemonVersion) publishes loopback port \(loaded.port).")
-            ))
-        } catch let error as EndpointDescriptorError {
-            descriptor = nil
-            checks.append(DoctorCheck(
-                id: "endpoint-descriptor",
-                title: "Endpoint descriptor",
-                outcome: .failed(error.description)
+                id: "registration",
+                title: "LaunchAgent registration",
+                outcome: status == .enabled
+                    ? .passed("The Switchyard user LaunchAgent is loaded.")
+                    : .failed(Self.registrationMessage(status))
             ))
         } catch {
-            descriptor = nil
             checks.append(DoctorCheck(
-                id: "endpoint-descriptor",
-                title: "Endpoint descriptor",
-                outcome: .failed(String(describing: error))
+                id: "registration",
+                title: "LaunchAgent registration",
+                outcome: .failed("The Switchyard user LaunchAgent could not be inspected.")
             ))
         }
 
-        let token: BearerToken?
+        let connection: DaemonConnection?
         do {
-            token = try BearerToken.load(from: location.tokenURL)
+            let established = try connectionFactory.connect()
+            connection = established
             checks.append(DoctorCheck(
-                id: "token",
-                title: "Daemon token",
-                outcome: .passed("Token file is present and owner-only.")
+                id: "endpoint-descriptor",
+                title: "Endpoint descriptor",
+                outcome: .passed("Daemon \(established.descriptor.daemonVersion) publishes a verified loopback endpoint.")
             ))
-        } catch let error as BearerTokenError {
-            token = nil
+            checks.append(DoctorCheck(
+                id: "process-identity",
+                title: "Daemon process identity",
+                outcome: .passed("The endpoint descriptor belongs to the running daemon process.")
+            ))
             checks.append(DoctorCheck(
                 id: "token",
                 title: "Daemon token",
+                outcome: .passed("The owner-only daemon token is available.")
+            ))
+        } catch let error as RuntimeConnectionError {
+            connection = nil
+            checks.append(DoctorCheck(
+                id: "endpoint-descriptor",
+                title: "Endpoint and credentials",
                 outcome: .failed(error.description)
             ))
         } catch {
-            token = nil
+            connection = nil
             checks.append(DoctorCheck(
-                id: "token",
-                title: "Daemon token",
-                outcome: .failed(String(describing: error))
+                id: "endpoint-descriptor",
+                title: "Endpoint and credentials",
+                outcome: .failed("The daemon runtime connection could not be established.")
             ))
         }
 
-        if let descriptor, let token {
+        if let connection {
+            var handshakeSucceeded = false
             do {
-                let client = try DaemonClient(descriptor: descriptor, token: token, transport: transport)
-                let handshake = try await client.handshake()
+                let handshake = try await connection.client.handshake()
+                handshakeSucceeded = true
                 checks.append(DoctorCheck(
                     id: "handshake",
                     title: "Daemon handshake",
@@ -144,18 +143,64 @@ public struct LiveConnectionDoctor: Sendable {
                 checks.append(DoctorCheck(
                     id: "handshake",
                     title: "Daemon handshake",
-                    outcome: .failed(String(describing: error))
+                    outcome: .failed("The daemon handshake could not be completed.")
+                ))
+            }
+            if handshakeSucceeded {
+                do {
+                    _ = try await connection.client.status()
+                    checks.append(DoctorCheck(
+                        id: "status",
+                        title: "Status snapshot",
+                        outcome: .passed("The authenticated status contract is available.")
+                    ))
+                } catch let error as DaemonClientError {
+                    checks.append(DoctorCheck(
+                        id: "status",
+                        title: "Status snapshot",
+                        outcome: .failed(error.description)
+                    ))
+                } catch {
+                    checks.append(DoctorCheck(
+                        id: "status",
+                        title: "Status snapshot",
+                        outcome: .failed("The daemon status request could not be completed.")
+                    ))
+                }
+            } else {
+                checks.append(DoctorCheck(
+                    id: "status",
+                    title: "Status snapshot",
+                    outcome: .skipped("Skipped because the authenticated daemon handshake failed.")
                 ))
             }
         } else {
             checks.append(DoctorCheck(
                 id: "handshake",
                 title: "Daemon handshake",
-                outcome: .skipped("Skipped because the endpoint descriptor or token is unavailable.")
+                outcome: .skipped("Skipped because the verified runtime connection is unavailable.")
+            ))
+            checks.append(DoctorCheck(
+                id: "status",
+                title: "Status snapshot",
+                outcome: .skipped("Skipped because the verified runtime connection is unavailable.")
             ))
         }
 
         return DoctorReport(checks: checks)
+    }
+
+    private static func registrationMessage(_ status: DaemonRegistrationStatus) -> String {
+        switch status {
+        case .enabled:
+            return "The Switchyard user LaunchAgent is loaded."
+        case .notRegistered:
+            return "The Switchyard user LaunchAgent is not installed."
+        case .requiresApproval:
+            return "macOS has not loaded the Switchyard user LaunchAgent."
+        case .notFound:
+            return "The installed Switchyard daemon binary is missing."
+        }
     }
 }
 

@@ -1,8 +1,6 @@
 import Foundation
 
-/// Registration status of the daemon's launch agent, shaped so
-/// `SMAppService.Status` maps onto it one-to-one when real wiring lands
-/// (D-005, D-014).
+/// Registration status of the daemon's per-user LaunchAgent.
 public enum DaemonRegistrationStatus: String, Sendable, Equatable, CaseIterable {
     case notRegistered
     case requiresApproval
@@ -187,7 +185,7 @@ public enum DaemonLifecycleError: Error, Equatable, CustomStringConvertible {
 
 /// Explicit daemon lifecycle/repair state machine (D-005, D-014).
 ///
-/// Pure and synchronous: callers observe SMAppService, the descriptor files,
+/// Pure and synchronous: callers observe launchd, the descriptor files,
 /// and the handshake, then feed events in. Every transition is either in the
 /// table below or a named `DaemonLifecycleError.invalidTransition`.
 public struct DaemonLifecycleMachine: Sendable, Equatable {

@@ -115,6 +115,7 @@ public struct EndpointDescriptor: Codable, Sendable, Equatable {
 }
 
 public enum EndpointDescriptorError: Error, Equatable, CustomStringConvertible {
+    case missing(String)
     case unreadable(String)
     case malformed(String)
     case unsupportedSchemaVersion(Int)
@@ -125,6 +126,8 @@ public enum EndpointDescriptorError: Error, Equatable, CustomStringConvertible {
 
     public var description: String {
         switch self {
+        case .missing(let path):
+            return "endpoint descriptor is missing at \(path)"
         case .unreadable(let path):
             return "endpoint descriptor is unreadable at \(path)"
         case .malformed(let detail):
@@ -161,6 +164,9 @@ public struct EndpointDescriptorLoader: Sendable {
                 requireOwnerOnlyPermissions: requirePrivatePermissions
             )
         } catch let error as SecureFileError {
+            if case .missing = error.problem {
+                throw EndpointDescriptorError.missing(url.path)
+            }
             if case .insecurePermissions(let octal) = error.problem {
                 throw EndpointDescriptorError.insecurePermissions(octal: octal)
             }

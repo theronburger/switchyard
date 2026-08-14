@@ -51,6 +51,148 @@ struct MockTransport: DaemonTransport {
     }
 }
 
+final class LockedRecorder<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Value] = []
+
+    func append(_ value: Value) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    var values: [Value] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+struct StubDescriptorProvider: EndpointDescriptorProviding {
+    let descriptor: EndpointDescriptor
+    let events: LockedRecorder<String>?
+
+    func loadDescriptor(from url: URL) throws -> EndpointDescriptor {
+        events?.append("descriptor")
+        return descriptor
+    }
+}
+
+struct StubProcessIdentityProvider: ProcessIdentityProviding {
+    let identity: ProcessIdentity
+    let events: LockedRecorder<String>?
+
+    func processIdentity(forPID pid: Int) throws -> ProcessIdentity {
+        events?.append("identity")
+        return identity
+    }
+}
+
+struct StubTokenProvider: BearerTokenProviding {
+    let token: BearerToken
+    let events: LockedRecorder<String>?
+
+    func loadToken(from url: URL) throws -> BearerToken {
+        events?.append("token")
+        return token
+    }
+}
+
+actor StubServiceManager: DaemonServiceManaging {
+    var status: DaemonRegistrationStatus
+    private(set) var calls: [String] = []
+
+    init(status: DaemonRegistrationStatus) {
+        self.status = status
+    }
+
+    func inspect() async throws -> DaemonRegistrationStatus {
+        calls.append("inspect")
+        return status
+    }
+
+    func install() async throws {
+        calls.append("install")
+        status = .enabled
+    }
+
+    func kickstart() async throws {
+        calls.append("kickstart")
+    }
+
+    func repair() async throws {
+        calls.append("repair")
+        status = .enabled
+    }
+}
+
+struct StubDoctor: DoctorRunning {
+    let report: DoctorReport
+
+    func run() async -> DoctorReport { report }
+}
+
+final class StubConnectionFactory: RuntimeConnectionEstablishing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcomes: [Result<DaemonConnection, RuntimeConnectionError>]
+
+    init(_ outcomes: [Result<DaemonConnection, RuntimeConnectionError>]) {
+        self.outcomes = outcomes
+    }
+
+    func connect() throws -> DaemonConnection {
+        lock.lock()
+        let outcome = outcomes.count > 1 ? outcomes.removeFirst() : outcomes[0]
+        lock.unlock()
+        return try outcome.get()
+    }
+}
+
+struct StubSleeper: LifecycleSleeping {
+    let calls: LockedRecorder<Duration>
+
+    func sleep(for duration: Duration) async throws {
+        calls.append(duration)
+    }
+}
+
+final class RecordingExactRunner: ExactArgvRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [ExactCommand] = []
+    let handler: @Sendable (ExactCommand) throws -> ExactCommandResult
+
+    init(handler: @escaping @Sendable (ExactCommand) throws -> ExactCommandResult) {
+        self.handler = handler
+    }
+
+    func run(_ command: ExactCommand) throws -> ExactCommandResult {
+        lock.lock()
+        storage.append(command)
+        lock.unlock()
+        return try handler(command)
+    }
+
+    var commands: [ExactCommand] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+struct StubBinaryProvider: DaemonBinaryProviding {
+    let binary: DaemonBinary
+
+    func daemonBinary() throws -> DaemonBinary { binary }
+}
+
+struct StubLifecycleController: DaemonLifecycleControlling {
+    let refreshResult: DaemonLifecycleResult
+    let repairResult: DaemonLifecycleResult
+
+    func refresh() async -> DaemonLifecycleResult { refreshResult }
+    func repair() async -> DaemonLifecycleResult { repairResult }
+}
+
 func httpResponse(for request: URLRequest, status: Int) -> HTTPURLResponse {
     HTTPURLResponse(
         url: request.url ?? URL(fileURLWithPath: "/"),
@@ -328,7 +470,7 @@ runner.check("endpoint descriptor loader enforces owner-only files") {
         _ = try EndpointDescriptorLoader().load(from: missingURL)
         throw CheckError("expected unreadable for a missing descriptor")
     } catch let error as EndpointDescriptorError {
-        try expect(error == .unreadable(missingURL.path), "expected unreadable, got \(error)")
+        try expect(error == .missing(missingURL.path), "expected missing, got \(error)")
     }
 }
 
@@ -416,6 +558,156 @@ runner.check("bearer token stays redacted and owner-only") {
     } catch let error as BearerTokenError {
         try expect(error == .insecurePermissions(octal: "640"), "expected insecurePermissions(640), got \(error)")
     }
+}
+
+runner.check("Darwin process identity resolves the current process") {
+    let pid = Int(ProcessInfo.processInfo.processIdentifier)
+    let identity = try DarwinProcessIdentityProvider().processIdentity(forPID: pid)
+    try expect(identity.pid == pid, "process identity returned the wrong PID")
+    try expect(identity.startedAt < Date(), "process start time must be in the past")
+}
+
+runner.check("process identity is verified before token access") {
+    let events = LockedRecorder<String>()
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let factory = RuntimeConnectionFactory(
+        descriptorProvider: StubDescriptorProvider(descriptor: sampleDescriptor, events: events),
+        processIdentityProvider: StubProcessIdentityProvider(
+            identity: ProcessIdentity(
+                pid: sampleDescriptor.pid,
+                startedAt: sampleDescriptor.processStartedAt.addingTimeInterval(1)
+            ),
+            events: events
+        ),
+        tokenProvider: StubTokenProvider(token: token, events: events),
+        transport: MockTransport { request in
+            events.append("transport")
+            return (Data(), httpResponse(for: request, status: 200))
+        }
+    )
+    do {
+        _ = try factory.connect()
+        throw CheckError("mismatched process identity was accepted")
+    } catch let error as RuntimeConnectionError {
+        guard case .processIdentityMismatch = error else {
+            throw CheckError("expected process identity mismatch, got \(error)")
+        }
+    }
+    try expect(events.values == ["descriptor", "identity"], "token or transport was reached: \(events.values)")
+}
+
+runner.check("verified runtime connection loads descriptor identity then token") {
+    let events = LockedRecorder<String>()
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let factory = RuntimeConnectionFactory(
+        descriptorProvider: StubDescriptorProvider(descriptor: sampleDescriptor, events: events),
+        processIdentityProvider: StubProcessIdentityProvider(
+            identity: ProcessIdentity(pid: sampleDescriptor.pid, startedAt: sampleDescriptor.processStartedAt),
+            events: events
+        ),
+        tokenProvider: StubTokenProvider(token: token, events: events)
+    )
+    _ = try factory.connect()
+    try expect(events.values == ["descriptor", "identity", "token"], "runtime trust order changed: \(events.values)")
+}
+
+runner.check("URL session transport rejects redirect responses") {
+    let request = URLRequest(url: URL(string: "http://127.0.0.1:49402/handshake")!)
+    let redirect = HTTPURLResponse(
+        url: request.url!,
+        statusCode: 302,
+        httpVersion: "HTTP/1.1",
+        headerFields: ["Location": "http://127.0.0.1:49403/handshake"]
+    )!
+    do {
+        try URLSessionDaemonTransport.validateNoRedirect(request: request, response: redirect)
+        throw CheckError("redirect response was accepted")
+    } catch let error as DaemonClientError {
+        guard case .redirectRejected = error else {
+            throw CheckError("expected redirect rejection, got \(error)")
+        }
+    }
+
+    let changedURL = HTTPURLResponse(
+        url: URL(string: "http://127.0.0.1:49403/handshake")!,
+        statusCode: 200,
+        httpVersion: "HTTP/1.1",
+        headerFields: nil
+    )!
+    do {
+        try URLSessionDaemonTransport.validateNoRedirect(request: request, response: changedURL)
+        throw CheckError("changed response URL was accepted")
+    } catch let error as DaemonClientError {
+        guard case .redirectRejected = error else {
+            throw CheckError("expected changed-URL rejection, got \(error)")
+        }
+    }
+}
+
+await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-install-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let sourceURL = directory.appending(path: "source/switchyard")
+    try fileManager.createDirectory(at: sourceURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("daemon-binary".utf8).write(to: sourceURL)
+    try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sourceURL.path)
+    let paths = LaunchAgentPaths(
+        installedBinaryURL: directory.appending(path: "Application Support/Switchyard/bin/switchyard"),
+        launchAgentURL: directory.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
+        standardOutputURL: directory.appending(path: "Application Support/Switchyard/logs/stdout.log"),
+        standardErrorURL: directory.appending(path: "Application Support/Switchyard/logs/stderr.log")
+    )
+    let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+    let runner = RecordingExactRunner { command in
+        if command.arguments == ["version"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+            )
+        }
+        if command.executableURL == launchctlURL, command.arguments.first == "print" {
+            return ExactCommandResult(exitCode: 1)
+        }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: sourceURL)),
+        commandRunner: runner,
+        paths: paths,
+        launchctlURL: launchctlURL,
+        userID: 501
+    )
+    let plan = try await manager.makeInstallPlan()
+    let plist = try PropertyListSerialization.propertyList(from: plan.propertyList, options: [], format: nil)
+    guard let dictionary = plist as? [String: Any] else {
+        throw CheckError("LaunchAgent plist is not a dictionary")
+    }
+    try expect(
+        dictionary["ProgramArguments"] as? [String] == [paths.installedBinaryURL.path, "daemon"],
+        "LaunchAgent arguments are not exact"
+    )
+    try expect(dictionary["EnvironmentVariables"] == nil, "LaunchAgent must not carry environment secrets")
+    let plistText = String(decoding: plan.propertyList, as: UTF8.self).lowercased()
+    try expect(!plistText.contains("token") && !plistText.contains("authorization"), "LaunchAgent plist contains credentials")
+
+    try await manager.install()
+    try expect(fileManager.isExecutableFile(atPath: paths.installedBinaryURL.path), "installed daemon is not executable")
+    try expect(fileManager.fileExists(atPath: paths.launchAgentURL.path), "LaunchAgent plist was not installed")
+    try await manager.repair()
+    let launchctlCommands = runner.commands.filter { $0.executableURL == launchctlURL }
+    try expect(
+        launchctlCommands.map(\.arguments) == [
+            ["print", "gui/501/com.theronburger.switchyard.daemon"],
+            ["bootstrap", "gui/501", paths.launchAgentURL.path],
+            ["bootout", "gui/501/com.theronburger.switchyard.daemon"],
+            ["bootstrap", "gui/501", paths.launchAgentURL.path],
+            ["kickstart", "-k", "gui/501/com.theronburger.switchyard.daemon"],
+        ],
+        "launchctl argv changed: \(launchctlCommands)"
+    )
 }
 
 // MARK: - Daemon client
@@ -640,6 +932,61 @@ runner.check("lifecycle states describe themselves") {
     }
 }
 
+await runner.checkAsync("lifecycle controller waits boundedly then performs live handshake and status") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let handshakeBody = """
+    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions": [1]}
+    """
+    let client = try DaemonClient(
+        descriptor: sampleDescriptor,
+        token: token,
+        transport: MockTransport { request in
+            let body = request.url?.path == "/v1/status" ? fixtureData : Data(handshakeBody.utf8)
+            return (body, httpResponse(for: request, status: 200))
+        }
+    )
+    let connection = DaemonConnection(descriptor: sampleDescriptor, client: client)
+    let missing = RuntimeConnectionError.descriptor(.missing("/private/runtime.json"))
+    let factory = StubConnectionFactory([.failure(missing), .failure(missing), .success(connection)])
+    let service = StubServiceManager(status: .enabled)
+    let sleepCalls = LockedRecorder<Duration>()
+    let healthyReport = DoctorReport(checks: [
+        DoctorCheck(id: "live", title: "Live", outcome: .passed("healthy")),
+    ])
+    let controller = DaemonLifecycleController(
+        serviceManager: service,
+        connectionFactory: factory,
+        doctor: StubDoctor(report: healthyReport),
+        sleeper: StubSleeper(calls: sleepCalls),
+        waitPolicy: EndpointWaitPolicy(delays: [.milliseconds(1), .milliseconds(2)])
+    )
+    let result = await controller.refresh()
+    try expect(result.state.isOperational, "controller did not reach ready: \(result.state)")
+    try expect(result.snapshot?.snapshotRevision == 42, "controller did not fetch live status")
+    try expect(sleepCalls.values == [.milliseconds(1), .milliseconds(2)], "endpoint backoff changed")
+    let serviceCalls = await service.calls
+    try expect(serviceCalls == ["inspect", "kickstart"], "unexpected lifecycle service calls: \(serviceCalls)")
+}
+
+await runner.checkAsync("lifecycle controller refuses an invalid runtime without starting it") {
+    let factory = StubConnectionFactory([.failure(.processIdentityMismatch)])
+    let service = StubServiceManager(status: .enabled)
+    let controller = DaemonLifecycleController(
+        serviceManager: service,
+        connectionFactory: factory,
+        doctor: StubDoctor(report: DoctorReport(checks: [])),
+        sleeper: StubSleeper(calls: LockedRecorder<Duration>()),
+        waitPolicy: EndpointWaitPolicy(delays: [.milliseconds(1)])
+    )
+    let result = await controller.refresh()
+    guard case .unreachable = result.state else {
+        throw CheckError("invalid runtime should be unreachable, got \(result.state)")
+    }
+    let serviceCalls = await service.calls
+    try expect(serviceCalls == ["inspect"], "invalid runtime must not be kickstarted: \(serviceCalls)")
+}
+
 // MARK: - Connection Doctor
 
 await runner.checkAsync("live doctor reports missing runtime files") {
@@ -652,9 +999,13 @@ await runner.checkAsync("live doctor reports missing runtime files") {
         descriptorURL: directory.appending(path: "endpoint.json"),
         tokenURL: directory.appending(path: "daemon.token")
     )
+    let serviceManager = StubServiceManager(status: .enabled)
     let doctor = LiveConnectionDoctor(
-        location: location,
-        transport: MockTransport { request in (Data(), httpResponse(for: request, status: 200)) }
+        serviceManager: serviceManager,
+        connectionFactory: RuntimeConnectionFactory(
+            location: location,
+            transport: MockTransport { request in (Data(), httpResponse(for: request, status: 200)) }
+        )
     )
     let report = await doctor.run()
     try expect(!report.isHealthy, "missing files must be unhealthy")
@@ -698,11 +1049,23 @@ await runner.checkAsync("live doctor passes with valid files and a responsive da
     {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
      "supportedSchemaVersions": [1]}
     """
+    let serviceManager = StubServiceManager(status: .enabled)
     let doctor = LiveConnectionDoctor(
-        location: location,
-        transport: MockTransport { request in
-            (Data(handshakeBody.utf8), httpResponse(for: request, status: 200))
-        }
+        serviceManager: serviceManager,
+        connectionFactory: RuntimeConnectionFactory(
+            location: location,
+            processIdentityProvider: StubProcessIdentityProvider(
+                identity: ProcessIdentity(
+                    pid: 4242,
+                    startedAt: ISO8601DateFormatter().date(from: "2026-08-14T09:00:00Z")!
+                ),
+                events: nil
+            ),
+            transport: MockTransport { request in
+                let body = request.url?.path == "/v1/status" ? fixtureData : Data(handshakeBody.utf8)
+                return (body, httpResponse(for: request, status: 200))
+            }
+        )
     )
     let report = await doctor.run()
     try expect(report.isHealthy, "doctor should be healthy: \(report.checks.map { "\($0.id)=\($0.outcome)" })")
@@ -713,6 +1076,47 @@ await runner.checkAsync("live doctor passes with valid files and a responsive da
 }
 
 // MARK: - AppModel scenarios
+
+runner.check("app launch defaults live and fixtures require an explicit switch") {
+    try expect(AppLaunchConfiguration.resolve(arguments: ["Switchyard"], environment: [:]) == .live, "default launch is not live")
+    try expect(
+        AppLaunchConfiguration.resolve(arguments: ["Switchyard", "--fixture", "empty"], environment: [:]) == .fixture(.empty),
+        "fixture flag was not honored"
+    )
+    try expect(
+        AppLaunchConfiguration.resolve(arguments: ["Switchyard"], environment: ["SWITCHYARD_FIXTURE": "failure"]) == .fixture(.failure),
+        "fixture environment switch was not honored"
+    )
+}
+
+await runner.checkAsync("live app model maps controller status and repair state") {
+    let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: fixtureData)
+    let session = DaemonSession(
+        instanceId: snapshot.daemon.instanceId,
+        daemonVersion: snapshot.daemon.version,
+        endpoint: sampleDescriptor
+    )
+    let report = DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .passed("healthy"))])
+    let controller = StubLifecycleController(
+        refreshResult: DaemonLifecycleResult(state: .ready(session), snapshot: snapshot, doctorReport: report),
+        repairResult: DaemonLifecycleResult(
+            state: .unreachable(reason: "repair failed"),
+            snapshot: nil,
+            doctorReport: DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .failed("repair failed"))])
+        )
+    )
+    let model = AppModel(liveController: controller, pollingInterval: .seconds(60))
+    try expect(!model.isFixtureMode, "injected live model became fixture mode")
+    await model.refresh()
+    try expect(model.phase == .loaded, "live snapshot did not map to loaded")
+    try expect(model.lifecycleState.isOperational, "live state did not map to ready")
+    try expect(model.snapshot?.snapshotRevision == 42, "live snapshot was not retained")
+    await model.repairAll()
+    guard case .failed(let message) = model.phase else {
+        throw CheckError("failed repair did not map to disconnected state")
+    }
+    try expect(message == "repair failed", "failed repair message changed: \(message)")
+}
 
 await runner.checkAsync("app model renders the canonical fixture") {
     let model = AppModel(scenario: .canonical, canonicalFixtureURL: fixtureURL)
