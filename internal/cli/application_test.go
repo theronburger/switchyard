@@ -17,6 +17,8 @@ type stubBackend struct {
 	snapshot contractv1.StatusSnapshot
 	status   error
 	doctor   apiclient.DoctorReport
+	start    func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	stop     func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
 }
 
 func (b stubBackend) Status(context.Context) (contractv1.StatusSnapshot, error) {
@@ -25,6 +27,27 @@ func (b stubBackend) Status(context.Context) (contractv1.StatusSnapshot, error) 
 
 func (b stubBackend) Doctor(context.Context) apiclient.DoctorReport {
 	return b.doctor
+}
+
+func (b stubBackend) StartEnvironment(
+	ctx context.Context,
+	request contractv1.StartEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.start == nil {
+		return contractv1.MutationReceipt{}, errors.New("start is not configured")
+	}
+	return b.start(ctx, request)
+}
+
+func (b stubBackend) StopEnvironment(
+	ctx context.Context,
+	environmentID string,
+	request contractv1.StopEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.stop == nil {
+		return contractv1.MutationReceipt{}, errors.New("stop is not configured")
+	}
+	return b.stop(ctx, environmentID, request)
 }
 
 func TestApplicationStatusJSONIsTheStableContractSnapshot(t *testing.T) {
@@ -115,5 +138,101 @@ func TestApplicationRejectsUnknownArgumentsWithoutEchoingThem(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), secretArgument) {
 		t.Fatal("usage output echoed a potentially sensitive argument")
+	}
+}
+
+func TestApplicationStartBuildsIdempotentMutation(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 14, 15, 30, 0, 0, time.UTC)
+	backend := stubBackend{
+		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if request.Validate() != nil || request.RequestID != "request_test" ||
+				request.IdempotencyKey != "retry-key" || request.WorktreeID != "worktree_01" ||
+				len(request.ServiceIDs) != 2 || request.ExpectedEnvironmentRevision == nil ||
+				*request.ExpectedEnvironmentRevision != 19 {
+				t.Fatalf("start request: %+v", request)
+			}
+			return cliTestReceipt(request.RequestID, "environment_01", acceptedAt), nil
+		},
+	}
+	var output bytes.Buffer
+	application := Application{
+		Backend: backend, Stdout: &output,
+		NewRequestID: func() (string, error) { return "request_test", nil },
+	}
+	code := application.Run(context.Background(), []string{
+		"start", "worktree_01", "organizer", "nonprofit-service",
+		"--expected-revision", "19", "--idempotency-key", "retry-key", "--json",
+	})
+	if code != ExitSuccess {
+		t.Fatalf("exit code: got %d output=%s", code, output.String())
+	}
+	var receipt contractv1.MutationReceipt
+	if err := json.Unmarshal(output.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.EnvironmentID != "environment_01" || receipt.OperationID == "" {
+		t.Fatalf("receipt: %+v", receipt)
+	}
+}
+
+func TestApplicationStopUsesGeneratedIdempotencyKey(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 14, 15, 30, 0, 0, time.UTC)
+	backend := stubBackend{
+		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if environmentID != "environment_01" || request.Validate() != nil ||
+				request.RequestID != "request_generated" || request.IdempotencyKey != "cli:request_generated" {
+				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
+			}
+			return cliTestReceipt(request.RequestID, environmentID, acceptedAt), nil
+		},
+	}
+	var output bytes.Buffer
+	application := Application{
+		Backend: backend, Stdout: &output,
+		NewRequestID: func() (string, error) { return "request_generated", nil },
+	}
+	if code := application.Run(context.Background(), []string{"stop", "environment_01"}); code != ExitSuccess {
+		t.Fatalf("exit code: got %d", code)
+	}
+	if !strings.Contains(output.String(), "operation_01") || !strings.Contains(output.String(), "environment_01") {
+		t.Fatalf("stop output: %s", output.String())
+	}
+}
+
+func TestApplicationRejectsMalformedMutationArgumentsWithoutBackendCall(t *testing.T) {
+	calls := 0
+	backend := stubBackend{
+		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+		stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+	}
+	tests := [][]string{
+		{"start", "worktree-only"},
+		{"stop"},
+		{"stop", "environment", "extra"},
+		{"start", "worktree", "service", "--expected-revision", "-1"},
+		{"start", "worktree", "service", "--json", "--json"},
+	}
+	for _, arguments := range tests {
+		var stderr bytes.Buffer
+		application := Application{Backend: backend, Stderr: &stderr}
+		if code := application.Run(context.Background(), arguments); code != ExitUsage {
+			t.Fatalf("arguments=%v exit=%d", arguments, code)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("malformed arguments reached backend %d times", calls)
+	}
+}
+
+func cliTestReceipt(requestID, environmentID string, acceptedAt time.Time) contractv1.MutationReceipt {
+	return contractv1.MutationReceipt{
+		SchemaVersion: contractv1.SchemaVersion,
+		RequestID:     requestID, OperationID: "operation_01", AcceptedAt: acceptedAt, EnvironmentID: environmentID,
 	}
 }

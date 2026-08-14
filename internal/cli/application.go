@@ -2,10 +2,14 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
@@ -21,6 +25,8 @@ const (
 type Backend interface {
 	Status(context.Context) (contractv1.StatusSnapshot, error)
 	Doctor(context.Context) apiclient.DoctorReport
+	StartEnvironment(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
 }
 
 type LiveBackend struct {
@@ -36,10 +42,34 @@ func (b LiveBackend) Doctor(ctx context.Context) apiclient.DoctorReport {
 	return (apiclient.Doctor{Connector: b.Connector, Now: b.Now}).Run(ctx)
 }
 
+func (b LiveBackend) StartEnvironment(
+	ctx context.Context,
+	request contractv1.StartEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	return b.Connector.StartEnvironment(ctx, request)
+}
+
+func (b LiveBackend) StopEnvironment(
+	ctx context.Context,
+	environmentID string,
+	request contractv1.StopEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	return b.Connector.StopEnvironment(ctx, environmentID, request)
+}
+
 type Application struct {
-	Backend Backend
-	Stdout  io.Writer
-	Stderr  io.Writer
+	Backend      Backend
+	Stdout       io.Writer
+	Stderr       io.Writer
+	NewRequestID func() (string, error)
+}
+
+type parsedCommand struct {
+	Name             string
+	JSON             bool
+	Positionals      []string
+	IdempotencyKey   string
+	ExpectedRevision *int64
 }
 
 type errorOutput struct {
@@ -66,25 +96,25 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		return ExitFailure
 	}
 
-	command, jsonOutput, ok := parseArguments(arguments)
+	command, ok := parseArguments(arguments)
 	if !ok {
-		fmt.Fprintln(stderr, "usage: switchyard <status|doctor> [--json]")
+		writeUsage(stderr)
 		return ExitUsage
 	}
-	switch command {
+	switch command.Name {
 	case "status":
 		snapshot, err := a.Backend.Status(ctx)
 		if err != nil {
-			return writeFailure(stdout, stderr, jsonOutput, err)
+			return writeFailure(stdout, stderr, command.JSON, err)
 		}
-		if jsonOutput {
+		if command.JSON {
 			return encodeJSON(stdout, snapshot)
 		}
 		writeStatusText(stdout, snapshot)
 		return ExitSuccess
 	case "doctor":
 		report := a.Backend.Doctor(ctx)
-		if jsonOutput {
+		if command.JSON {
 			if code := encodeJSON(stdout, report); code != ExitSuccess {
 				return code
 			}
@@ -95,26 +125,136 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 			return ExitFailure
 		}
 		return ExitSuccess
+	case "start":
+		requestID, err := a.requestID()
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		idempotencyKey := command.IdempotencyKey
+		if idempotencyKey == "" {
+			idempotencyKey = "cli:" + requestID
+		}
+		receipt, err := a.Backend.StartEnvironment(ctx, contractv1.StartEnvironmentRequest{
+			MutationRequest: contractv1.MutationRequest{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
+				IdempotencyKey: idempotencyKey, ExpectedEnvironmentRevision: command.ExpectedRevision,
+			},
+			WorktreeID: command.Positionals[0], ServiceIDs: append([]string(nil), command.Positionals[1:]...),
+		})
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		return writeReceipt(stdout, receipt, command.JSON)
+	case "stop":
+		requestID, err := a.requestID()
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		idempotencyKey := command.IdempotencyKey
+		if idempotencyKey == "" {
+			idempotencyKey = "cli:" + requestID
+		}
+		receipt, err := a.Backend.StopEnvironment(ctx, command.Positionals[0], contractv1.StopEnvironmentRequest{
+			MutationRequest: contractv1.MutationRequest{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
+				IdempotencyKey: idempotencyKey, ExpectedEnvironmentRevision: command.ExpectedRevision,
+			},
+		})
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		return writeReceipt(stdout, receipt, command.JSON)
 	default:
 		return ExitUsage
 	}
 }
 
-func parseArguments(arguments []string) (command string, jsonOutput bool, ok bool) {
-	if len(arguments) < 1 || len(arguments) > 2 {
-		return "", false, false
+func parseArguments(arguments []string) (parsedCommand, bool) {
+	if len(arguments) < 1 {
+		return parsedCommand{}, false
 	}
-	command = arguments[0]
-	if command != "status" && command != "doctor" {
-		return "", false, false
+	command := parsedCommand{Name: arguments[0]}
+	if command.Name != "status" && command.Name != "doctor" &&
+		command.Name != "start" && command.Name != "stop" {
+		return parsedCommand{}, false
 	}
-	if len(arguments) == 2 {
-		if arguments[1] != "--json" {
-			return "", false, false
+	for index := 1; index < len(arguments); index++ {
+		argument := arguments[index]
+		switch argument {
+		case "--json":
+			if command.JSON {
+				return parsedCommand{}, false
+			}
+			command.JSON = true
+		case "--idempotency-key":
+			if command.IdempotencyKey != "" || index+1 >= len(arguments) {
+				return parsedCommand{}, false
+			}
+			index++
+			command.IdempotencyKey = arguments[index]
+		case "--expected-revision":
+			if command.ExpectedRevision != nil || index+1 >= len(arguments) {
+				return parsedCommand{}, false
+			}
+			index++
+			revision, err := strconv.ParseInt(arguments[index], 10, 64)
+			if err != nil || revision < 0 {
+				return parsedCommand{}, false
+			}
+			command.ExpectedRevision = &revision
+		default:
+			if strings.HasPrefix(argument, "-") {
+				return parsedCommand{}, false
+			}
+			command.Positionals = append(command.Positionals, argument)
 		}
-		jsonOutput = true
 	}
-	return command, jsonOutput, true
+	switch command.Name {
+	case "status", "doctor":
+		if len(command.Positionals) != 0 || command.IdempotencyKey != "" || command.ExpectedRevision != nil {
+			return parsedCommand{}, false
+		}
+	case "start":
+		if len(command.Positionals) < 2 || len(command.Positionals) > 33 {
+			return parsedCommand{}, false
+		}
+	case "stop":
+		if len(command.Positionals) != 1 {
+			return parsedCommand{}, false
+		}
+	}
+	return command, true
+}
+
+func (a Application) requestID() (string, error) {
+	if a.NewRequestID != nil {
+		return a.NewRequestID()
+	}
+	contents := make([]byte, 16)
+	if _, err := rand.Read(contents); err != nil {
+		return "", err
+	}
+	return "request_" + base64.RawURLEncoding.EncodeToString(contents), nil
+}
+
+func writeReceipt(writer io.Writer, receipt contractv1.MutationReceipt, jsonOutput bool) int {
+	if jsonOutput {
+		return encodeJSON(writer, receipt)
+	}
+	if receipt.EnvironmentID == "" {
+		fmt.Fprintf(writer, "Accepted operation %s.\n", receipt.OperationID)
+	} else {
+		fmt.Fprintf(writer, "Accepted operation %s for environment %s.\n", receipt.OperationID, receipt.EnvironmentID)
+	}
+	return ExitSuccess
+}
+
+func writeUsage(writer io.Writer) {
+	fmt.Fprintln(writer, "usage:")
+	fmt.Fprintln(writer, "  switchyard status [--json]")
+	fmt.Fprintln(writer, "  switchyard doctor [--json]")
+	fmt.Fprintln(writer, "  switchyard start <worktree-id> <service-id>... [--expected-revision N] [--idempotency-key KEY] [--json]")
+	fmt.Fprintln(writer, "  switchyard stop <environment-id> [--expected-revision N] [--idempotency-key KEY] [--json]")
 }
 
 func writeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
