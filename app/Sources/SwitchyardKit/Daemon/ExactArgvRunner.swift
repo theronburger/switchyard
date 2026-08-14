@@ -3,10 +3,16 @@ import Foundation
 public struct ExactCommand: Sendable, Equatable {
     public let executableURL: URL
     public let arguments: [String]
+    public let environmentOverrides: [String: String]
 
-    public init(executableURL: URL, arguments: [String]) {
+    public init(
+        executableURL: URL,
+        arguments: [String],
+        environmentOverrides: [String: String] = [:]
+    ) {
         self.executableURL = executableURL
         self.arguments = arguments
+        self.environmentOverrides = environmentOverrides
     }
 }
 
@@ -32,6 +38,12 @@ public struct FoundationExactArgvRunner: ExactArgvRunning {
         let output = Pipe()
         process.executableURL = command.executableURL
         process.arguments = command.arguments
+        if !command.environmentOverrides.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(
+                command.environmentOverrides,
+                uniquingKeysWith: { _, override in override }
+            )
+        }
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice

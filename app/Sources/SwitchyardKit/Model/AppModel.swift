@@ -48,6 +48,8 @@ public final class AppModel {
     public private(set) var snapshot: StatusSnapshot?
     public private(set) var lastRefreshedAt: Date?
     public private(set) var doctorReport: DoctorReport?
+    public private(set) var agentConnectionReport: AgentConnectionReport?
+    public private(set) var repairingAgentHosts = Set<AgentHost>()
     public private(set) var lifecycleState: DaemonLifecycleState = .idle
     public private(set) var environmentActionState: EnvironmentActionState = .idle
     public private(set) var scenario: FixtureScenario
@@ -56,6 +58,7 @@ public final class AppModel {
 
     @ObservationIgnored private let liveController: (any DaemonLifecycleControlling)?
     @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
+    @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
     @ObservationIgnored private var fixtureProvider: (any StatusProviding)?
     @ObservationIgnored private let canonicalFixtureURL: URL?
     @ObservationIgnored private let pollingInterval: Duration
@@ -77,15 +80,22 @@ public final class AppModel {
         !isFixtureMode && lifecycleState.isOperational && !environmentActionState.isSubmitting
     }
 
+    public var canRepairAllConnections: Bool {
+        guard repairingAgentHosts.isEmpty, lifecycleState != .repairing else { return false }
+        return lifecycleState.canRepair || agentConnectionReport?.statuses.contains(where: { $0.state.canRepair }) == true
+    }
+
     public init(
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
+        agentConnections: any AgentConnectionManaging = AgentConnectionManager(),
         pollingInterval: Duration = .seconds(5)
     ) {
         self.scenario = .canonical
         self.isFixtureMode = false
         self.liveController = liveController
         self.environmentActions = environmentActions
+        self.agentConnections = agentConnections
         self.canonicalFixtureURL = nil
         self.pollingInterval = pollingInterval
     }
@@ -95,6 +105,7 @@ public final class AppModel {
         self.isFixtureMode = true
         self.liveController = nil
         self.environmentActions = nil
+        self.agentConnections = nil
         self.canonicalFixtureURL = canonicalFixtureURL
         self.pollingInterval = .seconds(5)
         self.fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
@@ -150,20 +161,46 @@ public final class AppModel {
         } else if let liveController {
             apply(await liveController.refresh())
         }
+        if agentConnectionReport == nil, let agentConnections {
+            agentConnectionReport = await agentConnections.inspect()
+        }
         clearMissingSelection()
     }
 
     public func repairAll() async {
-        guard lifecycleState.canRepair else { return }
+        guard canRepairAllConnections else { return }
         if let liveController {
-            lifecycleState = .repairing
-            phase = .loading
-            apply(await liveController.repair())
+            if lifecycleState.canRepair {
+                lifecycleState = .repairing
+                phase = .loading
+                apply(await liveController.repair())
+            }
+            if let agentConnections {
+                repairingAgentHosts = Set(AgentHost.allCases)
+                agentConnectionReport = await agentConnections.repairAll()
+                repairingAgentHosts.removeAll()
+            }
         } else {
             lifecycleState = .repairing
             try? await Task.sleep(for: .milliseconds(100))
             await refresh()
         }
+    }
+
+    public func runConnectionChecks() async {
+        await refresh()
+        if let agentConnections {
+            agentConnectionReport = await agentConnections.inspect()
+        }
+    }
+
+    public func repairAgentConnection(_ host: AgentHost) async {
+        guard !repairingAgentHosts.contains(host),
+              agentConnectionReport?.status(for: host)?.state.canRepair == true,
+              let agentConnections else { return }
+        repairingAgentHosts.insert(host)
+        agentConnectionReport = await agentConnections.repair(host)
+        repairingAgentHosts.remove(host)
     }
 
     public func startEnvironment(worktreeId: String, serviceIds: [String]) async {

@@ -12,6 +12,7 @@ struct ConnectionDoctorView: View {
                 Text("Connection Doctor")
                     .font(.largeTitle.bold())
                 lifecycleCard
+                agentConnectionsCard
                 checksCard
             }
             .padding(20)
@@ -43,15 +44,49 @@ struct ConnectionDoctorView: View {
                     Label("Repair All", systemImage: "wrench.and.screwdriver")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.lifecycleState.canRepair)
+                .disabled(!model.canRepairAllConnections)
                 Button("Run Checks Again") {
-                    Task { await model.refresh() }
+                    Task { await model.runConnectionChecks() }
                 }
                 Spacer()
                 if model.lifecycleState == .repairing {
                     ProgressView()
                         .controlSize(.small)
                 }
+            }
+        }
+    }
+
+    private var agentConnectionsCard: some View {
+        SectionCard(title: "Agent connections", systemImage: "point.3.connected.trianglepath.dotted") {
+            if let report = model.agentConnectionReport {
+                ForEach(report.statuses) { status in
+                    HStack(alignment: .top, spacing: 10) {
+                        agentStatusIcon(status.state)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(status.host.displayName)
+                                .font(.callout.weight(.medium))
+                            Text(status.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        if status.state.canRepair {
+                            Button(model.repairingAgentHosts.contains(status.host) ? "Repairing…" : "Repair") {
+                                Task { await model.repairAgentConnection(status.host) }
+                            }
+                            .controlSize(.small)
+                            .disabled(model.repairingAgentHosts.contains(status.host))
+                        }
+                    }
+                    if status.id != report.statuses.last?.id { Divider() }
+                }
+            } else if model.isFixtureMode {
+                Text("Agent connection checks are unavailable in fixture mode.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView("Inspecting Codex and Claude Code…")
             }
         }
     }
@@ -95,6 +130,20 @@ struct ConnectionDoctorView: View {
             Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
         case .skipped:
             Image(systemName: "minus.circle").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func agentStatusIcon(_ state: AgentConnectionState) -> some View {
+        switch state {
+        case .connected:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .missing, .needsRepair:
+            Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.orange)
+        case .unavailable:
+            Image(systemName: "minus.circle").foregroundStyle(.secondary)
+        case .refused:
+            Image(systemName: "hand.raised.fill").foregroundStyle(.red)
         }
     }
 }

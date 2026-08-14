@@ -68,6 +68,27 @@ final class LockedRecorder<Value>: @unchecked Sendable {
     }
 }
 
+final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) {
+        storage = value
+    }
+
+    func read() -> Value {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func update(_ body: (inout Value) -> Void) {
+        lock.lock()
+        body(&storage)
+        lock.unlock()
+    }
+}
+
 struct StubDescriptorProvider: EndpointDescriptorProviding {
     let descriptor: EndpointDescriptor
     let events: LockedRecorder<String>?
@@ -213,6 +234,40 @@ actor StubEnvironmentActions: EnvironmentActionSubmitting {
     }
 }
 
+actor StubAgentConnections: AgentConnectionManaging {
+    private var report: AgentConnectionReport
+    private(set) var inspections = 0
+    private(set) var repairedHosts: [AgentHost] = []
+    private(set) var repairedAll = 0
+
+    init(report: AgentConnectionReport) {
+        self.report = report
+    }
+
+    func inspect() async -> AgentConnectionReport {
+        inspections += 1
+        return report
+    }
+
+    func repair(_ host: AgentHost) async -> AgentConnectionReport {
+        repairedHosts.append(host)
+        report = AgentConnectionReport(statuses: report.statuses.map { status in
+            status.host == host
+                ? AgentConnectionStatus(host: host, state: .connected, detail: "connected")
+                : status
+        })
+        return report
+    }
+
+    func repairAll() async -> AgentConnectionReport {
+        repairedAll += 1
+        report = AgentConnectionReport(statuses: AgentHost.allCases.map {
+            AgentConnectionStatus(host: $0, state: .connected, detail: "connected")
+        })
+        return report
+    }
+}
+
 func httpResponse(for request: URLRequest, status: Int) -> HTTPURLResponse {
     HTTPURLResponse(
         url: request.url ?? URL(fileURLWithPath: "/"),
@@ -239,6 +294,58 @@ func writeTestFile(_ data: Data, to url: URL, permissions: Int) throws {
     try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try data.write(to: url)
     try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+}
+
+func agentTestPaths(
+    in directory: URL,
+    codexExecutableURL: URL?,
+    claudeExecutableURL: URL? = nil
+) throws -> AgentConnectionPaths {
+    let helper = directory.appending(path: "installed/switchyard")
+    let codexConfig = directory.appending(path: "codex/config.toml")
+    let claudeConfig = directory.appending(path: "claude/.claude.json")
+    try writeTestFile(Data("helper".utf8), to: helper, permissions: 0o700)
+    try FileManager.default.createDirectory(
+        at: codexConfig.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: claudeConfig.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    return AgentConnectionPaths(
+        switchyardExecutableURL: helper,
+        codexExecutableURL: codexExecutableURL,
+        codexConfigURL: codexConfig,
+        claudeConfigURL: claudeConfig,
+        claudeExecutableURL: claudeExecutableURL,
+        claudeConfigDirectoryURL: claudeConfig.deletingLastPathComponent()
+    )
+}
+
+func codexServerList(command: String) throws -> Data {
+    try JSONSerialization.data(withJSONObject: [
+        [
+            "name": "foreign-http",
+            "enabled": true,
+            "transport": [
+                "type": "streamable_http",
+                "url": "https://example.invalid/mcp",
+            ],
+        ],
+        [
+            "name": "switchyard",
+            "enabled": true,
+            "transport": [
+                "type": "stdio",
+                "command": command,
+                "args": ["mcp"],
+                "env": NSNull(),
+                "env_vars": [],
+                "cwd": NSNull(),
+            ],
+        ],
+    ])
 }
 
 guard CommandLine.arguments.count == 2 else {
@@ -983,6 +1090,295 @@ await runner.checkAsync("outdated plist is replaced without carrying credentials
     try expect(!repairedText.contains("SWITCHYARD_TOKEN"), "credential key survived plist replacement")
 }
 
+// MARK: - Agent connections
+
+await runner.checkAsync("agent connection inspection is read-only and does not launch Switchyard") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-agent-inspect-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let codexExecutable = directory.appending(path: "bin/codex")
+    try writeTestFile(Data("codex".utf8), to: codexExecutable, permissions: 0o700)
+    let paths = try agentTestPaths(in: directory, codexExecutableURL: codexExecutable)
+    try writeTestFile(Data("model = \"local\"\n".utf8), to: paths.codexConfigURL, permissions: 0o600)
+    let claude: [String: Any] = [
+        "foreignSetting": true,
+        "mcpServers": [
+            "switchyard": [
+                "type": "stdio",
+                "command": paths.switchyardExecutableURL.path,
+                "args": ["mcp"],
+                "env": [String: String](),
+            ],
+        ],
+    ]
+    try writeTestFile(
+        try JSONSerialization.data(withJSONObject: claude),
+        to: paths.claudeConfigURL,
+        permissions: 0o600
+    )
+    let commands = RecordingExactRunner { command in
+        try expect(command.executableURL == codexExecutable, "inspection launched an unexpected executable")
+        try expect(command.arguments == ["mcp", "list", "--json"], "inspection argv changed")
+        return ExactCommandResult(
+            exitCode: 0,
+            standardOutput: try codexServerList(command: paths.switchyardExecutableURL.path)
+        )
+    }
+    let report = await AgentConnectionManager(paths: paths, commandRunner: commands).inspect()
+    try expect(report.status(for: .codex)?.state == .connected, "Codex connection was not recognized")
+    try expect(report.status(for: .claude)?.state == .connected, "Claude connection was not recognized")
+    try expect(commands.commands.allSatisfy { $0.executableURL != paths.switchyardExecutableURL }, "inspection launched Switchyard MCP")
+}
+
+await runner.checkAsync("Codex repair uses exact argv once and is idempotent") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-codex-repair-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let codexExecutable = directory.appending(path: "bin/codex")
+    try writeTestFile(Data("codex".utf8), to: codexExecutable, permissions: 0o700)
+    let paths = try agentTestPaths(in: directory, codexExecutableURL: codexExecutable)
+    let foreignConfig = Data("model = \"foreign\"\n".utf8)
+    try writeTestFile(foreignConfig, to: paths.codexConfigURL, permissions: 0o600)
+    let installed = LockedBox(false)
+    let commands = RecordingExactRunner { command in
+        if command.arguments == ["mcp", "list", "--json"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: installed.read()
+                    ? try codexServerList(command: paths.switchyardExecutableURL.path)
+                    : Data("[]".utf8)
+            )
+        }
+        let expected = [
+            "mcp", "add", "switchyard", "--",
+            paths.switchyardExecutableURL.path, "mcp",
+        ]
+        try expect(command.arguments == expected, "Codex repair argv changed: \(command.arguments)")
+        installed.update { $0 = true }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = AgentConnectionManager(paths: paths, commandRunner: commands)
+    let first = await manager.repair(.codex)
+    try expect(first.status(for: .codex)?.state == .connected, "Codex repair did not connect")
+    _ = await manager.repair(.codex)
+    let addCommands = commands.commands.filter { $0.arguments.prefix(2) == ["mcp", "add"] }
+    try expect(addCommands.count == 1, "idempotent Codex repair added the server \(addCommands.count) times")
+    try expect(addCommands[0].arguments.allSatisfy { !$0.localizedCaseInsensitiveContains("token") }, "repair argv contains token material")
+    try expect(commands.commands.allSatisfy { $0.executableURL != paths.switchyardExecutableURL }, "repair launched Switchyard MCP")
+    try expect(try Data(contentsOf: paths.codexConfigURL) == foreignConfig, "stubbed Codex repair rewrote foreign config")
+}
+
+await runner.checkAsync("Claude repair is atomic, owner-only, foreign-preserving, and idempotent") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-claude-repair-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let claudeExecutable = directory.appending(path: "bin/claude")
+    try writeTestFile(Data("claude".utf8), to: claudeExecutable, permissions: 0o700)
+    let paths = try agentTestPaths(
+        in: directory,
+        codexExecutableURL: nil,
+        claudeExecutableURL: claudeExecutable
+    )
+    let original: [String: Any] = [
+        "foreignSetting": ["nested": true, "value": "preserve-me"],
+        "mcpServers": [
+            "foreign": ["type": "http", "url": "https://example.invalid/mcp"],
+            "switchyard": [
+                "type": "stdio",
+                "command": "/old/switchyard",
+                "args": ["mcp"],
+                "env": ["SWITCHYARD_DAEMON_TOKEN": "remove-me"],
+            ],
+        ],
+    ]
+    try writeTestFile(
+        try JSONSerialization.data(withJSONObject: original),
+        to: paths.claudeConfigURL,
+        permissions: 0o600
+    )
+    let commands = RecordingExactRunner { command in
+        try expect(command.executableURL == claudeExecutable, "Claude repair launched an unexpected executable")
+        try expect(
+            command.environmentOverrides == ["CLAUDE_CONFIG_DIR": paths.claudeConfigDirectoryURL.path],
+            "Claude personal profile override changed"
+        )
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: paths.claudeConfigURL)) as! [String: Any]
+        var servers = root["mcpServers"] as! [String: Any]
+        if command.arguments == ["mcp", "remove", "switchyard", "--scope", "user"] {
+            servers.removeValue(forKey: "switchyard")
+        } else {
+            let expected = [
+                "mcp", "add", "--scope", "user", "switchyard", "--",
+                paths.switchyardExecutableURL.path, "mcp",
+            ]
+            try expect(command.arguments == expected, "Claude repair argv changed: \(command.arguments)")
+            servers["switchyard"] = [
+                "type": "stdio",
+                "command": paths.switchyardExecutableURL.path,
+                "args": ["mcp"],
+                "env": [String: String](),
+            ]
+        }
+        root["mcpServers"] = servers
+        try writeTestFile(
+            try JSONSerialization.data(withJSONObject: root),
+            to: paths.claudeConfigURL,
+            permissions: 0o600
+        )
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = AgentConnectionManager(paths: paths, commandRunner: commands)
+    let repaired = await manager.repair(.claude)
+    try expect(repaired.status(for: .claude)?.state == .connected, "Claude repair did not connect")
+    let firstRepair = try Data(contentsOf: paths.claudeConfigURL)
+    let root = try JSONSerialization.jsonObject(with: firstRepair) as? [String: Any]
+    let foreign = (root?["mcpServers"] as? [String: Any])?["foreign"] as? [String: Any]
+    let switchyard = (root?["mcpServers"] as? [String: Any])?["switchyard"] as? [String: Any]
+    try expect((root?["foreignSetting"] as? [String: Any])?["value"] as? String == "preserve-me", "foreign root config changed")
+    try expect(foreign?["url"] as? String == "https://example.invalid/mcp", "foreign MCP config changed")
+    try expect(switchyard?["command"] as? String == paths.switchyardExecutableURL.path, "Claude command is not exact")
+    try expect(switchyard?["args"] as? [String] == ["mcp"], "Claude args are not exact")
+    try expect((switchyard?["env"] as? [String: Any])?.isEmpty == true, "Claude entry retained token material")
+    let attributes = try fileManager.attributesOfItem(atPath: paths.claudeConfigURL.path)
+    try expect(attributes[.posixPermissions] as? Int == 0o600, "Claude config is not owner-only")
+    _ = await manager.repair(.claude)
+    try expect(try Data(contentsOf: paths.claudeConfigURL) == firstRepair, "idempotent Claude repair rewrote the file")
+    try expect(commands.commands.count == 2, "idempotent Claude repair reran host mutation commands")
+    try expect(commands.commands.allSatisfy { $0.executableURL != paths.switchyardExecutableURL }, "Claude repair launched Switchyard MCP")
+    try expect(
+        commands.commands.flatMap(\.arguments).allSatisfy { !$0.localizedCaseInsensitiveContains("token") },
+        "Claude repair argv contains token material"
+    )
+}
+
+await runner.checkAsync("missing Claude connection installs through the personal CLI without health launch") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-claude-install-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let claudeExecutable = directory.appending(path: "bin/claude")
+    try writeTestFile(Data("claude".utf8), to: claudeExecutable, permissions: 0o700)
+    let paths = try agentTestPaths(
+        in: directory,
+        codexExecutableURL: nil,
+        claudeExecutableURL: claudeExecutable
+    )
+    let commands = RecordingExactRunner { command in
+        let expected = [
+            "mcp", "add", "--scope", "user", "switchyard", "--",
+            paths.switchyardExecutableURL.path, "mcp",
+        ]
+        try expect(command.arguments == expected, "Claude install argv changed")
+        let root: [String: Any] = [
+            "mcpServers": [
+                "switchyard": [
+                    "type": "stdio",
+                    "command": paths.switchyardExecutableURL.path,
+                    "args": ["mcp"],
+                    "env": [String: String](),
+                ],
+            ],
+        ]
+        try writeTestFile(
+            try JSONSerialization.data(withJSONObject: root),
+            to: paths.claudeConfigURL,
+            permissions: 0o600
+        )
+        return ExactCommandResult(exitCode: 0)
+    }
+    let report = await AgentConnectionManager(paths: paths, commandRunner: commands).repair(.claude)
+    try expect(report.status(for: .claude)?.state == .connected, "missing Claude connection did not install")
+    try expect(commands.commands.count == 1, "Claude install ran more than one mutation command")
+    try expect(commands.commands[0].executableURL == claudeExecutable, "Claude install used the wrong executable")
+    try expect(!commands.commands[0].arguments.contains(where: { $0.localizedCaseInsensitiveContains("token") }), "Claude install stored token material")
+}
+
+await runner.checkAsync("unsupported or symlinked Claude config is refused byte-for-byte") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-claude-refusal-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    var paths = try agentTestPaths(in: directory, codexExecutableURL: nil)
+    let unsupported = Data("{\"mcpServers\":[\"unknown-shape\"],\"foreign\":true}\n".utf8)
+    try writeTestFile(unsupported, to: paths.claudeConfigURL, permissions: 0o600)
+    var report = await AgentConnectionManager(paths: paths).repair(.claude)
+    try expect(report.status(for: .claude)?.state == .refused, "unsupported Claude config was not refused")
+    try expect(try Data(contentsOf: paths.claudeConfigURL) == unsupported, "refusal changed unknown config bytes")
+
+    let target = directory.appending(path: "claude/target.json")
+    let targetData = Data("{\"foreign\":true}\n".utf8)
+    try writeTestFile(targetData, to: target, permissions: 0o600)
+    try fileManager.removeItem(at: paths.claudeConfigURL)
+    try fileManager.createSymbolicLink(at: paths.claudeConfigURL, withDestinationURL: target)
+    paths = AgentConnectionPaths(
+        switchyardExecutableURL: paths.switchyardExecutableURL,
+        codexExecutableURL: nil,
+        codexConfigURL: paths.codexConfigURL,
+        claudeConfigURL: paths.claudeConfigURL
+    )
+    report = await AgentConnectionManager(paths: paths).repair(.claude)
+    try expect(report.status(for: .claude)?.state == .refused, "symlinked Claude config was not refused")
+    try expect(try Data(contentsOf: target) == targetData, "symlink refusal changed its target")
+}
+
+await runner.checkAsync("failed Claude replacement restores the exact original bytes") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-claude-rollback-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let claudeExecutable = directory.appending(path: "bin/claude")
+    try writeTestFile(Data("claude".utf8), to: claudeExecutable, permissions: 0o700)
+    let paths = try agentTestPaths(
+        in: directory,
+        codexExecutableURL: nil,
+        claudeExecutableURL: claudeExecutable
+    )
+    let original = Data("{\"mcpServers\":{\"foreign\":{\"type\":\"http\",\"url\":\"https://example.invalid\"},\"switchyard\":{\"type\":\"stdio\",\"command\":\"/old\",\"args\":[\"mcp\"]}},\"foreign\":true}\n".utf8)
+    try writeTestFile(original, to: paths.claudeConfigURL, permissions: 0o600)
+    let commands = RecordingExactRunner { command in
+        if command.arguments.contains("remove") {
+            let removed = Data("{\"mcpServers\":{\"foreign\":{\"type\":\"http\",\"url\":\"https://example.invalid\"}},\"foreign\":true}\n".utf8)
+            try writeTestFile(removed, to: paths.claudeConfigURL, permissions: 0o600)
+            return ExactCommandResult(exitCode: 0)
+        }
+        return ExactCommandResult(exitCode: 1)
+    }
+    let report = await AgentConnectionManager(paths: paths, commandRunner: commands).repair(.claude)
+    try expect(report.status(for: .claude)?.state == .refused, "failed Claude add was not surfaced as a refusal")
+    try expect(try Data(contentsOf: paths.claudeConfigURL) == original, "failed Claude repair did not restore exact bytes")
+    try expect(commands.commands.allSatisfy { $0.executableURL != paths.switchyardExecutableURL }, "rollback path launched Switchyard MCP")
+}
+
+await runner.checkAsync("invalid Codex inspection refuses without touching foreign config") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-codex-refusal-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let codexExecutable = directory.appending(path: "bin/codex")
+    try writeTestFile(Data("codex".utf8), to: codexExecutable, permissions: 0o700)
+    let paths = try agentTestPaths(in: directory, codexExecutableURL: codexExecutable)
+    let original = Data("foreign = \"byte-for-byte\"\n".utf8)
+    try writeTestFile(original, to: paths.codexConfigURL, permissions: 0o600)
+    let commands = RecordingExactRunner { command in
+        try expect(command.arguments == ["mcp", "list", "--json"], "refusal attempted mutation")
+        return ExactCommandResult(exitCode: 0, standardOutput: Data("not-json".utf8))
+    }
+    let report = await AgentConnectionManager(paths: paths, commandRunner: commands).repair(.codex)
+    try expect(report.status(for: .codex)?.state == .refused, "invalid Codex config was not refused")
+    try expect(try Data(contentsOf: paths.codexConfigURL) == original, "Codex refusal changed foreign config bytes")
+    try expect(commands.commands.allSatisfy { !$0.arguments.contains("add") }, "Codex refusal attempted repair")
+}
+
 // MARK: - Daemon client
 
 await runner.checkAsync("daemon client authenticates and decodes status") {
@@ -1513,17 +1909,26 @@ await runner.checkAsync("live app model maps controller status and repair state"
             doctorReport: DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .failed("repair failed"))])
         )
     )
-    let model = AppModel(liveController: controller, pollingInterval: .seconds(60))
+    let agentConnections = StubAgentConnections(report: AgentConnectionReport(statuses: AgentHost.allCases.map {
+        AgentConnectionStatus(host: $0, state: .missing, detail: "missing")
+    }))
+    let model = AppModel(
+        liveController: controller,
+        agentConnections: agentConnections,
+        pollingInterval: .seconds(60)
+    )
     try expect(!model.isFixtureMode, "injected live model became fixture mode")
     await model.refresh()
     try expect(model.phase == .loaded, "live snapshot did not map to loaded")
     try expect(model.lifecycleState.isOperational, "live state did not map to ready")
     try expect(model.snapshot?.snapshotRevision == 42, "live snapshot was not retained")
+    try expect(model.agentConnectionReport?.statuses.count == 2, "agent connection status was not exposed")
     await model.repairAll()
     guard case .failed(let message) = model.phase else {
         throw CheckError("failed repair did not map to disconnected state")
     }
     try expect(message == "repair failed", "failed repair message changed: \(message)")
+    try expect(await agentConnections.repairedAll == 1, "Repair All did not repair agent hosts")
 }
 
 await runner.checkAsync("live app model exposes accepted start and stop operations immediately") {
@@ -1543,9 +1948,13 @@ await runner.checkAsync("live app model exposes accepted start and stop operatio
         from: Data(contentsOf: fixtureURL.deletingLastPathComponent().appending(path: "mutation-receipt.json"))
     )
     let actions = StubEnvironmentActions(receipt: receipt)
+    let agentConnections = StubAgentConnections(report: AgentConnectionReport(statuses: AgentHost.allCases.map {
+        AgentConnectionStatus(host: $0, state: .connected, detail: "connected")
+    }))
     let model = AppModel(
         liveController: StubLifecycleController(refreshResult: result, repairResult: result),
         environmentActions: actions,
+        agentConnections: agentConnections,
         pollingInterval: .seconds(60)
     )
     await model.refresh()
