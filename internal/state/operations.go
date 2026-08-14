@@ -93,6 +93,10 @@ INSERT INTO operations(
 		_ = transaction.Rollback()
 		return contractv1.Operation{}, false, fmt.Errorf("persist operation: %w", err)
 	}
+	if err := store.commitOperationsSnapshot(ctx, transaction); err != nil {
+		_ = transaction.Rollback()
+		return contractv1.Operation{}, false, err
+	}
 	if err := transaction.Commit(); err != nil {
 		return contractv1.Operation{}, false, fmt.Errorf("commit operation: %w", err)
 	}
@@ -120,6 +124,14 @@ func (store *Store) ReadOperation(ctx context.Context, operationID string) (cont
 		return contractv1.Operation{}, fmt.Errorf("read operation: %w", err)
 	}
 	return operation, nil
+}
+
+func (store *Store) ListOperations(ctx context.Context) ([]contractv1.Operation, error) {
+	operations, err := listOperations(ctx, store.database)
+	if err != nil {
+		return nil, fmt.Errorf("list operations: %w", err)
+	}
+	return operations, nil
 }
 
 func (store *Store) TransitionOperation(
@@ -176,6 +188,10 @@ func (store *Store) TransitionOperation(
 		_ = transaction.Rollback()
 		return contractv1.Operation{}, fmt.Errorf("persist operation transition: %w", err)
 	}
+	if err := store.commitOperationsSnapshot(ctx, transaction); err != nil {
+		_ = transaction.Rollback()
+		return contractv1.Operation{}, err
+	}
 	if err := transaction.Commit(); err != nil {
 		return contractv1.Operation{}, fmt.Errorf("commit operation transition: %w", err)
 	}
@@ -201,6 +217,31 @@ const operationQuery = `
 SELECT id, request_fingerprint, kind, state, environment_id, environment_revision,
        created_at, updated_at, error_json
 FROM operations`
+
+type operationQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func listOperations(ctx context.Context, queryer operationQueryer) ([]contractv1.Operation, error) {
+	rows, err := queryer.QueryContext(ctx, operationQuery+" ORDER BY created_at ASC, id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	operations := make([]contractv1.Operation, 0)
+	for rows.Next() {
+		operation, _, err := scanStoredOperation(rows)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, operation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return operations, nil
+}
 
 type rowScanner interface {
 	Scan(destinations ...any) error

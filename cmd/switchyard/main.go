@@ -270,9 +270,11 @@ func publishInitialSnapshot(
 	if snapshot.Environments == nil {
 		snapshot.Environments = []contractv1.Environment{}
 	}
-	if snapshot.Operations == nil {
-		snapshot.Operations = []contractv1.Operation{}
+	operations, err := store.ListOperations(ctx)
+	if err != nil {
+		return err
 	}
+	snapshot.Operations = operations
 	if snapshot.Alerts == nil {
 		snapshot.Alerts = []contractv1.Alert{}
 	}

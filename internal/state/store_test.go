@@ -132,6 +132,9 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "state.sqlite")
 	store := openTestStore(t, databasePath)
+	if _, err := store.CommitSnapshot(ctx, validSnapshot()); err != nil {
+		t.Fatal(err)
+	}
 	fingerprint, err := FingerprintRequest(map[string]string{"environmentId": "env_01"})
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +158,7 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	if got, want := createdOperation.State, "pending"; got != want {
 		t.Fatalf("initial operation state: got %q, want %q", got, want)
 	}
+	assertSnapshotOperation(t, store, 2, createdOperation.ID, "pending")
 
 	retriedOperation, created, err := store.CreateOperation(ctx, request)
 	if err != nil {
@@ -185,6 +189,7 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	if running.State != "running" {
 		t.Fatalf("running state: got %q", running.State)
 	}
+	assertSnapshotOperation(t, store, 3, createdOperation.ID, "running")
 	succeeded, err := store.TransitionOperation(ctx, createdOperation.ID, "succeeded", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +197,7 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	if succeeded.State != "succeeded" {
 		t.Fatalf("succeeded state: got %q", succeeded.State)
 	}
+	assertSnapshotOperation(t, store, 4, createdOperation.ID, "succeeded")
 	_, err = store.TransitionOperation(ctx, createdOperation.ID, "running", nil)
 	if !errors.Is(err, ErrInvalidOperationTransition) {
 		t.Fatalf("terminal transition error: got %v, want %v", err, ErrInvalidOperationTransition)
@@ -207,6 +213,22 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	}
 	if got, want := persisted.State, "succeeded"; got != want {
 		t.Fatalf("persisted state: got %q, want %q", got, want)
+	}
+	assertSnapshotOperation(t, reopened, 4, createdOperation.ID, "succeeded")
+}
+
+func assertSnapshotOperation(t *testing.T, store *Store, revision int64, operationID, operationState string) {
+	t.Helper()
+	snapshot, err := store.ReadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SnapshotRevision != revision {
+		t.Fatalf("snapshot revision: got %d, want %d", snapshot.SnapshotRevision, revision)
+	}
+	if len(snapshot.Operations) != 1 || snapshot.Operations[0].ID != operationID ||
+		snapshot.Operations[0].State != operationState {
+		t.Fatalf("snapshot operations: got %+v", snapshot.Operations)
 	}
 }
 
