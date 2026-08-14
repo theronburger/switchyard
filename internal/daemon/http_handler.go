@@ -22,13 +22,19 @@ type EventSource interface {
 	ReadEvents(ctx context.Context, after events.Cursor, requestedLimit int) (events.Page, error)
 }
 
+type EnvironmentActions interface {
+	StartEnvironment(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+}
+
 type HandlerConfig struct {
-	Token            string
-	DaemonInstanceID string
-	DaemonVersion    string
-	StartedAt        time.Time
-	StatusSource     StatusSource
-	EventSource      EventSource
+	Token              string
+	DaemonInstanceID   string
+	DaemonVersion      string
+	StartedAt          time.Time
+	StatusSource       StatusSource
+	EventSource        EventSource
+	EnvironmentActions EnvironmentActions
 }
 
 type errorResponse struct {
@@ -109,6 +115,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		}
 		handler.events(response, request)
 	default:
+		if handler.mutation(response, request) {
+			return
+		}
 		writeError(response, http.StatusNotFound, "NOT_FOUND", "Route not found", false)
 	}
 }

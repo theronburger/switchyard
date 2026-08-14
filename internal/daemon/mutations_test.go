@@ -1,0 +1,264 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+)
+
+type actionBackend struct {
+	start func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	stop  func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+}
+
+func (backend actionBackend) StartEnvironment(
+	ctx context.Context,
+	request contractv1.StartEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	return backend.start(ctx, request)
+}
+
+func (backend actionBackend) StopEnvironment(
+	ctx context.Context,
+	environmentID string,
+	request contractv1.StopEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	return backend.stop(ctx, environmentID, request)
+}
+
+func TestEnvironmentMutationsReturnAcceptedReceipts(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 14, 13, 30, 0, 0, time.UTC)
+	backend := actionBackend{
+		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if request.WorktreeID != "worktree_test" || len(request.ServiceIDs) != 2 {
+				t.Fatalf("start request: %+v", request)
+			}
+			return validMutationReceipt(request.RequestID, "environment_test", acceptedAt), nil
+		},
+		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if environmentID != "environment_test" || request.ExpectedEnvironmentRevision == nil ||
+				*request.ExpectedEnvironmentRevision != 3 {
+				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
+			}
+			return validMutationReceipt(request.RequestID, environmentID, acceptedAt), nil
+		},
+	}
+	handler := newMutationTestHandler(t, backend)
+
+	start := serveMutation(t, handler, "/v1/environments", map[string]any{
+		"schemaVersion":  contractv1.SchemaVersion,
+		"requestId":      "request_start",
+		"idempotencyKey": "start:test",
+		"worktreeId":     "worktree_test",
+		"serviceIds":     []string{"organizer", "nonprofit-service"},
+	})
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", start.Code, start.Body.String())
+	}
+	assertMutationReceipt(t, start, "request_start", "environment_test")
+
+	stop := serveMutation(t, handler, "/v1/environments/environment_test/stop", map[string]any{
+		"schemaVersion":               contractv1.SchemaVersion,
+		"requestId":                   "request_stop",
+		"idempotencyKey":              "stop:test",
+		"expectedEnvironmentRevision": 3,
+	})
+	if stop.Code != http.StatusAccepted {
+		t.Fatalf("stop status=%d body=%s", stop.Code, stop.Body.String())
+	}
+	assertMutationReceipt(t, stop, "request_stop", "environment_test")
+}
+
+func TestEnvironmentMutationsRejectRequestsBeforeBackend(t *testing.T) {
+	calls := 0
+	backend := actionBackend{
+		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+		stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+	}
+	handler := newMutationTestHandler(t, backend)
+	valid := `{"schemaVersion":1,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}`
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		contentType string
+		body        string
+		status      int
+	}{
+		{name: "method", method: http.MethodGet, path: "/v1/environments", contentType: "application/json", body: valid, status: http.StatusMethodNotAllowed},
+		{name: "content type", method: http.MethodPost, path: "/v1/environments", contentType: "text/plain", body: valid, status: http.StatusBadRequest},
+		{name: "unknown field", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: strings.TrimSuffix(valid, "}") + `,"surprise":true}`, status: http.StatusBadRequest},
+		{name: "trailing value", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: valid + `{}`, status: http.StatusBadRequest},
+		{name: "null services", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: `{"schemaVersion":1,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":null}`, status: http.StatusBadRequest},
+		{name: "unsafe route", method: http.MethodPost, path: "/v1/environments/bad%20id/stop", contentType: "application/json", body: `{"schemaVersion":1,"requestId":"request","idempotencyKey":"key"}`, status: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := authenticatedRequest(test.method, test.path)
+			request.Body = io.NopCloser(strings.NewReader(test.body))
+			request.ContentLength = int64(len(test.body))
+			request.Header.Set("Content-Type", test.contentType)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	oversized := authenticatedRequest(http.MethodPost, "/v1/environments")
+	oversized.Header.Set("Content-Type", "application/json")
+	oversized.ContentLength = maximumMutationBodyBytes + 1
+	oversized.Body = io.NopCloser(strings.NewReader("{}"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, oversized)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized status=%d body=%s", response.Code, response.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("invalid requests reached the action backend %d times", calls)
+	}
+}
+
+func TestEnvironmentMutationsRequireAuthenticationAndRejectOrigin(t *testing.T) {
+	calls := 0
+	backend := actionBackend{
+		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+		stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+	}
+	handler := newMutationTestHandler(t, backend)
+
+	unauthenticated := httptest.NewRequest(http.MethodPost, "/v1/environments", strings.NewReader("{}"))
+	unauthenticated.Header.Set("Content-Type", "application/json")
+	unauthenticatedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticatedResponse, unauthenticated)
+	if unauthenticatedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", unauthenticatedResponse.Code)
+	}
+
+	origin := authenticatedRequest(http.MethodPost, "/v1/environments")
+	origin.Header.Set("Origin", "null")
+	originResponse := httptest.NewRecorder()
+	handler.ServeHTTP(originResponse, origin)
+	if originResponse.Code != http.StatusForbidden {
+		t.Fatalf("origin status=%d", originResponse.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("rejected requests reached the action backend %d times", calls)
+	}
+}
+
+func TestEnvironmentMutationErrorsAreStableAndRedacted(t *testing.T) {
+	privateDetail := "private /Users/person/state.sqlite bearer-secret"
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name: "public conflict",
+			err: &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+				Code: "ENVIRONMENT_BUSY", Message: "The environment already has an active operation.", Retryable: true,
+			}},
+			wantStatus: http.StatusConflict,
+			wantCode:   "ENVIRONMENT_BUSY",
+		},
+		{name: "private error", err: errors.New(privateDetail), wantStatus: http.StatusInternalServerError, wantCode: "ACTION_FAILED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := actionBackend{
+				start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+					return contractv1.MutationReceipt{}, test.err
+				},
+				stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+					return contractv1.MutationReceipt{}, test.err
+				},
+			}
+			response := serveMutation(t, newMutationTestHandler(t, backend), "/v1/environments", map[string]any{
+				"schemaVersion": contractv1.SchemaVersion, "requestId": "request", "idempotencyKey": "key",
+				"worktreeId": "worktree", "serviceIds": []string{"organizer"},
+			})
+			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "Users") || strings.Contains(response.Body.String(), "sqlite") ||
+				strings.Contains(response.Body.String(), "bearer-secret") {
+				t.Fatalf("private failure leaked: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func newMutationTestHandler(t *testing.T, actions EnvironmentActions) http.Handler {
+	t.Helper()
+	handler, err := NewHTTPHandler(HandlerConfig{
+		Token:              testToken,
+		DaemonInstanceID:   "daemon_01",
+		DaemonVersion:      "0.1.0-dev",
+		StartedAt:          time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC),
+		StatusSource:       staticStatusSource{snapshot: validHTTPStatus()},
+		EnvironmentActions: actions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func serveMutation(t *testing.T, handler http.Handler, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	contents, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := authenticatedRequest(http.MethodPost, path)
+	request.Body = io.NopCloser(strings.NewReader(string(contents)))
+	request.ContentLength = int64(len(contents))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func assertMutationReceipt(t *testing.T, response *httptest.ResponseRecorder, requestID, environmentID string) {
+	t.Helper()
+	var receipt contractv1.MutationReceipt
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Validate() != nil || receipt.RequestID != requestID || receipt.EnvironmentID != environmentID {
+		t.Fatalf("receipt: %+v", receipt)
+	}
+}
+
+func validMutationReceipt(requestID, environmentID string, acceptedAt time.Time) contractv1.MutationReceipt {
+	return contractv1.MutationReceipt{
+		SchemaVersion: contractv1.SchemaVersion,
+		RequestID:     requestID,
+		OperationID:   "operation_test",
+		AcceptedAt:    acceptedAt,
+		EnvironmentID: environmentID,
+	}
+}
