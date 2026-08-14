@@ -4,6 +4,7 @@ import SwitchyardKit
 /// Full detail for one environment: worktree, services, URLs, resources,
 /// infrastructure, alerts, and recent operations.
 struct EnvironmentDetailView: View {
+    @Bindable var model: AppModel
     let environment: EnvironmentModel
     let snapshot: StatusSnapshot
 
@@ -11,6 +12,7 @@ struct EnvironmentDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                EnvironmentActionBanner(model: model)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: 14)], alignment: .leading, spacing: 14) {
                     servicesCard
                     worktreeCard
@@ -43,6 +45,19 @@ struct EnvironmentDetailView: View {
                 }
             }
             Spacer()
+            if environment.observedState == .running || environment.observedState == .failed {
+                Button {
+                    Task { await model.stopEnvironment(environment) }
+                } label: {
+                    Label(
+                        model.environmentActionState.isSubmitting ? "Submitting…" : "Stop environment",
+                        systemImage: "stop.fill"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(!model.canSubmitEnvironmentAction)
+            }
             VStack(alignment: .trailing, spacing: 4) {
                 HealthBadge(health: environment.health)
                 Text("wants \(environment.desiredState.label.lowercased()) · is \(environment.observedState.label.lowercased())")

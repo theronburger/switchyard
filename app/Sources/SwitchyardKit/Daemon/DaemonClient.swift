@@ -61,6 +61,7 @@ private final class RedirectRejectingSessionDelegate: NSObject, URLSessionTaskDe
 }
 
 public enum DaemonClientError: Error, Sendable, CustomStringConvertible {
+    case invalidRequest(String)
     case unauthorized
     case upgradeRequired(message: String)
     case contract(ContractError)
@@ -71,6 +72,8 @@ public enum DaemonClientError: Error, Sendable, CustomStringConvertible {
 
     public var description: String {
         switch self {
+        case .invalidRequest(let detail):
+            return "the daemon request is invalid: \(detail)"
         case .unauthorized:
             return "the daemon rejected this client's credentials"
         case .upgradeRequired(let message):
@@ -136,6 +139,36 @@ public struct DaemonClient: Sendable {
         return snapshot
     }
 
+    public func startEnvironment(_ request: StartEnvironmentRequest) async throws -> MutationReceipt {
+        try Self.validate(request)
+        let receipt = try await post(
+            MutationReceipt.self,
+            pathComponents: ["v1", "environments"],
+            body: request,
+            requestId: request.requestId
+        )
+        try Self.validate(receipt, requestId: request.requestId)
+        return receipt
+    }
+
+    public func stopEnvironment(
+        id environmentId: String,
+        request: StopEnvironmentRequest
+    ) async throws -> MutationReceipt {
+        try Self.validate(request)
+        guard Self.validPathIdentifier(environmentId) else {
+            throw DaemonClientError.invalidRequest("environment ID is not safe for the local API path")
+        }
+        let receipt = try await post(
+            MutationReceipt.self,
+            pathComponents: ["v1", "environments", environmentId, "stop"],
+            body: request,
+            requestId: request.requestId
+        )
+        try Self.validate(receipt, requestId: request.requestId)
+        return receipt
+    }
+
     private func get<Value: Decodable>(_ type: Value.Type, path: String) async throws -> Value {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "GET"
@@ -144,6 +177,38 @@ public struct DaemonClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Switchyard-Request-Id")
 
+        return try await send(request, decoding: type, successStatus: 200)
+    }
+
+    private func post<Body: Encodable, Value: Decodable>(
+        _ type: Value.Type,
+        pathComponents: [String],
+        body: Body,
+        requestId: String
+    ) async throws -> Value {
+        let url = pathComponents.reduce(baseURL) { partial, component in
+            partial.appending(path: component)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue(token.authorizationHeaderValue, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(requestId, forHTTPHeaderField: "X-Switchyard-Request-Id")
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw DaemonClientError.invalidRequest("request body could not be encoded")
+        }
+        return try await send(request, decoding: type, successStatus: 202)
+    }
+
+    private func send<Value: Decodable>(
+        _ request: URLRequest,
+        decoding type: Value.Type,
+        successStatus: Int
+    ) async throws -> Value {
         let data: Data
         let response: HTTPURLResponse
         do {
@@ -155,13 +220,8 @@ public struct DaemonClient: Sendable {
         }
 
         switch response.statusCode {
-        case 200:
-            guard response.value(forHTTPHeaderField: "Cache-Control")?
-                .lowercased().contains("no-store") == true,
-                  response.value(forHTTPHeaderField: "X-Content-Type-Options")?
-                .lowercased() == "nosniff" else {
-                throw DaemonClientError.malformedResponse("response is missing required security headers")
-            }
+        case successStatus:
+            try Self.validateSecurityHeaders(response)
             do {
                 return try decoder.decode(type, from: data)
             } catch {
@@ -177,6 +237,76 @@ public struct DaemonClient: Sendable {
                 throw DaemonClientError.contract(envelope.error)
             }
             throw DaemonClientError.httpStatus(response.statusCode)
+        }
+    }
+
+    private static func validateSecurityHeaders(_ response: HTTPURLResponse) throws {
+        guard response.value(forHTTPHeaderField: "Cache-Control")?
+            .lowercased().contains("no-store") == true,
+              response.value(forHTTPHeaderField: "X-Content-Type-Options")?
+            .lowercased() == "nosniff" else {
+            throw DaemonClientError.malformedResponse("response is missing required security headers")
+        }
+    }
+
+    private static func validate(_ request: StartEnvironmentRequest) throws {
+        try validateMutation(
+            schemaVersion: request.schemaVersion,
+            requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey,
+            expectedEnvironmentRevision: request.expectedEnvironmentRevision
+        )
+        guard validOpaqueValue(request.worktreeId, maximumBytes: 256),
+              !request.serviceIds.isEmpty,
+              request.serviceIds.count <= 32,
+              Set(request.serviceIds).count == request.serviceIds.count,
+              request.serviceIds.allSatisfy({ validOpaqueValue($0, maximumBytes: 256) }) else {
+            throw DaemonClientError.invalidRequest("worktree or service selection is invalid")
+        }
+    }
+
+    private static func validate(_ request: StopEnvironmentRequest) throws {
+        try validateMutation(
+            schemaVersion: request.schemaVersion,
+            requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey,
+            expectedEnvironmentRevision: request.expectedEnvironmentRevision
+        )
+    }
+
+    private static func validateMutation(
+        schemaVersion: Int,
+        requestId: String,
+        idempotencyKey: String,
+        expectedEnvironmentRevision: Int64?
+    ) throws {
+        guard schemaVersion == contractSchemaVersion,
+              validOpaqueValue(requestId, maximumBytes: 256),
+              validOpaqueValue(idempotencyKey, maximumBytes: 512),
+              expectedEnvironmentRevision.map({ $0 >= 0 }) ?? true else {
+            throw DaemonClientError.invalidRequest("mutation identity or revision is invalid")
+        }
+    }
+
+    private static func validate(_ receipt: MutationReceipt, requestId: String) throws {
+        guard receipt.schemaVersion == contractSchemaVersion,
+              receipt.requestId == requestId,
+              validOpaqueValue(receipt.operationId, maximumBytes: 256),
+              receipt.environmentId.map({ validOpaqueValue($0, maximumBytes: 256) }) ?? true else {
+            throw DaemonClientError.malformedResponse("mutation receipt identity or schema is invalid")
+        }
+    }
+
+    private static func validOpaqueValue(_ value: String, maximumBytes: Int) -> Bool {
+        !value.isEmpty &&
+            value.utf8.count <= maximumBytes &&
+            value.trimmingCharacters(in: .whitespacesAndNewlines) == value &&
+            value.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
+    }
+
+    private static func validPathIdentifier(_ value: String) -> Bool {
+        validOpaqueValue(value, maximumBytes: 256) && value.unicodeScalars.allSatisfy {
+            $0 != "/" && !CharacterSet.whitespacesAndNewlines.contains($0)
         }
     }
 }

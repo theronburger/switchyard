@@ -83,7 +83,7 @@ struct CommandCenterView: View {
             ConnectionDoctorView(model: model)
         case .environment(let id):
             if let snapshot = model.snapshot, let environment = snapshot.environment(withId: id) {
-                EnvironmentDetailView(environment: environment, snapshot: snapshot)
+                EnvironmentDetailView(model: model, environment: environment, snapshot: snapshot)
             } else {
                 fallback
             }
@@ -207,6 +207,8 @@ struct OverviewView: View {
                 }
                 daemonCard
                 if let snapshot = model.snapshot {
+                    EnvironmentActionBanner(model: model)
+                    StartEnvironmentView(model: model, snapshot: snapshot)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
                         ForEach(snapshot.environments) { environment in
                             Button {

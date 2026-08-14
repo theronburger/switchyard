@@ -6,6 +6,33 @@ public enum SidebarSelection: Hashable, Sendable {
     case connectionDoctor
 }
 
+public enum EnvironmentActionKind: String, Sendable, Equatable {
+    case start
+    case stop
+}
+
+public struct EnvironmentActionSubmission: Sendable, Equatable {
+    public let kind: EnvironmentActionKind
+    public let receipt: MutationReceipt
+
+    public init(kind: EnvironmentActionKind, receipt: MutationReceipt) {
+        self.kind = kind
+        self.receipt = receipt
+    }
+}
+
+public enum EnvironmentActionState: Sendable, Equatable {
+    case idle
+    case submitting(EnvironmentActionKind)
+    case accepted(EnvironmentActionSubmission)
+    case failed(EnvironmentActionKind, String)
+
+    public var isSubmitting: Bool {
+        if case .submitting = self { return true }
+        return false
+    }
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -22,11 +49,13 @@ public final class AppModel {
     public private(set) var lastRefreshedAt: Date?
     public private(set) var doctorReport: DoctorReport?
     public private(set) var lifecycleState: DaemonLifecycleState = .idle
+    public private(set) var environmentActionState: EnvironmentActionState = .idle
     public private(set) var scenario: FixtureScenario
     public let isFixtureMode: Bool
     public var selection: SidebarSelection?
 
     @ObservationIgnored private let liveController: (any DaemonLifecycleControlling)?
+    @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
     @ObservationIgnored private var fixtureProvider: (any StatusProviding)?
     @ObservationIgnored private let canonicalFixtureURL: URL?
     @ObservationIgnored private let pollingInterval: Duration
@@ -39,13 +68,24 @@ public final class AppModel {
 
     public var summary: StatusSummary? { snapshot?.summary }
 
+    public var submittedOperation: Operation? {
+        guard case .accepted(let submission) = environmentActionState else { return nil }
+        return snapshot?.operations.first { $0.id == submission.receipt.operationId }
+    }
+
+    public var canSubmitEnvironmentAction: Bool {
+        !isFixtureMode && lifecycleState.isOperational && !environmentActionState.isSubmitting
+    }
+
     public init(
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
+        environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         pollingInterval: Duration = .seconds(5)
     ) {
         self.scenario = .canonical
         self.isFixtureMode = false
         self.liveController = liveController
+        self.environmentActions = environmentActions
         self.canonicalFixtureURL = nil
         self.pollingInterval = pollingInterval
     }
@@ -54,6 +94,7 @@ public final class AppModel {
         self.scenario = scenario
         self.isFixtureMode = true
         self.liveController = nil
+        self.environmentActions = nil
         self.canonicalFixtureURL = canonicalFixtureURL
         self.pollingInterval = .seconds(5)
         self.fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
@@ -123,6 +164,50 @@ public final class AppModel {
             try? await Task.sleep(for: .milliseconds(100))
             await refresh()
         }
+    }
+
+    public func startEnvironment(worktreeId: String, serviceIds: [String]) async {
+        guard canSubmitEnvironmentAction, let environmentActions else { return }
+        let requestId = "app_\(UUID().uuidString.lowercased())"
+        let request = StartEnvironmentRequest(
+            requestId: requestId,
+            idempotencyKey: "start_\(UUID().uuidString.lowercased())",
+            worktreeId: worktreeId,
+            serviceIds: serviceIds
+        )
+        environmentActionState = .submitting(.start)
+        do {
+            let receipt = try await environmentActions.startEnvironment(request)
+            environmentActionState = .accepted(EnvironmentActionSubmission(kind: .start, receipt: receipt))
+            await refresh()
+        } catch {
+            environmentActionState = .failed(.start, Self.actionFailureMessage(error))
+        }
+    }
+
+    public func stopEnvironment(_ environment: Environment) async {
+        guard canSubmitEnvironmentAction,
+              environment.observedState == .running || environment.observedState == .failed,
+              let environmentActions else { return }
+        let requestId = "app_\(UUID().uuidString.lowercased())"
+        let request = StopEnvironmentRequest(
+            requestId: requestId,
+            idempotencyKey: "stop_\(UUID().uuidString.lowercased())",
+            expectedEnvironmentRevision: environment.revision
+        )
+        environmentActionState = .submitting(.stop)
+        do {
+            let receipt = try await environmentActions.stopEnvironment(id: environment.id, request: request)
+            environmentActionState = .accepted(EnvironmentActionSubmission(kind: .stop, receipt: receipt))
+            await refresh()
+        } catch {
+            environmentActionState = .failed(.stop, Self.actionFailureMessage(error))
+        }
+    }
+
+    public func dismissEnvironmentAction() {
+        guard !environmentActionState.isSubmitting else { return }
+        environmentActionState = .idle
     }
 
     private func refreshFixture(using provider: any StatusProviding) async {
@@ -203,5 +288,15 @@ public final class AppModel {
             .endpointMissing,
             .daemonStartFailed(reason: reason),
         ])
+    }
+
+    private static func actionFailureMessage(_ error: Error) -> String {
+        if let daemonError = error as? DaemonClientError {
+            return daemonError.description
+        }
+        if let connectionError = error as? RuntimeConnectionError {
+            return connectionError.description
+        }
+        return "The environment action could not be submitted."
     }
 }

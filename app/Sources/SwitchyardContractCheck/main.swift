@@ -193,6 +193,26 @@ struct StubLifecycleController: DaemonLifecycleControlling {
     func repair() async -> DaemonLifecycleResult { repairResult }
 }
 
+actor StubEnvironmentActions: EnvironmentActionSubmitting {
+    let receipt: MutationReceipt
+    private(set) var starts: [StartEnvironmentRequest] = []
+    private(set) var stops: [(String, StopEnvironmentRequest)] = []
+
+    init(receipt: MutationReceipt) {
+        self.receipt = receipt
+    }
+
+    func startEnvironment(_ request: StartEnvironmentRequest) async throws -> MutationReceipt {
+        starts.append(request)
+        return receipt
+    }
+
+    func stopEnvironment(id: String, request: StopEnvironmentRequest) async throws -> MutationReceipt {
+        stops.append((id, request))
+        return receipt
+    }
+}
+
 func httpResponse(for request: URLRequest, status: Int) -> HTTPURLResponse {
     HTTPURLResponse(
         url: request.url ?? URL(fileURLWithPath: "/"),
@@ -988,6 +1008,103 @@ await runner.checkAsync("daemon client authenticates and decodes status") {
     try expect(snapshot.snapshotRevision == 42, "status snapshot did not decode through the client")
 }
 
+await runner.checkAsync("daemon client submits authenticated environment mutations") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let requestId = "request_app_start"
+    let receipt = """
+    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_app_start",
+     "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_app_start"}
+    """
+    let transport = MockTransport { request in
+        try expect(request.httpMethod == "POST", "mutation did not use POST")
+        try expect(request.url?.path() == "/v1/environments", "unexpected mutation path")
+        try expect(request.url?.host() == "127.0.0.1", "mutation left loopback")
+        try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(sampleTokenRaw)", "mutation is unauthenticated")
+        try expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json", "mutation content type changed")
+        try expect(request.value(forHTTPHeaderField: "Origin") == nil, "mutation unexpectedly sent an Origin")
+        try expect(request.value(forHTTPHeaderField: "X-Switchyard-Request-Id") == requestId, "request identity header changed")
+        try expect(request.url?.absoluteString.contains(sampleTokenRaw) == false, "token leaked into mutation URL")
+        let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+        try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
+        try expect(body?["serviceIds"] as? [String] == ["organizer", "nonprofit-service"], "services were not encoded")
+        return (Data(receipt.utf8), httpResponse(for: request, status: 202))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    let result = try await client.startEnvironment(StartEnvironmentRequest(
+        requestId: requestId,
+        idempotencyKey: "start_app_start",
+        worktreeId: "worktree_app",
+        serviceIds: ["organizer", "nonprofit-service"]
+    ))
+    try expect(result.operationId == "operation_app_start", "mutation receipt did not decode")
+}
+
+await runner.checkAsync("daemon client encodes revisioned stops and rejects hostile paths before transport") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let sentPaths = LockedRecorder<String>()
+    let requestId = "request_app_stop"
+    let transport = MockTransport { request in
+        sentPaths.append(request.url?.path() ?? "")
+        let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+        try expect(body?["expectedEnvironmentRevision"] as? Int == 17, "stop revision was not encoded")
+        let receipt = """
+        {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_app_stop",
+         "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_app"}
+        """
+        return (Data(receipt.utf8), httpResponse(for: request, status: 202))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    let request = StopEnvironmentRequest(
+        requestId: requestId,
+        idempotencyKey: "stop_app",
+        expectedEnvironmentRevision: 17
+    )
+    _ = try await client.stopEnvironment(id: "environment_app", request: request)
+    try expect(sentPaths.values == ["/v1/environments/environment_app/stop"], "stop path changed")
+    do {
+        _ = try await client.stopEnvironment(id: "../../foreign", request: request)
+        throw CheckError("hostile environment path was accepted")
+    } catch let error as DaemonClientError {
+        guard case .invalidRequest = error else {
+            throw CheckError("unexpected hostile path error: \(error)")
+        }
+    }
+    try expect(sentPaths.values.count == 1, "hostile path reached the transport")
+}
+
+await runner.checkAsync("live environment actions handshake before mutation") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let paths = LockedRecorder<String>()
+    let requestId = "request_verified_start"
+    let handshake = """
+    {"schemaVersion":1,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+    """
+    let receipt = """
+    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_verified_start",
+     "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_verified"}
+    """
+    let client = try DaemonClient(
+        descriptor: sampleDescriptor,
+        token: token,
+        transport: MockTransport { request in
+            paths.append(request.url?.path() ?? "")
+            let body = request.url?.path() == "/handshake" ? Data(handshake.utf8) : Data(receipt.utf8)
+            return (body, httpResponse(for: request, status: request.url?.path() == "/handshake" ? 200 : 202))
+        }
+    )
+    let actions = LiveEnvironmentActionClient(
+        connectionFactory: StubConnectionFactory([.success(DaemonConnection(descriptor: sampleDescriptor, client: client))])
+    )
+    _ = try await actions.startEnvironment(StartEnvironmentRequest(
+        requestId: requestId,
+        idempotencyKey: "start_verified",
+        worktreeId: "worktree_verified",
+        serviceIds: ["organizer"]
+    ))
+    try expect(paths.values == ["/handshake", "/v1/environments"], "mutation did not verify the live daemon first")
+}
+
 await runner.checkAsync("daemon client maps unauthorized responses") {
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let transport = MockTransport { request in
@@ -1407,6 +1524,53 @@ await runner.checkAsync("live app model maps controller status and repair state"
         throw CheckError("failed repair did not map to disconnected state")
     }
     try expect(message == "repair failed", "failed repair message changed: \(message)")
+}
+
+await runner.checkAsync("live app model exposes accepted start and stop operations immediately") {
+    let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: fixtureData)
+    let session = DaemonSession(
+        instanceId: snapshot.daemon.instanceId,
+        daemonVersion: snapshot.daemon.version,
+        endpoint: sampleDescriptor
+    )
+    let result = DaemonLifecycleResult(
+        state: .ready(session),
+        snapshot: snapshot,
+        doctorReport: DoctorReport(checks: [])
+    )
+    let receipt = try ContractDecoder().decode(
+        MutationReceipt.self,
+        from: Data(contentsOf: fixtureURL.deletingLastPathComponent().appending(path: "mutation-receipt.json"))
+    )
+    let actions = StubEnvironmentActions(receipt: receipt)
+    let model = AppModel(
+        liveController: StubLifecycleController(refreshResult: result, repairResult: result),
+        environmentActions: actions,
+        pollingInterval: .seconds(60)
+    )
+    await model.refresh()
+    await model.startEnvironment(
+        worktreeId: snapshot.repositories[0].worktrees[0].id,
+        serviceIds: ["organizer", "nonprofit-service"]
+    )
+    guard case .accepted(let start) = model.environmentActionState else {
+        throw CheckError("accepted start receipt was not exposed")
+    }
+    try expect(start.kind == .start && start.receipt.operationId == receipt.operationId, "start receipt changed")
+    let starts = await actions.starts
+    try expect(starts.count == 1, "start action was not submitted once")
+    try expect(starts[0].serviceIds == ["organizer", "nonprofit-service"], "selected services changed")
+
+    guard let environment = snapshot.environments.first else { throw CheckError("fixture environment missing") }
+    await model.stopEnvironment(environment)
+    guard case .accepted(let stop) = model.environmentActionState else {
+        throw CheckError("accepted stop receipt was not exposed")
+    }
+    try expect(stop.kind == .stop, "stop receipt kind changed")
+    let stops = await actions.stops
+    try expect(stops.count == 1, "stop action was not submitted once")
+    try expect(stops[0].0 == environment.id, "stop environment identity changed")
+    try expect(stops[0].1.expectedEnvironmentRevision == environment.revision, "stop revision changed")
 }
 
 await runner.checkAsync("app model renders the canonical fixture") {

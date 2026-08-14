@@ -198,7 +198,7 @@ public struct ContractError: Decodable, Error, Sendable {
     public let requestedState: String?
 }
 
-public struct StartEnvironmentRequest: Codable, Sendable {
+public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let requestId: String
     public let idempotencyKey: String
@@ -222,7 +222,7 @@ public struct StartEnvironmentRequest: Codable, Sendable {
     }
 }
 
-public struct StopEnvironmentRequest: Codable, Sendable {
+public struct StopEnvironmentRequest: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let requestId: String
     public let idempotencyKey: String
@@ -240,7 +240,7 @@ public struct StopEnvironmentRequest: Codable, Sendable {
     }
 }
 
-public struct MutationReceipt: Decodable, Sendable {
+public struct MutationReceipt: Decodable, Sendable, Equatable {
     public let schemaVersion: Int
     public let requestId: String
     public let operationId: String
