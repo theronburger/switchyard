@@ -1,8 +1,25 @@
+import AppKit
 import SwiftUI
 import SwitchyardKit
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            NotificationCenter.default.post(name: .switchyardOpenCommandCenter, object: nil)
+        }
+        sender.activate(ignoringOtherApps: true)
+        return true
+    }
+}
+
 @main
 struct SwitchyardApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model: AppModel
 
     init() {
@@ -12,18 +29,19 @@ struct SwitchyardApp: App {
     }
 
     var body: some Scene {
+        Window("Switchyard", id: "command-center") {
+            CommandCenterView(model: model)
+                .task { model.startPolling() }
+        }
+        .defaultSize(width: 1320, height: 820)
+        .windowResizability(.contentMinSize)
+
         MenuBarExtra {
             MenuBarSummaryView(model: model)
         } label: {
             Label("Switchyard", systemImage: "point.3.connected.trianglepath.dotted")
         }
         .menuBarExtraStyle(.window)
-
-        Window("Switchyard", id: "command-center") {
-            CommandCenterView(model: model)
-                .task { model.startPolling() }
-        }
-        .defaultSize(width: 1100, height: 700)
 
         Settings {
             SettingsView(model: model)

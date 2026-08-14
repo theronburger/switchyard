@@ -2,7 +2,9 @@ import Foundation
 import Observation
 
 public enum SidebarSelection: Hashable, Sendable {
+    case overview
     case environment(String)
+    case worktree(repositoryId: String, worktreeId: String)
     case connectionDoctor
 }
 
@@ -279,6 +281,9 @@ public final class AppModel {
 
     private func clearMissingSelection() {
         if case .environment(let id) = selection, snapshot?.environment(withId: id) == nil {
+            selection = nil
+        }
+        if case .worktree(_, let id) = selection, snapshot?.worktree(withId: id) == nil {
             selection = nil
         }
     }

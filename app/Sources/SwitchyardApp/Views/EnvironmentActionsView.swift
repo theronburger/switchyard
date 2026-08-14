@@ -9,8 +9,14 @@ struct StartEnvironmentView: View {
     @State private var selectedWorktreeId = ""
     @State private var selectedServiceIds = Set(availableServiceIds)
 
+    init(model: AppModel, snapshot: StatusSnapshot, initialWorktreeId: String? = nil) {
+        self.model = model
+        self.snapshot = snapshot
+        _selectedWorktreeId = State(initialValue: initialWorktreeId ?? "")
+    }
+
     var body: some View {
-        SectionCard(title: "Start environment", systemImage: "play.square.stack") {
+        SectionCard(title: "Start environment", systemImage: "play.circle") {
             if worktrees.isEmpty {
                 Text("No discovered worktrees are available.")
                     .foregroundStyle(.secondary)

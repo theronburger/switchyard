@@ -1,42 +1,58 @@
 import SwiftUI
 import SwitchyardKit
 
-/// The main window: environment sidebar, overview grid, detail, and doctor.
 struct CommandCenterView: View {
     @Bindable var model: AppModel
 
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 250)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 330)
         } detail: {
             detail
         }
-        .navigationTitle("Switchyard")
+        .navigationTitle(windowTitle)
         .toolbar { toolbarContent }
         .task { model.startPolling() }
-        .frame(minWidth: 900, minHeight: 560)
+        .onReceive(NotificationCenter.default.publisher(for: .switchyardOpenCommandCenter)) { _ in
+            CommandCenterWindowPresenter.presentWhenAvailable()
+        }
+        .frame(minWidth: 1_020, minHeight: 640)
     }
-
-    // MARK: - Sidebar
 
     private var sidebar: some View {
         List(selection: $model.selection) {
+            Label("Overview", systemImage: "rectangle.grid.1x2")
+                .tag(SidebarSelection.overview)
+
             if let snapshot = model.snapshot {
                 ForEach(snapshot.repositories) { repository in
-                    Section(repository.displayName) {
-                        let environments = snapshot.environments.filter { $0.repositoryId == repository.id }
-                        if environments.isEmpty {
-                            Text("No environments")
-                                .foregroundStyle(.secondary)
+                    Section {
+                        ForEach(repository.worktrees) { worktree in
+                            let environment = snapshot.environment(for: worktree)
+                            SidebarWorktreeRow(
+                                worktree: worktree,
+                                environment: environment,
+                                alertCount: environment.map { snapshot.alerts(forEnvironment: $0.id).count } ?? 0
+                            )
+                            .tag(sidebarSelection(repository: repository, worktree: worktree, environment: environment))
                         }
-                        ForEach(environments) { environment in
-                            sidebarRow(environment, in: snapshot)
+                    } header: {
+                        Text(repository.displayName)
+                    }
+                }
+
+                let detached = snapshot.environments.filter { snapshot.worktree(for: $0) == nil }
+                if !detached.isEmpty {
+                    Section("Detached environments") {
+                        ForEach(detached) { environment in
+                            SidebarDetachedEnvironmentRow(environment: environment)
                                 .tag(SidebarSelection.environment(environment.id))
                         }
                     }
                 }
             }
+
             Section("Setup") {
                 Label {
                     Text("Connection Doctor")
@@ -47,34 +63,55 @@ struct CommandCenterView: View {
                 .tag(SidebarSelection.connectionDoctor)
             }
         }
-    }
-
-    private func sidebarRow(_ environment: EnvironmentModel, in snapshot: StatusSnapshot) -> some View {
-        HStack(spacing: 8) {
-            StatusDot(color: environment.health.tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(environment.displayName)
-                if let branch = snapshot.worktree(for: environment)?.branch {
-                    Text(branch)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            let alertCount = snapshot.alerts(forEnvironment: environment.id).count
-            if alertCount > 0 {
-                Text("\(alertCount)")
-                    .font(.caption2.weight(.bold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.orange.opacity(0.2), in: Capsule())
-                    .foregroundStyle(.orange)
-            }
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            sidebarHeader
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            sidebarFooter
         }
     }
 
-    // MARK: - Detail
+    private var sidebarHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.title2)
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Switchyard")
+                    .font(.headline)
+                Text(model.dataSourceDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var sidebarFooter: some View {
+        HStack(spacing: 7) {
+            Image(systemName: model.lifecycleState.systemImage)
+                .foregroundStyle(model.lifecycleState.tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.lifecycleState.displayName)
+                    .font(.caption.weight(.medium))
+                if let refreshed = model.lastRefreshedAt {
+                    Text("Updated \(Format.relative(refreshed))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
 
     @ViewBuilder
     private var detail: some View {
@@ -87,7 +124,15 @@ struct CommandCenterView: View {
             } else {
                 fallback
             }
-        case nil:
+        case .worktree(let repositoryId, let worktreeId):
+            if let snapshot = model.snapshot,
+               let repository = snapshot.repository(withId: repositoryId),
+               let worktree = repository.worktrees.first(where: { $0.id == worktreeId }) {
+                WorktreeDetailView(model: model, repository: repository, worktree: worktree, snapshot: snapshot)
+            } else {
+                fallback
+            }
+        case .overview, nil:
             fallback
         }
     }
@@ -108,40 +153,27 @@ struct CommandCenterView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            ContentUnavailableView {
-                Label("No environments yet", systemImage: "square.stack.3d.up.slash")
-            } description: {
-                Text("Switchyard has not discovered any repositories or worktrees. Once the daemon adopts your Marketplace checkout, environments appear here.")
-            }
-            Button("Open Connection Doctor") {
-                model.selection = .connectionDoctor
-            }
+        ContentUnavailableView {
+            Label("No worktrees discovered", systemImage: "arrow.triangle.branch")
+        } description: {
+            Text("Open Connection Doctor to inspect repository discovery and daemon setup.")
+        } actions: {
+            Button("Open Connection Doctor") { model.selection = .connectionDoctor }
+                .buttonStyle(.borderedProminent)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func errorState(_ message: String) -> some View {
-        VStack(spacing: 16) {
-            ContentUnavailableView {
-                Label("Daemon unavailable", systemImage: "bolt.horizontal.circle")
-            } description: {
-                Text(message)
-            }
-            HStack {
-                Button("Retry") {
-                    Task { await model.refresh() }
-                }
-                Button("Open Connection Doctor") {
-                    model.selection = .connectionDoctor
-                }
+        ContentUnavailableView {
+            Label("Daemon unavailable", systemImage: "bolt.horizontal.circle")
+        } description: {
+            Text(message)
+        } actions: {
+            Button("Retry") { Task { await model.refresh() } }
+            Button("Open Connection Doctor") { model.selection = .connectionDoctor }
                 .buttonStyle(.borderedProminent)
-            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-    // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
@@ -163,12 +195,12 @@ struct CommandCenterView: View {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .keyboardShortcut("r", modifiers: .command)
-            .help("Reload the status snapshot")
+            .help("Reload the daemon snapshot")
         }
         ToolbarItem(placement: .status) {
-            if let refreshed = model.lastRefreshedAt {
-                Text("Updated \(Format.relative(refreshed)) · \(model.dataSourceDescription)")
-                    .font(.caption)
+            if let snapshot = model.snapshot {
+                Text("Snapshot \(snapshot.snapshotRevision)")
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
@@ -177,134 +209,258 @@ struct CommandCenterView: View {
     private var scenarioBinding: Binding<FixtureScenario> {
         Binding(
             get: { model.scenario },
-            set: { scenario in
-                Task { await model.select(scenario: scenario) }
-            }
+            set: { scenario in Task { await model.select(scenario: scenario) } }
         )
+    }
+
+    private var windowTitle: String {
+        switch model.selection {
+        case .environment(let id):
+            return model.snapshot?.environment(withId: id)?.displayName ?? "Switchyard"
+        case .worktree(_, let id):
+            return model.snapshot?.worktree(withId: id)?.branch ?? "Worktree"
+        case .connectionDoctor: return "Connection Doctor"
+        case .overview, nil: return "Switchyard"
+        }
+    }
+
+    private func sidebarSelection(
+        repository: Repository,
+        worktree: Worktree,
+        environment: EnvironmentModel?
+    ) -> SidebarSelection {
+        if let environment { return .environment(environment.id) }
+        return .worktree(repositoryId: repository.id, worktreeId: worktree.id)
     }
 }
 
-/// Overview shown when nothing is selected: aggregate stats plus one card per
-/// environment.
+private struct SidebarWorktreeRow: View {
+    let worktree: Worktree
+    let environment: EnvironmentModel?
+    let alertCount: Int
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            StatusDot(color: environment?.health.tint ?? .secondary)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(worktree.branch ?? URL(fileURLWithPath: worktree.path).lastPathComponent)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(2)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 5)
+            if alertCount > 0 {
+                Text("\(alertCount)")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.orange.opacity(0.16), in: Capsule())
+                    .foregroundStyle(.orange)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String {
+        guard let environment else { return "Stopped · no owned resources" }
+        return "\(environment.observedState.label) · \(environment.totalProcessCount) processes"
+    }
+}
+
+private struct SidebarDetachedEnvironmentRow: View {
+    let environment: EnvironmentModel
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(environment.displayName)
+                Text(environment.observedState.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: "questionmark.folder")
+                .foregroundStyle(environment.health.tint)
+        }
+    }
+}
+
 struct OverviewView: View {
     @Bindable var model: AppModel
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                if let summary = model.summary {
-                    HStack(spacing: 10) {
-                        StatChip(value: "\(summary.environmentCount)", label: "environments")
-                        StatChip(value: "\(summary.runningCount)", label: "running", tint: .green)
-                        StatChip(
-                            value: "\(summary.attentionCount)",
-                            label: "need attention",
-                            tint: summary.attentionCount > 0 ? .orange : .primary
-                        )
-                        StatChip(value: Format.cpu(summary.totalCPUPercent), label: "aggregate")
-                        StatChip(value: Format.memory(summary.totalMemoryBytes), label: "memory")
-                    }
-                }
-                daemonCard
+            VStack(alignment: .leading, spacing: 22) {
+                overviewHeader
                 if let snapshot = model.snapshot {
                     EnvironmentActionBanner(model: model)
                     StartEnvironmentView(model: model, snapshot: snapshot)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
-                        ForEach(snapshot.environments) { environment in
-                            Button {
-                                model.selection = .environment(environment.id)
-                            } label: {
-                                EnvironmentCard(environment: environment, snapshot: snapshot)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                    RepositoryInventoryView(model: model, snapshot: snapshot)
+                    HStack(alignment: .top, spacing: 24) {
+                        GlobalOperationsView(snapshot: snapshot)
+                        GlobalAlertsView(snapshot: snapshot)
                     }
+                    SnapshotMetadataView(snapshot: snapshot)
                 }
             }
-            .padding(20)
+            .padding(28)
+            .frame(maxWidth: 1_180, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private var daemonCard: some View {
-        SectionCard(title: "Daemon", systemImage: "gearshape.2") {
-            HStack(spacing: 10) {
+    private var overviewHeader: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 12) {
                 Image(systemName: model.lifecycleState.systemImage)
+                    .font(.title2)
                     .foregroundStyle(model.lifecycleState.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.lifecycleState.displayName)
-                        .font(.callout.weight(.medium))
+                    Text("Switchyard")
+                        .font(.largeTitle.bold())
                     Text(model.lifecycleState.summary)
-                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let daemon = model.snapshot?.daemon {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("v\(daemon.version)")
-                            .font(.caption.monospaced())
-                        Text("started \(Format.relative(daemon.startedAt))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                Button("Connection Doctor") { model.selection = .connectionDoctor }
+            }
+            if let summary = model.summary {
+                HStack(spacing: 0) {
+                    NativeMetric(value: "\(summary.environmentCount)", label: "Environments")
+                    NativeMetric(value: "\(summary.runningCount)", label: "Running", tint: .green)
+                    NativeMetric(value: "\(summary.attentionCount)", label: "Attention", tint: summary.attentionCount > 0 ? .orange : .primary)
+                    NativeMetric(value: Format.cpu(summary.totalCPUPercent), label: "Aggregate CPU")
+                    NativeMetric(value: Format.memory(summary.totalMemoryBytes), label: "Memory")
                 }
-                Button("Doctor") {
-                    model.selection = .connectionDoctor
-                }
-                .controlSize(.small)
+                .padding(.vertical, 14)
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
         }
     }
 }
 
-/// Summary card for one environment on the overview grid.
-struct EnvironmentCard: View {
-    let environment: EnvironmentModel
+private struct RepositoryInventoryView: View {
+    @Bindable var model: AppModel
+    let snapshot: StatusSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Repositories & worktrees")
+                .font(.title3.weight(.semibold))
+            ForEach(snapshot.repositories) { repository in
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 10) {
+                        KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true)
+                        KeyValueRow(key: "Remote", value: repository.remote, monospaced: true)
+                        KeyValueRow(key: "Adapter", value: repository.adapter, monospaced: true)
+                        KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true)
+                        Divider()
+                        ForEach(repository.worktrees) { worktree in
+                            Button {
+                                if let environment = snapshot.environment(for: worktree) {
+                                    model.selection = .environment(environment.id)
+                                } else {
+                                    model.selection = .worktree(repositoryId: repository.id, worktreeId: worktree.id)
+                                }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(worktree.branch ?? "Detached HEAD")
+                                            .font(.callout.weight(.medium))
+                                        Text(worktree.path)
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Text(snapshot.environment(for: worktree)?.observedState.label ?? "Stopped")
+                                        .font(.caption)
+                                        .foregroundStyle(snapshot.environment(for: worktree)?.observedState.tint ?? .secondary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.top, 10)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(repository.displayName)
+                                .font(.headline)
+                            Text("\(repository.worktrees.count) worktrees · \(repository.adapter) adapter")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(14)
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+    }
+}
+
+private struct GlobalOperationsView: View {
     let snapshot: StatusSnapshot
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(environment.displayName)
-                        .font(.title3.weight(.semibold))
-                    if let branch = snapshot.worktree(for: environment)?.branch {
-                        Text(branch)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                HealthBadge(health: environment.health)
+            Text("All operations")
+                .font(.headline)
+            if snapshot.operations.isEmpty {
+                Text("No recorded operations.").foregroundStyle(.secondary)
             }
-            Divider()
-            ForEach(environment.services) { service in
-                HStack(spacing: 8) {
-                    StatusDot(color: service.health.tint)
-                    Text(service.displayName)
-                        .font(.callout)
-                    Spacer()
-                    Text(service.observedState.label)
-                        .font(.caption)
-                        .foregroundStyle(service.observedState.tint)
-                }
+            ForEach(snapshot.operations) { operation in
+                OperationSummaryRow(operation: operation)
             }
-            Divider()
-            HStack {
-                Label(Format.cpu(environment.resources.cpuPercent), systemImage: "cpu")
-                Label(Format.memory(environment.resources.memoryBytes), systemImage: "memorychip")
-                Spacer()
-                let alertCount = snapshot.alerts(forEnvironment: environment.id).count
-                if alertCount > 0 {
-                    Label("\(alertCount)", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct GlobalAlertsView: View {
+    let snapshot: StatusSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("All alerts")
+                .font(.headline)
+            if snapshot.alerts.isEmpty {
+                Label("No alerts recorded", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            ForEach(snapshot.alerts) { alert in
+                AlertSummaryRow(alert: alert)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SnapshotMetadataView: View {
+    let snapshot: StatusSnapshot
+
+    var body: some View {
+        DisclosureGroup("Daemon & snapshot metadata") {
+            VStack(alignment: .leading, spacing: 7) {
+                KeyValueRow(key: "Daemon state", value: snapshot.daemon.state.rawValue)
+                KeyValueRow(key: "Daemon version", value: snapshot.daemon.version, monospaced: true)
+                KeyValueRow(key: "Daemon instance", value: snapshot.daemon.instanceId, monospaced: true)
+                KeyValueRow(key: "Daemon started", value: snapshot.daemon.startedAt.formatted(date: .abbreviated, time: .standard))
+                KeyValueRow(key: "Schema", value: "\(snapshot.schemaVersion)", monospaced: true)
+                KeyValueRow(key: "Snapshot revision", value: "\(snapshot.snapshotRevision)", monospaced: true)
+                KeyValueRow(key: "Generated", value: snapshot.generatedAt.formatted(date: .abbreviated, time: .standard))
+            }
+            .padding(.top, 10)
+        }
+        .font(.callout)
+        .padding(.vertical, 4)
     }
 }

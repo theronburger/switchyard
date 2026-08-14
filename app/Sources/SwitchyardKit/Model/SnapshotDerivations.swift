@@ -45,6 +45,14 @@ extension StatusSnapshot {
             .worktrees.first { $0.id == environment.worktreeId }
     }
 
+    public func worktree(withId id: String) -> Worktree? {
+        repositories.lazy.flatMap(\.worktrees).first { $0.id == id }
+    }
+
+    public func environment(for worktree: Worktree) -> Environment? {
+        environments.first { $0.worktreeId == worktree.id }
+    }
+
     public func alerts(forEnvironment id: String) -> [Alert] {
         activeAlerts.filter { $0.environmentId == id }
     }

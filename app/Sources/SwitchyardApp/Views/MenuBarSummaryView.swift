@@ -1,40 +1,42 @@
+import AppKit
 import SwiftUI
 import SwitchyardKit
 
-/// Compact summary shown from the menu bar extra.
 struct MenuBarSummaryView: View {
     @Bindable var model: AppModel
     @SwiftUI.Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
+            Divider().padding(.vertical, 10)
             content
-            Divider()
-            footer
+            Divider().padding(.vertical, 10)
+            actions
         }
-        .padding(12)
-        .frame(width: 320)
+        .padding(14)
+        .frame(width: 420)
         .task { model.startPolling() }
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Image(systemName: model.lifecycleState.systemImage)
+                .font(.title3)
                 .foregroundStyle(model.lifecycleState.tint)
+                .symbolEffect(.rotate, isActive: model.lifecycleState == .repairing)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Switchyard")
                     .font(.headline)
-                Text(model.lifecycleState.displayName)
+                Text("\(model.lifecycleState.displayName) · \(model.dataSourceDescription)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if let summary = model.summary, summary.attentionCount > 0 {
-                Label("\(summary.attentionCount)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
+            if let refreshed = model.lastRefreshedAt {
+                Text("Updated \(Format.relative(refreshed))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -43,12 +45,9 @@ struct MenuBarSummaryView: View {
     private var content: some View {
         switch model.phase {
         case .idle, .loading:
-            HStack {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Loading status…")
-                    .foregroundStyle(.secondary)
-            }
+            ProgressView("Loading status…")
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, minHeight: 88, alignment: .center)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 6) {
                 Label("Daemon unavailable", systemImage: "bolt.horizontal.circle")
@@ -56,94 +55,190 @@ struct MenuBarSummaryView: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(4)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .empty:
-            Text("No environments yet. Open Switchyard to get started.")
+            Text("No repositories or worktrees are currently reported.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
         case .loaded:
-            environmentList
+            loadedContent
         }
     }
 
-    @ViewBuilder
-    private var environmentList: some View {
-        if let snapshot = model.snapshot {
-            VStack(alignment: .leading, spacing: 8) {
-                if let summary = model.summary {
-                    HStack(spacing: 12) {
-                        summaryStat("\(summary.runningCount)", "running")
-                        summaryStat("\(summary.attentionCount)", "attention")
-                        summaryStat(Format.memory(summary.totalMemoryBytes), "memory")
-                    }
-                    .font(.caption)
+    private var loadedContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let summary = model.summary, let snapshot = model.snapshot {
+                HStack {
+                    MenuMetric(value: "\(summary.runningCount)", label: "Running")
+                    Spacer()
+                    MenuMetric(value: "\(summary.attentionCount)", label: "Attention")
+                    Spacer()
+                    MenuMetric(value: "\(snapshot.environments.reduce(0) { $0 + $1.totalProcessCount })", label: "Processes")
+                    Spacer()
+                    MenuMetric(value: Format.memory(summary.totalMemoryBytes), label: "Memory", alignment: .trailing)
                 }
-                ForEach(snapshot.environments) { environment in
-                    Button {
-                        model.selection = .environment(environment.id)
-                        openWindow(id: "command-center")
-                    } label: {
-                        HStack(spacing: 8) {
-                            StatusDot(color: environment.health.tint)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(environment.displayName)
-                                    .font(.callout.weight(.medium))
-                                if let branch = snapshot.worktree(for: environment)?.branch {
-                                    Text(branch)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
+                Divider()
+                worktreeList(snapshot)
+            }
+        }
+    }
+
+    private func worktreeList(_ snapshot: StatusSnapshot) -> some View {
+        let worktreeCount = snapshot.repositories.reduce(0) { $0 + $1.worktrees.count }
+        return ScrollView {
+            VStack(spacing: 3) {
+                ForEach(snapshot.repositories) { repository in
+                    ForEach(repository.worktrees) { worktree in
+                        let environment = snapshot.environment(for: worktree)
+                        Button {
+                            if let environment {
+                                show(.environment(environment.id))
+                            } else {
+                                show(.worktree(repositoryId: repository.id, worktreeId: worktree.id))
                             }
-                            Spacer()
-                            Text(environment.observedState.label)
-                                .font(.caption)
-                                .foregroundStyle(environment.observedState.tint)
+                        } label: {
+                            MenuWorktreeRow(
+                                repository: repository,
+                                worktree: worktree,
+                                environment: environment,
+                                alertCount: environment.map { snapshot.alerts(forEnvironment: $0.id).count } ?? 0,
+                                selected: isSelected(repository: repository, worktree: worktree, environment: environment)
+                            )
                         }
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
+        .frame(height: min(CGFloat(worktreeCount) * 57, 430))
     }
 
-    private func summaryStat(_ value: String, _ label: String) -> some View {
-        HStack(spacing: 3) {
-            Text(value).fontWeight(.semibold).monospacedDigit()
-            Text(label).foregroundStyle(.secondary)
-        }
-    }
+    private var actions: some View {
+        VStack(spacing: 9) {
+            Button {
+                show(model.selection ?? .overview)
+            } label: {
+                Label("Open Switchyard", systemImage: "macwindow")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
 
-    private var footer: some View {
-        HStack {
-            Button("Open Switchyard") {
-                openWindow(id: "command-center")
-            }
-            Button("Doctor") {
-                model.selection = .connectionDoctor
-                openWindow(id: "command-center")
-            }
-            if model.lifecycleState.canRepair {
-                Button("Repair") {
-                    Task { await model.repairAll() }
+            HStack(spacing: 8) {
+                Button {
+                    show(.connectionDoctor)
+                } label: {
+                    Label("Doctor", systemImage: "stethoscope")
+                        .frame(maxWidth: .infinity)
+                }
+                Button {
+                    Task { await model.refresh() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                if model.canRepairAllConnections {
+                    Button {
+                        Task { await model.repairAll() }
+                    } label: {
+                        Label("Repair", systemImage: "wrench.and.screwdriver")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    Label("Quit", systemImage: "power")
+                        .frame(maxWidth: .infinity)
                 }
             }
-            Spacer()
-            Button {
-                Task { await model.refresh() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .help("Refresh")
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-            }
-            .help("Quit Switchyard")
+            .buttonStyle(.bordered)
         }
-        .controlSize(.small)
+    }
+
+    private func show(_ selection: SidebarSelection) {
+        model.selection = selection
+        CommandCenterWindowPresenter.open(using: openWindow)
+    }
+
+    private func isSelected(
+        repository: Repository,
+        worktree: Worktree,
+        environment: EnvironmentModel?
+    ) -> Bool {
+        if let environment, model.selection == .environment(environment.id) { return true }
+        return model.selection == .worktree(repositoryId: repository.id, worktreeId: worktree.id)
+    }
+}
+
+private struct MenuMetric: View {
+    let value: String
+    let label: String
+    var alignment: HorizontalAlignment = .leading
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 1) {
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .monospacedDigit()
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct MenuWorktreeRow: View {
+    let repository: Repository
+    let worktree: Worktree
+    let environment: EnvironmentModel?
+    let alertCount: Int
+    let selected: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            StatusDot(color: environment?.health.tint ?? .secondary)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(worktree.branch ?? URL(fileURLWithPath: worktree.path).lastPathComponent)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(environment?.observedState.label ?? "Stopped")
+                    .font(.caption)
+                    .foregroundStyle(environment?.observedState.tint ?? .secondary)
+                if alertCount > 0 {
+                    Label("\(alertCount)", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String {
+        guard let environment else {
+            return "\(repository.displayName) · no owned resources"
+        }
+        return "\(environment.totalProcessCount) processes · \(Format.memory(environment.resources.memoryBytes))"
+    }
+
+    private var background: Color {
+        guard selected else { return .clear }
+        return Color.accentColor.opacity(0.08)
     }
 }
