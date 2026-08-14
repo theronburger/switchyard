@@ -51,22 +51,25 @@ func validateExecutionPlan(
 	leases []portlease.Lease,
 	plan ExecutionPlan,
 ) error {
-	preparationIDs := make(map[string]struct{}, len(plan.Preparations))
-	preparationRunDirectories := make([]string, 0, len(plan.Preparations))
-	for _, preparation := range plan.Preparations {
+	finiteCommands := make([]PreparationSpec, 0, len(plan.Preparations)+len(plan.Initializations))
+	finiteCommands = append(finiteCommands, plan.Preparations...)
+	finiteCommands = append(finiteCommands, plan.Initializations...)
+	commandIDs := make(map[string]struct{}, len(finiteCommands))
+	commandRunDirectories := make([]string, 0, len(finiteCommands))
+	for _, preparation := range finiteCommands {
 		if !validPreparation(preparation) {
 			return ErrInvalidRequest
 		}
-		if _, duplicate := preparationIDs[preparation.ID]; duplicate {
+		if _, duplicate := commandIDs[preparation.ID]; duplicate {
 			return ErrInvalidRequest
 		}
-		for _, existing := range preparationRunDirectories {
+		for _, existing := range commandRunDirectories {
 			if pathsOverlap(existing, preparation.RunDirectory) {
 				return ErrInvalidRequest
 			}
 		}
-		preparationIDs[preparation.ID] = struct{}{}
-		preparationRunDirectories = append(preparationRunDirectories, preparation.RunDirectory)
+		commandIDs[preparation.ID] = struct{}{}
+		commandRunDirectories = append(commandRunDirectories, preparation.RunDirectory)
 	}
 	if plan.Projection != nil && plan.Projection.ID == "" {
 		return ErrInvalidRequest
@@ -77,6 +80,9 @@ func validateExecutionPlan(
 			goal.DesiredState != containerhost.DesiredRunning {
 			return ErrInvalidRequest
 		}
+	}
+	if len(plan.Initializations) != 0 && len(plan.Infrastructure) == 0 {
+		return ErrInvalidRequest
 	}
 	seenServices := make(map[string]struct{}, len(plan.Services))
 	leaseKeys := make(map[portlease.Key]struct{}, len(leases))
@@ -92,7 +98,7 @@ func validateExecutionPlan(
 		if _, duplicate := seenServices[service.ID]; duplicate {
 			return ErrInvalidRequest
 		}
-		for _, preparationRunDirectory := range preparationRunDirectories {
+		for _, preparationRunDirectory := range commandRunDirectories {
 			if pathsOverlap(preparationRunDirectory, service.Process.RunDirectory) {
 				return ErrInvalidRequest
 			}
@@ -156,7 +162,7 @@ func validPreparation(preparation PreparationSpec) bool {
 }
 
 func (coordinator *Coordinator) requireExecutionDependencies(plan ExecutionPlan) error {
-	if len(plan.Preparations) != 0 && coordinator.preparations == nil {
+	if (len(plan.Preparations) != 0 || len(plan.Initializations) != 0) && coordinator.preparations == nil {
 		return ErrInvalidRequest
 	}
 	if plan.Projection != nil && coordinator.projections == nil {

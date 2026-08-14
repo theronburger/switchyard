@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,6 +128,87 @@ func TestOSPreparationRunnerEnforcesPreparationTimeout(t *testing.T) {
 		t.Fatal("timed out preparation did not return")
 	}
 	waitForProcessExit(t, childPID)
+}
+
+func TestElasticMQReadinessRetriesConnectionRefusalAtAssignedEndpoint(t *testing.T) {
+	if _, err := os.Lstat(marketplaceCurlExecutable); err != nil {
+		t.Skipf("system curl is unavailable: %v", err)
+	}
+	portProbe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := portProbe.Addr().String()
+	if err := portProbe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "http://" + address
+	action := make(chan string, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := request.ParseForm(); err != nil {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		action <- request.Form.Get("Action")
+		writer.Header().Set("Content-Type", "text/xml")
+		writer.WriteHeader(http.StatusOK)
+	})}
+	listenerResult := make(chan error, 1)
+	serveResult := make(chan error, 1)
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		listener, listenErr := net.Listen("tcp4", address)
+		listenerResult <- listenErr
+		if listenErr != nil {
+			return
+		}
+		serveResult <- server.Serve(listener)
+	}()
+
+	runRoot := t.TempDir()
+	preparation := environment.PreparationSpec{
+		ID:          "nonprofit-service.initialize.elasticmq.readiness",
+		Executable:  marketplaceCurlExecutable,
+		Arguments:   elasticMQReadinessArguments(endpoint),
+		Environment: []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin", "TMPDIR=" + t.TempDir()},
+		Directory:   t.TempDir(),
+		RunDirectory: filepath.Join(
+			runRoot, "environments", "env_runtime", "runs", "run_runtime", "initializations", "readiness",
+		),
+		Timeout: 5 * time.Second,
+	}
+	started := time.Now()
+	runErr := (OSPreparationRunner{}).Run(context.Background(), preparation)
+	elapsed := time.Since(started)
+	listenErr := <-listenerResult
+	shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	shutdownErr := server.Shutdown(shutdownContext)
+	if listenErr == nil {
+		if serveErr := <-serveResult; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			t.Fatalf("readiness server: %v", serveErr)
+		}
+	}
+	if listenErr != nil {
+		t.Fatalf("delayed readiness listener: %v", listenErr)
+	}
+	if shutdownErr != nil {
+		t.Fatalf("readiness server shutdown: %v", shutdownErr)
+	}
+	if runErr != nil {
+		t.Fatalf("retried readiness: %v", runErr)
+	}
+	if elapsed < 750*time.Millisecond {
+		t.Fatalf("readiness did not wait for a retry after refusal: %s", elapsed)
+	}
+	select {
+	case got := <-action:
+		if got != "ListQueues" {
+			t.Fatalf("readiness action: got %q", got)
+		}
+	default:
+		t.Fatal("readiness request did not reach its assigned endpoint")
+	}
 }
 
 func TestPreparationHelperProcess(t *testing.T) {

@@ -387,7 +387,7 @@ type fakePreparations struct {
 func (runner *fakePreparations) Run(ctx context.Context, preparation PreparationSpec) error {
 	if runner.journal != nil {
 		operation := runner.journal.operation(runner.operationID)
-		if operation.Phase != PhasePreparingServices {
+		if operation.Phase != PhasePreparingServices && operation.Phase != PhaseInitializingInfrastructure {
 			return errors.New("preparation ran before its checkpoint")
 		}
 	}
@@ -512,6 +512,10 @@ func cloneExecutionPlan(plan ExecutionPlan) ExecutionPlan {
 	copy.Preparations = append([]PreparationSpec(nil), plan.Preparations...)
 	for index := range copy.Preparations {
 		copy.Preparations[index] = clonePreparation(plan.Preparations[index])
+	}
+	copy.Initializations = append([]PreparationSpec(nil), plan.Initializations...)
+	for index := range copy.Initializations {
+		copy.Initializations[index] = clonePreparation(plan.Initializations[index])
 	}
 	if plan.Projection != nil {
 		projection := *plan.Projection

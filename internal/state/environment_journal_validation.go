@@ -253,6 +253,7 @@ func validOperationPhase(phase environmentcontrol.OperationPhase) bool {
 		environmentcontrol.PhasePreparingServices,
 		environmentcontrol.PhaseMaterializing,
 		environmentcontrol.PhaseEnsuringInfrastructure,
+		environmentcontrol.PhaseInitializingInfrastructure,
 		environmentcontrol.PhaseLaunchingServices,
 		environmentcontrol.PhaseWaitingReadiness,
 		environmentcontrol.PhaseStoppingServices,

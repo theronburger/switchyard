@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -79,6 +80,44 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 	}
 	if len(plan.Preparations) != 2 {
 		t.Fatalf("preparation count: %#v", plan.Preparations)
+	}
+	if len(plan.Initializations) != 12 {
+		t.Fatalf("initialization count: %#v", plan.Initializations)
+	}
+	wantEndpoint := "http://127.0.0.1:17301"
+	wantReadiness := elasticMQReadinessArguments(wantEndpoint)
+	for index, initialization := range plan.Initializations {
+		if initialization.Executable != marketplaceCurlExecutable ||
+			initialization.Directory != registration.WorktreeRoot ||
+			strings.Contains(strings.Join(initialization.Arguments, "\x00"), "start-changed") ||
+			!strings.Contains(
+				initialization.RunDirectory,
+				string(filepath.Separator)+"initializations"+string(filepath.Separator),
+			) ||
+			!reflect.DeepEqual(initialization.Environment, []string{
+				"HOME=/Users/test",
+				"PATH=/opt/switchyard/node/bin:/opt/homebrew/bin:/usr/bin:/bin",
+				"TMPDIR=/tmp/switchyard",
+			}) {
+			t.Fatalf("unsafe initialization %d: %#v", index, initialization)
+		}
+		if index == 0 {
+			if initialization.ID != "nonprofit-service.initialize.elasticmq.readiness" ||
+				initialization.Timeout != elasticMQReadinessTimeout ||
+				!reflect.DeepEqual(initialization.Arguments, wantReadiness) {
+				t.Fatalf("bounded ElasticMQ readiness: %#v", initialization)
+			}
+			continue
+		}
+		queueIndex := index - 1
+		if initialization.ID != "nonprofit-service.initialize.elasticmq.queue."+strconv.Itoa(queueIndex) ||
+			initialization.Timeout != elasticMQCreateQueueTimeout ||
+			!reflect.DeepEqual(
+				initialization.Arguments,
+				elasticMQCreateQueueArguments(wantEndpoint, elasticMQQueueNames[queueIndex]),
+			) {
+			t.Fatalf("CreateQueue initialization %d: %#v", queueIndex, initialization)
+		}
 	}
 	preparations := make(map[string]environment.PreparationSpec, len(plan.Preparations))
 	for _, preparation := range plan.Preparations {
@@ -250,6 +289,50 @@ func TestPlanBuilderKeepsTwoEnvironmentsDistinct(t *testing.T) {
 	if reflect.DeepEqual(firstPlan.Preparations[0].RunDirectory, secondPlan.Preparations[0].RunDirectory) {
 		t.Fatalf("preparation run directories collided:\nfirst=%#v\nsecond=%#v", firstPlan, secondPlan)
 	}
+	if len(firstPlan.Initializations) != 12 || len(secondPlan.Initializations) != 12 ||
+		reflect.DeepEqual(firstPlan.Initializations[0].Arguments, secondPlan.Initializations[0].Arguments) ||
+		firstPlan.Initializations[0].RunDirectory == secondPlan.Initializations[0].RunDirectory ||
+		!containsArgument(firstPlan.Initializations[0].Arguments, "http://127.0.0.1:20001") ||
+		!containsArgument(secondPlan.Initializations[0].Arguments, "http://127.0.0.1:21001") {
+		t.Fatalf("initialization routing collided:\nfirst=%#v\nsecond=%#v", firstPlan, secondPlan)
+	}
+}
+
+func TestElasticMQQueueNamesAreStrictAndCurated(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"local-nonprofit-service-chapter-request-queue",
+		"local-nonprofit-service-chapter-request-dlq",
+		"local-nonprofit-service-chapter-request-finalize-queue",
+		"local-nonprofit-service-chapter-request-finalize-dlq",
+		"local-nonprofit-service-organizer-verification-queue",
+		"local-nonprofit-service-organizer-verification-dlq",
+		"local-nonprofit-service-process-requests",
+		"local-nonprofit-service-process-requests-dlq",
+		"local-nonprofit-service-chapter-request",
+		"local-nonprofit-service-chapter-request-finalize",
+		"local-nonprofit-service-organizer-verification",
+	}
+	if !reflect.DeepEqual(elasticMQQueueNames, want) || !validElasticMQQueueNames(elasticMQQueueNames) {
+		t.Fatalf("curated queue set: %#v", elasticMQQueueNames)
+	}
+	for _, invalid := range [][]string{
+		append([]string(nil), want[:10]...),
+		func() []string {
+			duplicate := append([]string(nil), want...)
+			duplicate[len(duplicate)-1] = duplicate[0]
+			return duplicate
+		}(),
+		func() []string {
+			hostile := append([]string(nil), want...)
+			hostile[len(hostile)-1] = "foreign/queue"
+			return hostile
+		}(),
+	} {
+		if validElasticMQQueueNames(invalid) {
+			t.Fatalf("invalid queue set was accepted: %#v", invalid)
+		}
+	}
 }
 
 func TestPlanBuilderRejectsInvalidAdapterServiceAndLeaseSets(t *testing.T) {
@@ -274,6 +357,13 @@ func TestPlanBuilderRejectsInvalidAdapterServiceAndLeaseSets(t *testing.T) {
 			},
 			Host: "127.0.0.1", Port: 19501,
 		}},
+	}
+	organizerPlan, err := builder.Build(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(organizerPlan.Initializations) != 0 {
+		t.Fatalf("organizer-only plan initialized infrastructure: %#v", organizerPlan.Initializations)
 	}
 	tests := map[string]func(*environment.PlanningRequest){
 		"adapter": func(request *environment.PlanningRequest) {
@@ -313,6 +403,15 @@ func TestPlanBuilderRejectsInvalidAdapterServiceAndLeaseSets(t *testing.T) {
 func containsArgumentPair(arguments []string, first, second string) bool {
 	for index := 0; index+1 < len(arguments); index++ {
 		if arguments[index] == first && arguments[index+1] == second {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgument(arguments []string, wanted string) bool {
+	for _, argument := range arguments {
+		if argument == wanted {
 			return true
 		}
 	}

@@ -146,6 +146,100 @@ func TestStartCheckpointsAndCompletesFinitePreparationsBeforeOtherSideEffects(t 
 	}
 }
 
+func TestStartInitializesOwnedInfrastructureBeforeNativeServices(t *testing.T) {
+	journal := newMemoryJournal()
+	calls := make([]string, 0)
+	plan := fullExecutionPlan(t, "env_initialize", "run_initialize")
+	plan.Initializations = []PreparationSpec{preparationSpec(t, "initialize")}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7085, &calls), Planner: &staticPlanner{plan: plan},
+		Projections: &fakeProjection{journal: journal, operationID: "op_initialize", calls: &calls},
+		Infrastructure: &fakeInfrastructure{
+			journal: journal, operationID: "op_initialize", calls: &calls,
+		},
+		Preparations: &fakePreparations{
+			journal: journal, operationID: "op_initialize", calls: &calls,
+		},
+		Processes: &fakeProcesses{journal: journal, operationID: "op_initialize", calls: &calls},
+		Readiness: &fakeReadiness{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(
+		context.Background(), fullStartRequest(t, "op_initialize", "env_initialize", "run_initialize"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != domain.EnvironmentRunning {
+		t.Fatalf("initialized result: %+v", result)
+	}
+	ensureIndex := slices.Index(calls, "ensure-infrastructure")
+	initializeIndex := slices.Index(calls, "prepare:initialize")
+	processIndex := slices.Index(calls, "start-process")
+	if ensureIndex < 0 || initializeIndex <= ensureIndex || processIndex <= initializeIndex {
+		t.Fatalf("infrastructure initialization order: %v", calls)
+	}
+	if !slices.Contains(
+		journal.events,
+		"update:op_initialize:"+string(PhaseInitializingInfrastructure),
+	) {
+		t.Fatalf("initialization checkpoint was not durable: %v", journal.events)
+	}
+}
+
+func TestInitializationFailureRollsBackOwnedInfrastructureBeforeServices(t *testing.T) {
+	journal := newMemoryJournal()
+	calls := make([]string, 0)
+	failure := errors.New("AWS_SECRET_ACCESS_KEY=secret@example.invalid")
+	plan := fullExecutionPlan(t, "env_initialize_failure", "run_initialize_failure")
+	plan.Initializations = []PreparationSpec{preparationSpec(t, "initialize-failure")}
+	infrastructure := &fakeInfrastructure{
+		journal: journal, operationID: "op_initialize_failure", calls: &calls,
+	}
+	processes := &fakeProcesses{
+		journal: journal, operationID: "op_initialize_failure", calls: &calls,
+	}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7086, &calls), Planner: &staticPlanner{plan: plan},
+		Projections: &fakeProjection{
+			journal: journal, operationID: "op_initialize_failure", calls: &calls,
+		},
+		Infrastructure: infrastructure,
+		Preparations: &fakePreparations{
+			journal: journal, operationID: "op_initialize_failure", calls: &calls, err: failure,
+		},
+		Processes: processes, Readiness: &fakeReadiness{}, RollbackTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(
+		context.Background(),
+		fullStartRequest(t, "op_initialize_failure", "env_initialize_failure", "run_initialize_failure"),
+	)
+	if !errors.Is(err, failure) {
+		t.Fatalf("initialization failure: %v", err)
+	}
+	if result.State != domain.EnvironmentStopped || processes.starts != 0 ||
+		infrastructure.ensureCalls != 1 || infrastructure.stopCalls != 1 {
+		t.Fatalf(
+			"unsafe initialization rollback: result=%+v starts=%d ensures=%d stops=%d calls=%v",
+			result, processes.starts, infrastructure.ensureCalls, infrastructure.stopCalls, calls,
+		)
+	}
+	wantSuffix := []string{"stop-infrastructure", "rollback-projection", "release-port"}
+	if len(calls) < len(wantSuffix) || !slices.Equal(calls[len(calls)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("initialization rollback order: got %v, want suffix %v", calls, wantSuffix)
+	}
+	operation := journal.operation("op_initialize_failure")
+	if operation.State != domain.OperationFailed || operation.Phase != PhaseComplete ||
+		operation.Failure != "environment operation failed" || strings.Contains(operation.Failure, "secret") {
+		t.Fatalf("unsafe persisted initialization failure: %+v", operation)
+	}
+}
+
 func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 	t.Run("failure", func(t *testing.T) {
 		journal := newMemoryJournal()
@@ -247,6 +341,14 @@ func TestPreparationRunDirectoriesCannotOverlapPersistentOwnership(t *testing.T)
 	}
 	if err := validateExecutionPlan("env_overlap", "run_overlap", nil, plan); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("overlapping preparation and process ownership was accepted: %v", err)
+	}
+}
+
+func TestInitializationRequiresOwnedInfrastructure(t *testing.T) {
+	t.Parallel()
+	plan := ExecutionPlan{Initializations: []PreparationSpec{preparationSpec(t, "without-infrastructure")}}
+	if err := validateExecutionPlan("env_initialize", "run_initialize", nil, plan); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("initialization without owned infrastructure was accepted: %v", err)
 	}
 }
 

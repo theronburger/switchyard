@@ -123,6 +123,7 @@ func TestEnvironmentJournalEveryUpdateIsDurableAndPublishesOneRevision(t *testin
 		environmentcontrol.PhasePreparingServices,
 		environmentcontrol.PhaseMaterializing,
 		environmentcontrol.PhaseEnsuringInfrastructure,
+		environmentcontrol.PhaseInitializingInfrastructure,
 		environmentcontrol.PhaseLaunchingServices,
 		environmentcontrol.PhaseWaitingReadiness,
 		environmentcontrol.PhaseStoppingServices,

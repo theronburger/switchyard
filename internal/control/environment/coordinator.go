@@ -220,6 +220,15 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		}
 	}
 
+	for _, initialization := range plan.Initializations {
+		if err := coordinator.checkpoint(ctx, &operation, PhaseInitializingInfrastructure); err != nil {
+			return coordinator.failStart(operation, result, err)
+		}
+		if err := coordinator.preparations.Run(ctx, clonePreparation(initialization)); err != nil {
+			return coordinator.failStart(operation, result, err)
+		}
+	}
+
 	for _, service := range plan.Services {
 		if err := coordinator.checkPortsBeforeLaunch(ctx, service.PortKeys); err != nil {
 			return coordinator.failStart(operation, result, err)

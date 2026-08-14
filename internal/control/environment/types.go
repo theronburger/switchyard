@@ -28,19 +28,20 @@ const (
 type OperationPhase string
 
 const (
-	PhasePending                OperationPhase = "pending"
-	PhaseReservingPorts         OperationPhase = "reserving-ports"
-	PhasePreparingServices      OperationPhase = "preparing-services"
-	PhaseMaterializing          OperationPhase = "materializing-projection"
-	PhaseEnsuringInfrastructure OperationPhase = "ensuring-infrastructure"
-	PhaseLaunchingServices      OperationPhase = "launching-services"
-	PhaseWaitingReadiness       OperationPhase = "waiting-readiness"
-	PhaseStoppingServices       OperationPhase = "stopping-services"
-	PhaseStoppingInfrastructure OperationPhase = "stopping-infrastructure"
-	PhaseRemovingProjection     OperationPhase = "removing-projection"
-	PhaseReleasingPorts         OperationPhase = "releasing-ports"
-	PhaseRollingBack            OperationPhase = "rolling-back"
-	PhaseComplete               OperationPhase = "complete"
+	PhasePending                    OperationPhase = "pending"
+	PhaseReservingPorts             OperationPhase = "reserving-ports"
+	PhasePreparingServices          OperationPhase = "preparing-services"
+	PhaseMaterializing              OperationPhase = "materializing-projection"
+	PhaseEnsuringInfrastructure     OperationPhase = "ensuring-infrastructure"
+	PhaseInitializingInfrastructure OperationPhase = "initializing-infrastructure"
+	PhaseLaunchingServices          OperationPhase = "launching-services"
+	PhaseWaitingReadiness           OperationPhase = "waiting-readiness"
+	PhaseStoppingServices           OperationPhase = "stopping-services"
+	PhaseStoppingInfrastructure     OperationPhase = "stopping-infrastructure"
+	PhaseRemovingProjection         OperationPhase = "removing-projection"
+	PhaseReleasingPorts             OperationPhase = "releasing-ports"
+	PhaseRollingBack                OperationPhase = "rolling-back"
+	PhaseComplete                   OperationPhase = "complete"
 )
 
 type RollbackKind string
@@ -121,10 +122,11 @@ type PlanningRequest struct {
 }
 
 type ExecutionPlan struct {
-	Preparations   []PreparationSpec
-	Projection     *ProjectionRequest
-	Infrastructure []containerhost.Goal
-	Services       []ServiceLaunch
+	Preparations    []PreparationSpec
+	Projection      *ProjectionRequest
+	Infrastructure  []containerhost.Goal
+	Initializations []PreparationSpec
+	Services        []ServiceLaunch
 }
 
 type ServiceResult struct {

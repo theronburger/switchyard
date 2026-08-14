@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,9 +24,28 @@ const (
 	readinessIDPrefix               = "marketplace.readiness."
 	readinessIDSuffix               = ".v1"
 	marketplacePreparationTimeout   = 10 * time.Minute
+	marketplaceCurlExecutable       = "/usr/bin/curl"
+	elasticMQReadinessTimeout       = 50 * time.Second
+	elasticMQCreateQueueTimeout     = 10 * time.Second
 )
 
-var ErrMarketplacePlanInvalid = errors.New("Marketplace execution plan is invalid")
+var (
+	ErrMarketplacePlanInvalid = errors.New("Marketplace execution plan is invalid")
+	elasticMQQueueNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
+	elasticMQQueueNames       = []string{
+		"local-nonprofit-service-chapter-request-queue",
+		"local-nonprofit-service-chapter-request-dlq",
+		"local-nonprofit-service-chapter-request-finalize-queue",
+		"local-nonprofit-service-chapter-request-finalize-dlq",
+		"local-nonprofit-service-organizer-verification-queue",
+		"local-nonprofit-service-organizer-verification-dlq",
+		"local-nonprofit-service-process-requests",
+		"local-nonprofit-service-process-requests-dlq",
+		"local-nonprofit-service-chapter-request",
+		"local-nonprofit-service-chapter-request-finalize",
+		"local-nonprofit-service-organizer-verification",
+	}
+)
 
 type ExecutionCatalog interface {
 	PlanEnvironment([]string, map[string]map[string]int) ([]marketplaceadapter.ServicePlan, error)
@@ -99,6 +119,11 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 		}
 		plan.Infrastructure = append(plan.Infrastructure, goals...)
+		initializations, err := buildInitializations(registration, request.RunID, servicePlan)
+		if err != nil {
+			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
+		}
+		plan.Initializations = append(plan.Initializations, initializations...)
 		if servicePlan.ServerlessOverlay != nil {
 			if plan.Projection != nil || servicePlan.ID != "nonprofit-service" {
 				return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
@@ -107,6 +132,130 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 		}
 	}
 	return plan, nil
+}
+
+func buildInitializations(
+	registration EnvironmentRegistration,
+	runID string,
+	plan marketplaceadapter.ServicePlan,
+) ([]environment.PreparationSpec, error) {
+	if plan.ID != "nonprofit-service" {
+		return nil, nil
+	}
+	elasticMQFound := false
+	for _, infrastructure := range plan.Infrastructure {
+		if infrastructure.ID == "elasticmq" && infrastructure.Kind == "container" &&
+			infrastructure.Dedicated && infrastructure.Scope == marketplaceadapter.EnvironmentInfrastructureScope {
+			if elasticMQFound {
+				return nil, ErrMarketplacePlanInvalid
+			}
+			elasticMQFound = true
+		}
+	}
+	var restPort marketplaceadapter.PortAssignment
+	restPortFound := false
+	for _, assignment := range plan.Ports {
+		if assignment.RequirementID != "elasticmq-rest" {
+			continue
+		}
+		if restPortFound || assignment.Host != containerhost.LoopbackHostIPv4 ||
+			assignment.Port < 1 || assignment.Port > 65535 {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		restPort = assignment
+		restPortFound = true
+	}
+	if !elasticMQFound || !restPortFound || !validElasticMQQueueNames(elasticMQQueueNames) {
+		return nil, ErrMarketplacePlanInvalid
+	}
+	planned, err := plannedEnvironment(registration, nil)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := "http://" + containerhost.LoopbackHostIPv4 + ":" + strconv.Itoa(restPort.Port)
+	runDirectory := filepath.Join(
+		registration.RunRoot,
+		"environments",
+		registration.EnvironmentID,
+		"runs",
+		runID,
+		"initializations",
+		plan.ID,
+		"elasticmq",
+	)
+	initializations := []environment.PreparationSpec{{
+		ID:          plan.ID + ".initialize.elasticmq.readiness",
+		Executable:  marketplaceCurlExecutable,
+		Arguments:   elasticMQReadinessArguments(endpoint),
+		Environment: append([]string(nil), planned...),
+		Directory:   registration.WorktreeRoot,
+		RunDirectory: filepath.Join(
+			runDirectory,
+			"readiness",
+		),
+		Timeout: elasticMQReadinessTimeout,
+	}}
+	for index, queueName := range elasticMQQueueNames {
+		initializations = append(initializations, environment.PreparationSpec{
+			ID:          plan.ID + ".initialize.elasticmq.queue." + strconv.Itoa(index),
+			Executable:  marketplaceCurlExecutable,
+			Arguments:   elasticMQCreateQueueArguments(endpoint, queueName),
+			Environment: append([]string(nil), planned...),
+			Directory:   registration.WorktreeRoot,
+			RunDirectory: filepath.Join(
+				runDirectory,
+				"queue-"+strconv.Itoa(index),
+			),
+			Timeout: elasticMQCreateQueueTimeout,
+		})
+	}
+	return initializations, nil
+}
+
+func elasticMQReadinessArguments(endpoint string) []string {
+	return []string{
+		"--fail", "--silent", "--show-error",
+		"--retry", "30",
+		"--retry-delay", "1",
+		"--retry-max-time", "45",
+		"--retry-connrefused",
+		"--connect-timeout", "1",
+		"--max-time", "3",
+		"--request", "POST",
+		"--data", "Action=ListQueues",
+		"--data", "Version=2012-11-05",
+		"--url", endpoint,
+	}
+}
+
+func elasticMQCreateQueueArguments(endpoint, queueName string) []string {
+	return []string{
+		"--fail", "--silent", "--show-error",
+		"--connect-timeout", "1",
+		"--max-time", "5",
+		"--request", "POST",
+		"--data", "Action=CreateQueue",
+		"--data", "QueueName=" + queueName,
+		"--data", "Version=2012-11-05",
+		"--url", endpoint,
+	}
+}
+
+func validElasticMQQueueNames(queueNames []string) bool {
+	if len(queueNames) != 11 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(queueNames))
+	for _, queueName := range queueNames {
+		if !elasticMQQueueNamePattern.MatchString(queueName) {
+			return false
+		}
+		if _, duplicate := seen[queueName]; duplicate {
+			return false
+		}
+		seen[queueName] = struct{}{}
+	}
+	return true
 }
 
 func buildPreparations(
