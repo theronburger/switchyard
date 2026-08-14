@@ -1,0 +1,29 @@
+{
+  "tasks": [
+    {
+      "package": "organizer",
+      "task": "start",
+      "command": "vite"
+    },
+    {
+      "package": "nonprofit-service",
+      "task": "start",
+      "command": "yarn build && yarn docker:up && yarn sls:start"
+    },
+    {
+      "package": "nonprofit-service",
+      "task": "build:no-dependencies",
+      "command": "yarn build:tsc"
+    },
+    {
+      "package": "@example/mongodb-client",
+      "task": "start",
+      "command": "<NONEXISTENT>"
+    },
+    {
+      "package": "organizer",
+      "task": "start",
+      "command": "vite"
+    }
+  ]
+}
