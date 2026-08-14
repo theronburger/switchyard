@@ -3,6 +3,7 @@ package containerhost
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -17,8 +18,12 @@ func TestDockerInventoryUsesExactArgvAndClassifiesEveryResource(t *testing.T) {
 		{
 			command: Command{Executable: "docker-test", Arguments: []string{"container", "inspect", "--size", "--", "container-owned", "container-foreign"}},
 			output: `[
-  {"Id":"container-owned","Name":"/switchyard-one","SizeRw":4096,"Config":{"Labels":` + labelsJSON(t, identity.Labels()) + `},"State":{"Status":"running","Running":true}},
-  {"Id":"container-foreign","Name":"/colleague-service","SizeRw":8192,"Config":{"Labels":{"team":"local"}},"State":{"Status":"exited","Running":false}}
+  {"Id":"container-owned","Name":"/switchyard-one","SizeRw":4096,
+   "Config":{"Image":"softwaremill/elasticmq-native:1.6.16","Labels":` + labelsJSON(t, identity.Labels()) + `},
+   "HostConfig":{"PortBindings":{"9325/tcp":[{"HostIp":"127.0.0.1","HostPort":"19325"}],"9324/tcp":[{"HostIp":"127.0.0.1","HostPort":"19324"}]}},
+   "NetworkSettings":{"Ports":{"9324/tcp":[{"HostIp":"127.0.0.1","HostPort":"19324"}],"9325/tcp":[{"HostIp":"127.0.0.1","HostPort":"19325"}]}},
+   "State":{"Status":"running","Running":true}},
+  {"Id":"container-foreign","Name":"/colleague-service","SizeRw":8192,"Config":{"Image":"colleague:dev","Labels":{"team":"local"}},"HostConfig":{"PortBindings":{}},"NetworkSettings":{"Ports":{}},"State":{"Status":"exited","Running":false}}
 ]`,
 		},
 		{
@@ -62,6 +67,52 @@ func TestDockerInventoryUsesExactArgvAndClassifiesEveryResource(t *testing.T) {
 	}
 	if owned != 2 || foreign != 2 {
 		t.Fatalf("ownership totals: owned=%d foreign=%d", owned, foreign)
+	}
+	var container Resource
+	for _, resource := range inventory.Resources {
+		if resource.ID == "container-owned" {
+			container = resource
+		}
+	}
+	wantBindings := []PortBinding{
+		{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP},
+		{Host: LoopbackHostIPv4, HostPort: 19325, ContainerPort: 9325, Protocol: PortProtocolTCP},
+	}
+	if container.Image != "softwaremill/elasticmq-native:1.6.16" ||
+		!slices.Equal(container.PortBindings, wantBindings) ||
+		!slices.Equal(container.PublishedPortBindings, wantBindings) {
+		t.Fatalf("container immutable configuration: %+v", container)
+	}
+}
+
+func TestInventoryRevisionIncludesContainerImageAndPortBindings(t *testing.T) {
+	identity := testIdentity("revision")
+	base := ownedResource(ResourceContainer, "container", "container", identity, true)
+	base.PortBindings = []PortBinding{{
+		Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP,
+	}}
+	base.PublishedPortBindings = clonePortBindings(base.PortBindings)
+	first, err := NewInventory([]Resource{base})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changedImage := base
+	changedImage.Image = "elasticmq:next"
+	second, err := NewInventory([]Resource{changedImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedPort := base
+	changedPort.PortBindings = clonePortBindings(base.PortBindings)
+	changedPort.PublishedPortBindings = clonePortBindings(base.PublishedPortBindings)
+	changedPort.PortBindings[0].HostPort++
+	third, err := NewInventory([]Resource{changedPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision == second.Revision || first.Revision == third.Revision {
+		t.Fatal("container immutable configuration did not affect inventory revision")
 	}
 }
 

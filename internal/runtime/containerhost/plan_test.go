@@ -9,6 +9,10 @@ import (
 
 func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing.T) {
 	identity := testIdentity("create")
+	requestedBindings := []PortBinding{
+		{Host: LoopbackHostIPv4, HostPort: 19325, ContainerPort: 9325, Protocol: PortProtocolTCP},
+		{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP},
+	}
 	inventory, err := NewInventory(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -17,7 +21,7 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 		return time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	}}).Build(inventory, []Goal{{
 		Kind: ResourceContainer, Name: "switchyard-create", Image: "elasticmq:1.6.16",
-		Identity: identity, DesiredState: DesiredRunning,
+		PortBindings: requestedBindings, Identity: identity, DesiredState: DesiredRunning,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +36,8 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 		"--label", LabelServiceID + "=" + identity.ServiceID,
 		"--label", LabelRunID + "=" + identity.RunID,
 		"--label", LabelInstanceID + "=" + identity.InstanceID,
+		"--publish", "127.0.0.1:19324:9324/tcp",
+		"--publish", "127.0.0.1:19325:9325/tcp",
 		"elasticmq:1.6.16",
 	}
 	if plan.Actions[0].Command.Executable != "docker-test" ||
@@ -42,6 +48,52 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 		"container", "start", "--", "switchyard-create",
 	}) {
 		t.Fatalf("start command: %v", got)
+	}
+	wantBindings := []PortBinding{requestedBindings[1], requestedBindings[0]}
+	for _, action := range plan.Actions {
+		if !slices.Equal(action.PortBindings, wantBindings) {
+			t.Fatalf("canonical action bindings: got %+v, want %+v", action.PortBindings, wantBindings)
+		}
+	}
+}
+
+func TestPlannerRejectsUnsafeOrAmbiguousPortBindings(t *testing.T) {
+	valid := PortBinding{
+		Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP,
+	}
+	tests := []struct {
+		name     string
+		kind     ResourceKind
+		bindings []PortBinding
+	}{
+		{name: "all interfaces", kind: ResourceContainer, bindings: []PortBinding{{Host: "0.0.0.0", HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
+		{name: "hostname loopback", kind: ResourceContainer, bindings: []PortBinding{{Host: "localhost", HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
+		{name: "other loopback", kind: ResourceContainer, bindings: []PortBinding{{Host: "127.0.0.2", HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
+		{name: "zero host port", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 0, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
+		{name: "large host port", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 65536, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
+		{name: "zero target port", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 0, Protocol: PortProtocolTCP}}},
+		{name: "large target port", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 65536, Protocol: PortProtocolTCP}}},
+		{name: "udp", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocol("udp")}}},
+		{name: "empty protocol", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324}}},
+		{name: "duplicate host port", kind: ResourceContainer, bindings: []PortBinding{valid, {Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9325, Protocol: PortProtocolTCP}}},
+		{name: "duplicate target port", kind: ResourceContainer, bindings: []PortBinding{valid, {Host: LoopbackHostIPv4, HostPort: 19325, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
+		{name: "volume port", kind: ResourceVolume, bindings: []PortBinding{valid}},
+		{name: "network port", kind: ResourceNetwork, bindings: []PortBinding{valid}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			image := "elasticmq:1.6.16"
+			if test.kind != ResourceContainer {
+				image = ""
+			}
+			_, err := (Planner{}).Build(Inventory{}, []Goal{{
+				Kind: test.kind, Name: "unsafe-port-goal", Image: image, PortBindings: test.bindings,
+				Identity: testIdentity("unsafe"), DesiredState: DesiredRunning,
+			}})
+			if err == nil {
+				t.Fatal("unsafe port binding was accepted")
+			}
+		})
 	}
 }
 
@@ -109,7 +161,7 @@ func TestPlannerGeneratesVerifiedStopAndRemoveActionsForOwnedResources(t *testin
 	}
 }
 
-func TestPlannerStartsAnExistingContainerWithoutRequiringItsImage(t *testing.T) {
+func TestPlannerStartsAnExistingContainerOnlyWhenItsImmutableConfigurationMatches(t *testing.T) {
 	identity := testIdentity("restart-existing")
 	resource := ownedResource(ResourceContainer, "container-id", "restart-existing", identity, false)
 	inventory, err := NewInventory([]Resource{resource})
@@ -117,13 +169,55 @@ func TestPlannerStartsAnExistingContainerWithoutRequiringItsImage(t *testing.T) 
 		t.Fatal(err)
 	}
 	plan, err := (Planner{}).Build(inventory, []Goal{{
-		Kind: ResourceContainer, Name: resource.Name, Identity: identity, DesiredState: DesiredRunning,
+		Kind: ResourceContainer, Name: resource.Name, Image: resource.Image,
+		Identity: identity, DesiredState: DesiredRunning,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Actions) != 1 || plan.Actions[0].Kind != ActionStart {
 		t.Fatalf("actions: %+v", plan.Actions)
+	}
+}
+
+func TestPlannerProtectsOwnedContainersWithImmutableDrift(t *testing.T) {
+	identity := testIdentity("immutable-drift")
+	wantBindings := []PortBinding{{
+		Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP,
+	}}
+	matching := ownedResource(ResourceContainer, "container-id", "immutable-drift", identity, true)
+	matching.PortBindings = clonePortBindings(wantBindings)
+	matching.PublishedPortBindings = clonePortBindings(wantBindings)
+	tests := []struct {
+		name   string
+		mutate func(*Resource)
+	}{
+		{name: "image", mutate: func(resource *Resource) { resource.Image = "elasticmq:old" }},
+		{name: "configured binding", mutate: func(resource *Resource) { resource.PortBindings[0].HostPort++ }},
+		{name: "published binding", mutate: func(resource *Resource) { resource.PublishedPortBindings[0].HostPort++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resource := matching
+			resource.PortBindings = clonePortBindings(matching.PortBindings)
+			resource.PublishedPortBindings = clonePortBindings(matching.PublishedPortBindings)
+			test.mutate(&resource)
+			inventory, err := NewInventory([]Resource{resource})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := (Planner{}).Build(inventory, []Goal{{
+				Kind: ResourceContainer, Name: resource.Name, Image: matching.Image,
+				PortBindings: wantBindings, Identity: identity, DesiredState: DesiredRunning,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Actions) != 0 || len(plan.Protections) != 1 ||
+				plan.Protections[0].Code != ProtectionImmutableMismatch {
+				t.Fatalf("drift plan: %+v", plan)
+			}
+		})
 	}
 }
 

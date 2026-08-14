@@ -14,16 +14,33 @@ func (kind ResourceKind) Valid() bool {
 	return kind == ResourceContainer || kind == ResourceVolume || kind == ResourceNetwork
 }
 
+type PortProtocol string
+
+const (
+	LoopbackHostIPv4              = "127.0.0.1"
+	PortProtocolTCP  PortProtocol = "tcp"
+)
+
+type PortBinding struct {
+	Host          string
+	HostPort      int
+	ContainerPort int
+	Protocol      PortProtocol
+}
+
 type Resource struct {
-	Kind      ResourceKind
-	ID        string
-	Name      string
-	State     string
-	Running   bool
-	SizeBytes int64
-	Labels    map[string]string
-	Ownership Ownership
-	Identity  Identity
+	Kind                  ResourceKind
+	ID                    string
+	Name                  string
+	Image                 string
+	PortBindings          []PortBinding
+	PublishedPortBindings []PortBinding
+	State                 string
+	Running               bool
+	SizeBytes             int64
+	Labels                map[string]string
+	Ownership             Ownership
+	Identity              Identity
 }
 
 type DuplicateIdentity struct {
@@ -52,6 +69,7 @@ type Goal struct {
 	Kind         ResourceKind
 	Name         string
 	Image        string
+	PortBindings []PortBinding
 	Identity     Identity
 	DesiredState DesiredState
 }
@@ -71,6 +89,7 @@ type Action struct {
 	ResourceID   string
 	ResourceName string
 	Image        string
+	PortBindings []PortBinding
 	Identity     Identity
 	Command      Command
 }
@@ -85,6 +104,7 @@ const (
 	ProtectionForeignCollision  ProtectionCode = "FOREIGN_RESOURCE_COLLISION"
 	ProtectionUnsafeLabels      ProtectionCode = "UNSAFE_OWNERSHIP_LABELS"
 	ProtectionDuplicateIdentity ProtectionCode = "DUPLICATE_OWNERSHIP_IDENTITY"
+	ProtectionImmutableMismatch ProtectionCode = "OWNED_RESOURCE_IMMUTABLE_MISMATCH"
 )
 
 type Protection struct {

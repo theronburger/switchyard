@@ -69,11 +69,15 @@ func labelsJSON(t *testing.T, labels map[string]string) string {
 }
 
 func ownedResource(kind ResourceKind, id, name string, identity Identity, running bool) Resource {
-	return Resource{
+	resource := Resource{
 		Kind: kind, ID: id, Name: name, Running: running,
 		State:  map[bool]string{true: "running", false: "exited"}[running],
 		Labels: identity.Labels(),
 	}
+	if kind == ResourceContainer {
+		resource.Image = "elasticmq:1.6.16"
+	}
+	return resource
 }
 
 type staticResources struct {

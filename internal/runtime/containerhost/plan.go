@@ -65,6 +65,10 @@ func (planner Planner) Build(inventory Inventory, goals []Goal) (Plan, error) {
 
 		existing := resourcesByIdentity[identityKey]
 		if len(existing) == 1 {
+			if existingProtection := protectionForImmutableMismatch(existing[0], goal); existingProtection != nil {
+				plan.Protections = append(plan.Protections, *existingProtection)
+				continue
+			}
 			plan.Actions = append(plan.Actions, planner.actionsForExisting(existing[0], goal)...)
 			continue
 		}
@@ -73,9 +77,6 @@ func (planner Planner) Build(inventory Inventory, goals []Goal) (Plan, error) {
 			continue
 		}
 		if goal.DesiredState == DesiredRunning {
-			if goal.Kind == ResourceContainer && goal.Image == "" {
-				return Plan{}, errors.New("container image is required to create a missing resource")
-			}
 			plan.Actions = append(plan.Actions, planner.actionsForCreate(goal)...)
 		}
 	}
@@ -114,12 +115,19 @@ func (planner Planner) actionsForCreate(goal Goal) []Action {
 }
 
 func (planner Planner) newAction(kind ActionKind, resource Resource, goal Goal) Action {
+	image := goal.Image
+	portBindings := goal.PortBindings
+	if goal.Kind == ResourceContainer && goal.DesiredState != DesiredRunning {
+		image = resource.Image
+		portBindings = resource.PortBindings
+	}
 	action := Action{
 		Kind:         kind,
 		ResourceKind: goal.Kind,
 		ResourceID:   resource.ID,
 		ResourceName: resource.Name,
-		Image:        goal.Image,
+		Image:        image,
+		PortBindings: clonePortBindings(portBindings),
 		Identity:     goal.Identity,
 	}
 	action.Command = expectedCommand(planner.executable(), action)
@@ -137,7 +145,8 @@ func validateGoals(goals []Goal) ([]Goal, error) {
 	ordered := append([]Goal(nil), goals...)
 	identities := make(map[resourceIdentityKey]struct{}, len(goals))
 	names := make(map[resourceNameKey]struct{}, len(goals))
-	for _, goal := range ordered {
+	for index := range ordered {
+		goal := &ordered[index]
 		if !goal.Kind.Valid() || !resourceNamePattern.MatchString(goal.Name) {
 			return nil, errors.New("container resource goal is invalid")
 		}
@@ -149,11 +158,16 @@ func validateGoals(goals []Goal) ([]Goal, error) {
 			return nil, errors.New("container resource desired state is invalid")
 		}
 		if goal.Kind == ResourceContainer && goal.DesiredState == DesiredRunning {
-			if goal.Image != "" && !safeImageReference(goal.Image) {
+			if !safeImageReference(goal.Image) {
 				return nil, errors.New("container image reference is invalid")
 			}
-		} else if goal.Image != "" {
-			return nil, errors.New("container image is only valid for a running container goal")
+			bindings, err := canonicalPortBindings(goal.PortBindings)
+			if err != nil {
+				return nil, err
+			}
+			goal.PortBindings = bindings
+		} else if goal.Image != "" || len(goal.PortBindings) != 0 {
+			return nil, errors.New("container image and ports are only valid for a running container goal")
 		}
 		identityKey := resourceIdentityKey{Kind: goal.Kind, Identity: goal.Identity}
 		if _, duplicate := identities[identityKey]; duplicate {
@@ -173,6 +187,32 @@ func validateGoals(goals []Goal) ([]Goal, error) {
 		return identitySortKey(ordered[left].Identity) < identitySortKey(ordered[right].Identity)
 	})
 	return ordered, nil
+}
+
+func protectionForImmutableMismatch(resource Resource, goal Goal) *Protection {
+	if resource.Kind != ResourceContainer {
+		return nil
+	}
+	configured, configuredError := canonicalPortBindings(resource.PortBindings)
+	matchesObservedConfiguration := configuredError == nil && safeImageReference(resource.Image)
+	if resource.Running {
+		published, publishedError := canonicalPortBindings(resource.PublishedPortBindings)
+		matchesObservedConfiguration = matchesObservedConfiguration && publishedError == nil &&
+			portBindingsEqual(configured, published)
+	}
+	if goal.DesiredState == DesiredRunning {
+		matchesObservedConfiguration = matchesObservedConfiguration && resource.Image == goal.Image &&
+			portBindingsEqual(configured, goal.PortBindings)
+	}
+	if matchesObservedConfiguration {
+		return nil
+	}
+	return &Protection{
+		Code:         ProtectionImmutableMismatch,
+		ResourceKind: resource.Kind,
+		ResourceName: resource.Name,
+		Summary:      "The owned container image or port bindings differ from the requested immutable configuration; it will not be changed.",
+	}
 }
 
 func safeImageReference(image string) bool {
@@ -207,6 +247,9 @@ func expectedCommand(dockerBinary string, action Action) Command {
 		case ResourceContainer:
 			arguments = append(arguments, "--name", action.ResourceName)
 			arguments = append(arguments, ownershipLabelArguments(action.Identity)...)
+			for _, binding := range action.PortBindings {
+				arguments = append(arguments, "--publish", publishArgument(binding))
+			}
 			arguments = append(arguments, action.Image)
 		case ResourceVolume:
 			arguments = append(arguments, ownershipLabelArguments(action.Identity)...)

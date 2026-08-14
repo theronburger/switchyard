@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,11 @@ type ResourceReader interface {
 type DockerInventory struct {
 	Runner       Runner
 	DockerBinary string
+}
+
+type dockerPortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
 }
 
 func (docker DockerInventory) Inventory(ctx context.Context) (Inventory, error) {
@@ -158,8 +164,15 @@ func decodeInspectedResources(kind ResourceKind, contents []byte) ([]Resource, e
 			Name   string `json:"Name"`
 			SizeRW int64  `json:"SizeRw"`
 			Config struct {
+				Image  string            `json:"Image"`
 				Labels map[string]string `json:"Labels"`
 			} `json:"Config"`
+			HostConfig struct {
+				PortBindings map[string][]dockerPortBinding `json:"PortBindings"`
+			} `json:"HostConfig"`
+			NetworkSettings struct {
+				Ports map[string][]dockerPortBinding `json:"Ports"`
+			} `json:"NetworkSettings"`
 			State struct {
 				Status  string `json:"Status"`
 				Running bool   `json:"Running"`
@@ -170,14 +183,25 @@ func decodeInspectedResources(kind ResourceKind, contents []byte) ([]Resource, e
 		}
 		resources := make([]Resource, 0, len(inspected))
 		for _, item := range inspected {
+			configured, err := decodeDockerPortBindings(item.HostConfig.PortBindings)
+			if err != nil {
+				return nil, errors.New("docker returned invalid configured container port bindings")
+			}
+			published, err := decodeDockerPortBindings(item.NetworkSettings.Ports)
+			if err != nil {
+				return nil, errors.New("docker returned invalid published container port bindings")
+			}
 			resources = append(resources, Resource{
-				Kind:      kind,
-				ID:        item.ID,
-				Name:      strings.TrimPrefix(item.Name, "/"),
-				State:     item.State.Status,
-				Running:   item.State.Running,
-				SizeBytes: item.SizeRW,
-				Labels:    item.Config.Labels,
+				Kind:                  kind,
+				ID:                    item.ID,
+				Name:                  strings.TrimPrefix(item.Name, "/"),
+				Image:                 item.Config.Image,
+				PortBindings:          configured,
+				PublishedPortBindings: published,
+				State:                 item.State.Status,
+				Running:               item.State.Running,
+				SizeBytes:             item.SizeRW,
+				Labels:                item.Config.Labels,
 			})
 		}
 		return resources, nil
@@ -221,6 +245,30 @@ func decodeInspectedResources(kind ResourceKind, contents []byte) ([]Resource, e
 	}
 }
 
+func decodeDockerPortBindings(bindings map[string][]dockerPortBinding) ([]PortBinding, error) {
+	decoded := make([]PortBinding, 0, len(bindings))
+	for containerReference, hostBindings := range bindings {
+		containerPortText, protocolText, found := strings.Cut(containerReference, "/")
+		containerPort, err := strconv.Atoi(containerPortText)
+		if !found || err != nil || !validPort(containerPort) || protocolText == "" {
+			return nil, errors.New("invalid container port reference")
+		}
+		for _, hostBinding := range hostBindings {
+			hostPort, err := strconv.Atoi(hostBinding.HostPort)
+			if err != nil || !validPort(hostPort) {
+				return nil, errors.New("invalid host port reference")
+			}
+			decoded = append(decoded, PortBinding{
+				Host:          hostBinding.HostIP,
+				HostPort:      hostPort,
+				ContainerPort: containerPort,
+				Protocol:      PortProtocol(protocolText),
+			})
+		}
+	}
+	return normalizeObservedPortBindings(decoded), nil
+}
+
 func NewInventory(resources []Resource) (Inventory, error) {
 	ownedByIdentity := make(map[resourceIdentityKey][]string)
 	normalized := make([]Resource, 0, len(resources))
@@ -230,7 +278,13 @@ func NewInventory(resources []Resource) (Inventory, error) {
 		if !resource.Kind.Valid() || !safeReference(resource.ID) || !safeReference(resource.Name) {
 			return Inventory{}, errors.New("docker inventory contains an invalid resource")
 		}
+		if resource.Kind != ResourceContainer &&
+			(resource.Image != "" || len(resource.PortBindings) != 0 || len(resource.PublishedPortBindings) != 0) {
+			return Inventory{}, errors.New("non-container inventory resource contains container configuration")
+		}
 		resource.Labels = cloneLabels(resource.Labels)
+		resource.PortBindings = normalizeObservedPortBindings(resource.PortBindings)
+		resource.PublishedPortBindings = normalizeObservedPortBindings(resource.PublishedPortBindings)
 		resource.Ownership, resource.Identity = ClassifyLabels(resource.Labels)
 		if resource.SizeBytes < 0 {
 			resource.SizeBytes = 0

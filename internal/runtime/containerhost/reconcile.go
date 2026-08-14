@@ -90,6 +90,19 @@ func (reconciler Reconciler) verifyActionTarget(ctx context.Context, action Acti
 	if action.ResourceID == "" && resource.Name != action.ResourceName {
 		return ErrOwnershipUnverified
 	}
+	if action.ResourceKind == ResourceContainer {
+		configured, err := canonicalPortBindings(resource.PortBindings)
+		if err != nil || resource.Image != action.Image ||
+			!portBindingsEqual(configured, action.PortBindings) {
+			return ErrOwnershipUnverified
+		}
+		if resource.Running {
+			published, err := canonicalPortBindings(resource.PublishedPortBindings)
+			if err != nil || !portBindingsEqual(published, action.PortBindings) {
+				return ErrOwnershipUnverified
+			}
+		}
+	}
 	return nil
 }
 
@@ -98,15 +111,20 @@ func validateAction(dockerBinary string, action Action) error {
 		action.Identity.Validate() != nil {
 		return ErrPlanInvalid
 	}
+	if action.ResourceKind == ResourceContainer {
+		if !safeImageReference(action.Image) {
+			return ErrPlanInvalid
+		}
+		canonical, err := canonicalPortBindings(action.PortBindings)
+		if err != nil || !portBindingsEqual(canonical, action.PortBindings) {
+			return ErrPlanInvalid
+		}
+	} else if action.Image != "" || len(action.PortBindings) != 0 {
+		return ErrPlanInvalid
+	}
 	switch action.Kind {
 	case ActionCreate:
 		if action.ResourceID != "" {
-			return ErrPlanInvalid
-		}
-		if action.ResourceKind == ResourceContainer && !safeImageReference(action.Image) {
-			return ErrPlanInvalid
-		}
-		if action.ResourceKind != ResourceContainer && action.Image != "" {
 			return ErrPlanInvalid
 		}
 	case ActionStart, ActionStop:
