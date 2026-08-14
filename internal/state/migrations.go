@@ -3,8 +3,11 @@ package state
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
+
+var ErrUnsupportedSchemaVersion = errors.New("state database schema is newer than this daemon")
 
 type migration struct {
 	version int
@@ -71,6 +74,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	var currentVersion int
 	if err := store.database.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&currentVersion); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
+	}
+	latestVersion := migrations[len(migrations)-1].version
+	if currentVersion > latestVersion {
+		return fmt.Errorf("%w: database is %d, daemon supports %d", ErrUnsupportedSchemaVersion, currentVersion, latestVersion)
 	}
 
 	for _, nextMigration := range migrations {

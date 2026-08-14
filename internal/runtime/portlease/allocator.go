@@ -27,6 +27,11 @@ type Lease struct {
 	Port int
 }
 
+type Reservation struct {
+	Key            Key
+	PreferredPorts []int
+}
+
 type Probe func(ctx context.Context, host string, port int) error
 
 type Config struct {
@@ -60,6 +65,18 @@ func (err *PortUnavailableError) Unwrap() error {
 	return err.Err
 }
 
+type NoAvailablePortError struct {
+	Key Key
+}
+
+func (err *NoAvailablePortError) Error() string {
+	return fmt.Sprintf("%s: environment %q service %q purpose %q", ErrNoAvailablePorts, err.Key.EnvironmentID, err.Key.ServiceID, err.Key.Purpose)
+}
+
+func (err *NoAvailablePortError) Unwrap() error {
+	return ErrNoAvailablePorts
+}
+
 func NewAllocator(config Config) (*Allocator, error) {
 	if config.Host == "" {
 		config.Host = "127.0.0.1"
@@ -88,31 +105,85 @@ func NewAllocator(config Config) (*Allocator, error) {
 }
 
 func (allocator *Allocator) Reserve(ctx context.Context, key Key, preferredPorts ...int) (Lease, error) {
-	if err := validateKey(key); err != nil {
+	leases, err := allocator.ReserveSet(ctx, []Reservation{{Key: key, PreferredPorts: preferredPorts}})
+	if err != nil {
 		return Lease{}, err
+	}
+	return leases[0], nil
+}
+
+func (allocator *Allocator) ReserveSet(ctx context.Context, reservations []Reservation) ([]Lease, error) {
+	if len(reservations) == 0 {
+		return nil, errors.New("at least one port reservation is required")
+	}
+	seenKeys := make(map[Key]struct{}, len(reservations))
+	for _, reservation := range reservations {
+		if err := validateKey(reservation.Key); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seenKeys[reservation.Key]; duplicate {
+			return nil, fmt.Errorf("duplicate port reservation for %+v", reservation.Key)
+		}
+		seenKeys[reservation.Key] = struct{}{}
 	}
 
 	allocator.mutex.Lock()
 	defer allocator.mutex.Unlock()
 
-	if existing, exists := allocator.byKey[key]; exists {
-		return existing, nil
+	leases := make([]Lease, 0, len(reservations))
+	newLeases := make([]Lease, 0, len(reservations))
+	rollback := func() {
+		for _, lease := range newLeases {
+			delete(allocator.byKey, lease.Key)
+			delete(allocator.byPort, lease.Port)
+		}
 	}
 
-	for _, port := range allocator.candidates(preferredPorts) {
+	for _, reservation := range reservations {
+		if err := ctx.Err(); err != nil {
+			rollback()
+			return nil, err
+		}
+		if existing, exists := allocator.byKey[reservation.Key]; exists {
+			leases = append(leases, existing)
+			continue
+		}
+
+		lease, err := allocator.reserveLocked(ctx, reservation)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		newLeases = append(newLeases, lease)
+		leases = append(leases, lease)
+	}
+	return leases, nil
+}
+
+func (allocator *Allocator) reserveLocked(ctx context.Context, reservation Reservation) (Lease, error) {
+	for _, port := range allocator.candidates(reservation.PreferredPorts) {
+		if err := ctx.Err(); err != nil {
+			return Lease{}, err
+		}
 		if _, alreadyLeased := allocator.byPort[port]; alreadyLeased {
 			continue
 		}
 		if err := allocator.probe(ctx, allocator.host, port); err != nil {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return Lease{}, contextErr
+			}
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return Lease{}, err
+		}
 
-		lease := Lease{Key: key, Host: allocator.host, Port: port}
-		allocator.byKey[key] = lease
-		allocator.byPort[port] = key
+		lease := Lease{Key: reservation.Key, Host: allocator.host, Port: port}
+		allocator.byKey[reservation.Key] = lease
+		allocator.byPort[port] = reservation.Key
 		return lease, nil
 	}
-	return Lease{}, ErrNoAvailablePorts
+	return Lease{}, &NoAvailablePortError{Key: reservation.Key}
 }
 
 func (allocator *Allocator) CheckBeforeLaunch(ctx context.Context, key Key) error {

@@ -33,6 +33,23 @@ func TestOpenEnablesWALAndExcludesSecondDaemon(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNewerDatabaseSchema(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "state.sqlite")
+	store := openTestStore(t, databasePath)
+	if _, err := store.database.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 2, time.Now().UTC().Format(timeFormat)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Open(ctx, Config{Path: databasePath})
+	if !errors.Is(err, ErrUnsupportedSchemaVersion) {
+		t.Fatalf("schema error: got %v, want %v", err, ErrUnsupportedSchemaVersion)
+	}
+}
+
 func TestCommitSnapshotAdvancesRevisionAndSurvivesReopen(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "state.sqlite")
@@ -134,6 +151,9 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	}
 	if !created {
 		t.Fatal("first operation was not created")
+	}
+	if got, want := createdOperation.State, "pending"; got != want {
+		t.Fatalf("initial operation state: got %q, want %q", got, want)
 	}
 
 	retriedOperation, created, err := store.CreateOperation(ctx, request)

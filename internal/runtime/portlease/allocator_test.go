@@ -116,6 +116,74 @@ func TestConcurrentReservationsAreDistinct(t *testing.T) {
 	}
 }
 
+func TestReserveSetRollsBackEveryNewLeaseOnFailure(t *testing.T) {
+	allocator := newTestAllocator(t, Config{
+		FirstPort: 30000,
+		LastPort:  30000,
+		Probe:     func(context.Context, string, int) error { return nil },
+	})
+	_, err := allocator.ReserveSet(context.Background(), []Reservation{
+		{Key: Key{EnvironmentID: "env_01", ServiceID: "nonprofit-service", Purpose: "http"}},
+		{Key: Key{EnvironmentID: "env_01", ServiceID: "nonprofit-service", Purpose: "lambda"}},
+	})
+	if !errors.Is(err, ErrNoAvailablePorts) {
+		t.Fatalf("set error: got %v, want %v", err, ErrNoAvailablePorts)
+	}
+	if leases := allocator.Leases(); len(leases) != 0 {
+		t.Fatalf("failed set left partial leases: %+v", leases)
+	}
+}
+
+func TestReserveSetCancellationRollsBackPartialLeases(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	probes := 0
+	allocator := newTestAllocator(t, Config{
+		FirstPort: 30000,
+		LastPort:  30001,
+		Probe: func(context.Context, string, int) error {
+			probes++
+			if probes == 1 {
+				cancel()
+			}
+			return nil
+		},
+	})
+	_, err := allocator.ReserveSet(ctx, []Reservation{
+		{Key: Key{EnvironmentID: "env_01", ServiceID: "nonprofit-service", Purpose: "http"}},
+		{Key: Key{EnvironmentID: "env_01", ServiceID: "nonprofit-service", Purpose: "lambda"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("set error: got %v, want %v", err, context.Canceled)
+	}
+	if leases := allocator.Leases(); len(leases) != 0 {
+		t.Fatalf("cancelled set left partial leases: %+v", leases)
+	}
+}
+
+func TestReserveSetPreservesEarlierStableLeaseOnFailure(t *testing.T) {
+	allocator := newTestAllocator(t, Config{
+		FirstPort: 30000,
+		LastPort:  30000,
+		Probe:     func(context.Context, string, int) error { return nil },
+	})
+	stableKey := Key{EnvironmentID: "env_01", ServiceID: "organizer", Purpose: "http"}
+	stableLease, err := allocator.Reserve(context.Background(), stableKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = allocator.ReserveSet(context.Background(), []Reservation{
+		{Key: stableKey},
+		{Key: Key{EnvironmentID: "env_01", ServiceID: "nonprofit-service", Purpose: "http"}},
+	})
+	if !errors.Is(err, ErrNoAvailablePorts) {
+		t.Fatalf("set error: got %v, want %v", err, ErrNoAvailablePorts)
+	}
+	leases := allocator.Leases()
+	if len(leases) != 1 || leases[0] != stableLease {
+		t.Fatalf("stable lease changed after rollback: got %+v, want %+v", leases, stableLease)
+	}
+}
+
 func TestReleaseMakesPortAvailable(t *testing.T) {
 	allocator := newTestAllocator(t, Config{
 		FirstPort: 30000,
