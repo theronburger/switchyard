@@ -29,6 +29,8 @@ const (
 type Backend interface {
 	Status(context.Context) (contractv1.StatusSnapshot, error)
 	Doctor(context.Context) apiclient.DoctorReport
+	StartEnvironment(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
 }
 
 type LiveBackend struct {
@@ -42,6 +44,21 @@ func (b LiveBackend) Status(ctx context.Context) (contractv1.StatusSnapshot, err
 
 func (b LiveBackend) Doctor(ctx context.Context) apiclient.DoctorReport {
 	return (apiclient.Doctor{Connector: b.Connector, Now: b.Now}).Run(ctx)
+}
+
+func (b LiveBackend) StartEnvironment(
+	ctx context.Context,
+	request contractv1.StartEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	return b.Connector.StartEnvironment(ctx, request)
+}
+
+func (b LiveBackend) StopEnvironment(
+	ctx context.Context,
+	environmentID string,
+	request contractv1.StopEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	return b.Connector.StopEnvironment(ctx, environmentID, request)
 }
 
 type Server struct {
@@ -153,6 +170,26 @@ type statusOutput struct {
 
 type doctorOutput struct {
 	Doctor apiclient.DoctorReport `json:"doctor"`
+}
+
+type startArguments struct {
+	RequestID                   string   `json:"requestId"`
+	IdempotencyKey              string   `json:"idempotencyKey"`
+	WorktreeID                  string   `json:"worktreeId"`
+	ServiceIDs                  []string `json:"serviceIds"`
+	ExpectedEnvironmentRevision *int64   `json:"expectedEnvironmentRevision,omitempty"`
+}
+
+type stopArguments struct {
+	RequestID                   string `json:"requestId"`
+	IdempotencyKey              string `json:"idempotencyKey"`
+	EnvironmentID               string `json:"environmentId"`
+	ExpectedEnvironmentRevision *int64 `json:"expectedEnvironmentRevision,omitempty"`
+}
+
+type mutationOutput struct {
+	Receipt            contractv1.MutationReceipt     `json:"receipt"`
+	EnvironmentContext *contractv1.EnvironmentContext `json:"environmentContext,omitempty"`
 }
 
 type toolErrorOutput struct {
@@ -283,7 +320,7 @@ func (s Server) handle(ctx context.Context, incoming request, state *sessionStat
 			modernResultFields: s.modernResultFields(),
 			SupportedVersions:  []string{ProtocolVersion},
 			Capabilities:       map[string]any{"tools": map[string]any{}},
-			Instructions:       "Read Switchyard daemon status and connection diagnostics.",
+			Instructions:       "Read Switchyard state and submit idempotent local environment actions.",
 			TTLMilliseconds:    0,
 			CacheScope:         "public",
 		}), true
@@ -382,13 +419,52 @@ func (s Server) callTool(
 			StructuredContent: doctorOutput{Doctor: report},
 			IsError:           !report.Healthy,
 		}, modern), nil
+	case "switchyard_start":
+		var arguments startArguments
+		if err := decodeParams(params.Arguments, &arguments); err != nil {
+			return callToolResult{}, &responseError{Code: -32602, Message: "Invalid start arguments"}
+		}
+		request := contractv1.StartEnvironmentRequest{
+			MutationRequest: contractv1.MutationRequest{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+				IdempotencyKey:              arguments.IdempotencyKey,
+				ExpectedEnvironmentRevision: arguments.ExpectedEnvironmentRevision,
+			},
+			WorktreeID: arguments.WorktreeID, ServiceIDs: arguments.ServiceIDs,
+		}
+		if request.Validate() != nil {
+			return callToolResult{}, &responseError{Code: -32602, Message: "Invalid start arguments"}
+		}
+		receipt, err := s.Backend.StartEnvironment(ctx, request)
+		if err != nil {
+			return s.decorateCallResult(actionToolError(err), modern), nil
+		}
+		return s.decorateCallResult(s.mutationResult(ctx, receipt, "start"), modern), nil
+	case "switchyard_stop":
+		var arguments stopArguments
+		if err := decodeParams(params.Arguments, &arguments); err != nil || arguments.EnvironmentID == "" {
+			return callToolResult{}, &responseError{Code: -32602, Message: "Invalid stop arguments"}
+		}
+		request := contractv1.StopEnvironmentRequest{MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+			IdempotencyKey:              arguments.IdempotencyKey,
+			ExpectedEnvironmentRevision: arguments.ExpectedEnvironmentRevision,
+		}}
+		if request.Validate() != nil {
+			return callToolResult{}, &responseError{Code: -32602, Message: "Invalid stop arguments"}
+		}
+		receipt, err := s.Backend.StopEnvironment(ctx, arguments.EnvironmentID, request)
+		if err != nil {
+			return s.decorateCallResult(actionToolError(err), modern), nil
+		}
+		return s.decorateCallResult(s.mutationResult(ctx, receipt, "stop"), modern), nil
 	default:
 		return callToolResult{}, &responseError{Code: -32602, Message: "Unknown tool"}
 	}
 }
 
 func toolDefinitions() []toolDefinition {
-	annotations := toolAnnotations{
+	readAnnotations := toolAnnotations{
 		ReadOnlyHint:    true,
 		DestructiveHint: false,
 		IdempotentHint:  true,
@@ -408,7 +484,7 @@ func toolDefinitions() []toolDefinition {
 					},
 				},
 			},
-			Annotations: annotations,
+			Annotations: readAnnotations,
 		},
 		{
 			Name:        "switchyard_doctor",
@@ -418,8 +494,64 @@ func toolDefinitions() []toolDefinition {
 				"additionalProperties": false,
 				"properties":           map[string]any{},
 			},
-			Annotations: annotations,
+			Annotations: readAnnotations,
 		},
+		mutationToolDefinition("switchyard_start", "Start selected services for a Switchyard worktree and return immediately with an operation receipt.", false, map[string]any{
+			"requestId":      map[string]any{"type": "string", "description": "Caller-generated opaque request ID."},
+			"idempotencyKey": map[string]any{"type": "string", "description": "Stable key reused when retrying this exact start."},
+			"worktreeId":     map[string]any{"type": "string", "description": "Worktree ID from switchyard_status."},
+			"serviceIds": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+				"items": map[string]any{"type": "string"},
+			},
+			"expectedEnvironmentRevision": map[string]any{"type": "integer", "minimum": 0},
+		}, []string{"requestId", "idempotencyKey", "worktreeId", "serviceIds"}),
+		mutationToolDefinition("switchyard_stop", "Stop one owned Switchyard environment and return immediately with an operation receipt.", true, map[string]any{
+			"requestId":                   map[string]any{"type": "string", "description": "Caller-generated opaque request ID."},
+			"idempotencyKey":              map[string]any{"type": "string", "description": "Stable key reused when retrying this exact stop."},
+			"environmentId":               map[string]any{"type": "string", "description": "Environment ID from switchyard_status."},
+			"expectedEnvironmentRevision": map[string]any{"type": "integer", "minimum": 0},
+		}, []string{"requestId", "idempotencyKey", "environmentId"}),
+	}
+}
+
+func mutationToolDefinition(
+	name string,
+	description string,
+	destructive bool,
+	properties map[string]any,
+	required []string,
+) toolDefinition {
+	return toolDefinition{
+		Name: name, Description: description,
+		InputSchema: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": properties, "required": required,
+		},
+		Annotations: toolAnnotations{
+			ReadOnlyHint: false, DestructiveHint: destructive, IdempotentHint: true, OpenWorldHint: false,
+		},
+	}
+}
+
+func (s Server) mutationResult(
+	ctx context.Context,
+	receipt contractv1.MutationReceipt,
+	action string,
+) callToolResult {
+	output := mutationOutput{Receipt: receipt}
+	if receipt.EnvironmentID != "" {
+		if snapshot, err := s.Backend.Status(ctx); err == nil {
+			if footer, footerErr := BuildEnvironmentContext(snapshot, receipt.EnvironmentID); footerErr == nil {
+				output.EnvironmentContext = footer
+			}
+		}
+	}
+	return callToolResult{
+		Content: []textContent{{Type: "text", Text: fmt.Sprintf(
+			"Switchyard accepted environment %s operation %s.", action, receipt.OperationID,
+		)}},
+		StructuredContent: output,
 	}
 }
 
@@ -430,6 +562,17 @@ func daemonToolError(err error) callToolResult {
 		StructuredContent: toolErrorOutput{Error: toolErrorDetails{
 			Code:    string(code),
 			Message: "Switchyard could not read daemon status.",
+		}},
+		IsError: true,
+	}
+}
+
+func actionToolError(err error) callToolResult {
+	code := apiclient.CodeOf(err)
+	return callToolResult{
+		Content: []textContent{{Type: "text", Text: "Switchyard could not accept the environment action."}},
+		StructuredContent: toolErrorOutput{Error: toolErrorDetails{
+			Code: string(code), Message: "Switchyard could not accept the environment action.",
 		}},
 		IsError: true,
 	}

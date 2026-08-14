@@ -17,6 +17,8 @@ type stubServerBackend struct {
 	snapshot contractv1.StatusSnapshot
 	status   error
 	doctor   apiclient.DoctorReport
+	start    func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	stop     func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
 }
 
 const modernMetadata = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test-client","version":"1.0.0"}}`
@@ -27,6 +29,27 @@ func (b stubServerBackend) Status(context.Context) (contractv1.StatusSnapshot, e
 
 func (b stubServerBackend) Doctor(context.Context) apiclient.DoctorReport {
 	return b.doctor
+}
+
+func (b stubServerBackend) StartEnvironment(
+	ctx context.Context,
+	request contractv1.StartEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.start == nil {
+		return contractv1.MutationReceipt{}, errors.New("start is not configured")
+	}
+	return b.start(ctx, request)
+}
+
+func (b stubServerBackend) StopEnvironment(
+	ctx context.Context,
+	environmentID string,
+	request contractv1.StopEnvironmentRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.stop == nil {
+		return contractv1.MutationReceipt{}, errors.New("stop is not configured")
+	}
+	return b.stop(ctx, environmentID, request)
 }
 
 func TestServerInitializesListsToolsAndReturnsScopedFooter(t *testing.T) {
@@ -58,7 +81,7 @@ func TestServerInitializesListsToolsAndReturnsScopedFooter(t *testing.T) {
 		} `json:"result"`
 	}
 	decodeResponse(t, responses[1], &listed)
-	if len(listed.Result.Tools) != 2 || listed.Result.Tools[0].Name != "switchyard_status" {
+	if len(listed.Result.Tools) != 4 || listed.Result.Tools[0].Name != "switchyard_status" {
 		t.Fatalf("tools: %+v", listed.Result.Tools)
 	}
 
@@ -123,7 +146,7 @@ func TestServerSupportsStatelessModernDiscoveryListAndCall(t *testing.T) {
 		} `json:"result"`
 	}
 	decodeResponse(t, responses[1], &listed)
-	if listed.Result.ResultType != "complete" || len(listed.Result.Tools) != 2 ||
+	if listed.Result.ResultType != "complete" || len(listed.Result.Tools) != 4 ||
 		listed.Result.CacheScope != "public" || listed.Result.Meta[metaServerInfo] == nil {
 		t.Fatalf("modern tools list: %+v", listed.Result)
 	}
@@ -254,6 +277,110 @@ func TestServerRedactsBackendErrors(t *testing.T) {
 	responses := runServer(t, stubServerBackend{status: errors.New("failed with " + secret)}, input)
 	if bytes.Contains(bytes.Join(responses, nil), []byte(secret)) {
 		t.Fatal("MCP response leaked backend error contents")
+	}
+}
+
+func TestServerSubmitsThinStartAndReturnsStateFooter(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
+	backend := stubServerBackend{
+		snapshot: serverSnapshot(),
+		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if request.Validate() != nil || request.RequestID != "request_start" ||
+				request.IdempotencyKey != "agent:retry" || request.WorktreeID != "worktree_test" ||
+				len(request.ServiceIDs) != 2 {
+				t.Fatalf("start request: %+v", request)
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_start", AcceptedAt: acceptedAt, EnvironmentID: "env_test",
+			}, nil
+		},
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","serviceIds":["organizer","nonprofit-service"]}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, backend, input)
+	var called struct {
+		Result struct {
+			StructuredContent mutationOutput `json:"structuredContent"`
+			IsError           bool           `json:"isError"`
+		} `json:"result"`
+	}
+	decodeResponse(t, responses[1], &called)
+	if called.Result.IsError || called.Result.StructuredContent.Receipt.OperationID != "operation_start" {
+		t.Fatalf("start result: %+v", called.Result)
+	}
+	footer := called.Result.StructuredContent.EnvironmentContext
+	if footer == nil || footer.EnvironmentID != "env_test" || footer.AttentionCount != 1 {
+		t.Fatalf("start footer: %+v", footer)
+	}
+}
+
+func TestServerSubmitsStopWithoutWaiting(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
+	backend := stubServerBackend{
+		snapshot: serverSnapshot(),
+		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if environmentID != "env_test" || request.Validate() != nil ||
+				request.ExpectedEnvironmentRevision == nil || *request.ExpectedEnvironmentRevision != 17 {
+				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_stop", AcceptedAt: acceptedAt, EnvironmentID: environmentID,
+			}, nil
+		},
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_stop","arguments":{"requestId":"request_stop","idempotencyKey":"agent:stop","environmentId":"env_test","expectedEnvironmentRevision":17}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, backend, input)
+	if !bytes.Contains(responses[1], []byte(`"operationId":"operation_stop"`)) {
+		t.Fatalf("stop result: %s", responses[1])
+	}
+}
+
+func TestServerRejectsInvalidActionArgumentsBeforeBackend(t *testing.T) {
+	calls := 0
+	backend := stubServerBackend{
+		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			calls++
+			return contractv1.MutationReceipt{}, nil
+		},
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":null}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, backend, input)
+	var decoded response
+	decodeResponse(t, responses[1], &decoded)
+	if decoded.Error == nil || decoded.Error.Code != -32602 || calls != 0 {
+		t.Fatalf("invalid action response=%+v calls=%d", decoded, calls)
+	}
+}
+
+func TestServerRedactsActionBackendErrors(t *testing.T) {
+	secret := "/Users/person/state.sqlite bearer-secret"
+	backend := stubServerBackend{
+		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			return contractv1.MutationReceipt{}, errors.New(secret)
+		},
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, backend, input)
+	if bytes.Contains(bytes.Join(responses, nil), []byte(secret)) ||
+		!bytes.Contains(responses[1], []byte(`"isError":true`)) {
+		t.Fatalf("action error response: %s", responses[1])
 	}
 }
 
