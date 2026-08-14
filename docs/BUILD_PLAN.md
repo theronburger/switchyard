@@ -1,12 +1,14 @@
 # Parallel build plan
 
+Current status: Waves 0 and 1 are complete. Wave 2 has delivered the live app lifecycle, Marketplace inventory, safe process/container hosts, health primitives, and resumable daemon events. Persisted environment action integration is active; Wave 3 has not yet been claimed complete.
+
 ## Coordination rule
 
 Parallelism begins after the coordinator versions a minimal contract and freezes directory ownership. Contract amendments remain cheap but coordinator-mediated: update fixtures and pass Go/Swift conformance tests before lanes consume the new revision. Lanes use separate worktrees and do not edit shared dependency, contract, generated, or manifest files without reassignment.
 
 Codex has four collaboration slots including the coordinator. Fable runs externally through the personal Claude profile and does not consume a Codex slot.
 
-## Wave 0: spine
+## Wave 0: spine — complete
 
 Coordinator owns:
 
@@ -28,7 +30,7 @@ Exit gate:
 - invalid lifecycle transitions have named errors;
 - all lane directories exist and are disjoint.
 
-## Wave 1: implementation fan-out
+## Wave 1: implementation fan-out — complete
 
 | Lane | Owner | Exclusive paths | Outcome |
 | --- | --- | --- | --- |
@@ -48,7 +50,7 @@ Exit gate:
 - daemon, CLI, and MCP communicate through the frozen contract;
 - Marketplace detection runs read-only against the real checkout.
 
-## Wave 2: integration fan-out
+## Wave 2: integration fan-out — in progress
 
 Parallel tracks:
 
@@ -67,7 +69,7 @@ Exit gate:
 - crash, restart, conflict, and stale-state paths are visible;
 - the safety suite proves foreign resources survive.
 
-## Wave 3: Marketplace golden demonstration
+## Wave 3: Marketplace golden demonstration — pending
 
 Run organizer and nonprofit-service in two simultaneous worktrees.
 

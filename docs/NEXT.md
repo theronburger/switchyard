@@ -1,19 +1,22 @@
 # Next actions
 
-## Confirmed launch choices
+## Current state
 
-- final name: Switchyard;
-- private repository: `theronburger/switchyard`;
-- both Codex and Claude MCP connections are first-class;
-- first milestone adopts existing worktrees; create/remove follows;
-- no Marketplace tracked files or agent configurations are changed during the spine build.
+- The private `theronburger/switchyard` repository and CI are live.
+- The Go daemon persists revisioned state in SQLite and publishes an authenticated ephemeral `127.0.0.1` API.
+- The packaged SwiftUI app installs, starts, checks, and repairs its own user LaunchAgent; fixture mode is explicit-only.
+- The live daemon discovers the Marketplace checkout and its linked worktrees without changing tracked Marketplace files.
+- Native process groups, labelled Docker resources, stable ports, generated projections, health evaluation, compact MCP status, and paged event primitives have safety-focused implementations and race tests.
+- The Marketplace `.switchyard.yaml` is local-only and excluded by the shared Git `info/exclude`; `scripts/start-changed.sh` remains untouched.
 
-## Immediate build sequence
+## Immediate integration sequence
 
-1. Initialize the private repository and create its private personal remote.
-2. Scaffold Go, Swift, contract fixtures, and CI/check commands.
-3. Freeze Wave 0 directory ownership.
-4. Spawn the Wave 1 Codex lanes and launch the Fable Swift lane.
+1. Finish the persisted environment coordinator and bind Marketplace plans after stable ports are assigned.
+2. Expose idempotent start/stop operations through the daemon contract.
+3. Add the matching CLI, MCP, and Swift app actions without moving lifecycle ownership out of the daemon.
+4. Reconcile operation, process, container, projection, health, and event state after daemon restart.
+5. Run organizer and nonprofit-service in two worktrees with colliding preferred ports, then prove isolated routing and ownership-safe stop.
+6. Add app-managed Codex and Claude MCP connection inspection/repair.
 
 ## Known local prerequisites
 
@@ -24,13 +27,6 @@
 - Fable was verified through the `claude-personal-fable` skill as `claude-fable-5`.
 - Marketplace and its linked worktrees are under `/Users/example/Developer`.
 
-## First technical spikes
+## Known local caveat
 
-These can run in parallel after scaffolding:
-
-- Go daemon plus SQLite state and a fixture status endpoint.
-- Swift app decoding and rendering the fixture status.
-- Unix socket versus loopback transport comparison.
-- Marketplace read-only worktree and affected-service inventory.
-- owned process-group start/stop/reconcile harness using harmless fake services.
-- MCP tool returning the capped environment context footer.
+`xcode-select` currently points at a full Xcode installation whose license has not been accepted. Repository automation uses the installed Command Line Tools explicitly and does not accept the license or invoke `sudo` on the user's behalf.

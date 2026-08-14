@@ -58,6 +58,28 @@ Run `organizer` and `nonprofit-service` concurrently in two Marketplace worktree
 - stop without touching the other environment or foreign processes;
 - be controllable from the app, CLI, Codex MCP, and Claude MCP.
 
+## Developer build
+
+The baseline deliberately requires only the standard Go and Swift toolchains:
+
+```bash
+make check
+make race
+make app-bundle
+open dist/Switchyard.app
+```
+
+The packaged app contains both the SwiftUI executable and the Go daemon. On first launch it installs the daemon into the user's Application Support directory and registers a private user LaunchAgent; normal use does not require starting a daemon from a terminal. For development diagnostics after the app has launched:
+
+```bash
+"$HOME/Library/Application Support/Switchyard/bin/switchyard" doctor
+"$HOME/Library/Application Support/Switchyard/bin/switchyard" status --json
+```
+
+## Current milestone
+
+The app-owned daemon lifecycle, authenticated local API, SQLite state, live Marketplace/worktree inventory, safe native-process host, labelled Docker host, port allocator, health evaluation, CLI/MCP status surfaces, resumable event pages, and native app packaging are implemented. Starting real Marketplace environments through the public action surfaces and the two-worktree golden demonstration remain in progress; see [Next actions](docs/NEXT.md).
+
 ## Documents
 
 - [Architecture](docs/ARCHITECTURE.md)
