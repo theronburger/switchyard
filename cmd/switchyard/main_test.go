@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
+	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -51,14 +58,7 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 	}()
 	t.Cleanup(cancel)
 
-	connector := apiclient.Connector{
-		Paths: apiclient.RuntimePaths{
-			Descriptor: paths.runtimeDescriptor,
-			Token:      paths.token,
-		},
-		DiscoveryPolicy: apiclient.DiscoveryPolicy{RequiredDaemonVersion: version},
-		ClientOptions:   apiclient.ClientOptions{RequiredDaemonVersion: version},
-	}
+	connector := newConnector(paths)
 
 	deadline := time.Now().Add(5 * time.Second)
 	var daemonErr error
@@ -67,6 +67,10 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 		if err == nil {
 			if snapshot.Daemon.State != "ready" || snapshot.Daemon.Version != version {
 				t.Fatalf("unexpected daemon status: %+v", snapshot.Daemon)
+			}
+			if snapshot.Repositories == nil || snapshot.Environments == nil ||
+				snapshot.Operations == nil || snapshot.Alerts == nil {
+				t.Fatal("daemon status encoded a top-level collection as null")
 			}
 			break
 		}
@@ -108,6 +112,83 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 	}
 	if _, err := os.Lstat(paths.token); err != nil {
 		t.Fatalf("persistent daemon token was removed: %v", err)
+	}
+}
+
+func TestDaemonDoesNotPublishRuntimeFilesWhenAlreadyCancelled(t *testing.T) {
+	root := t.TempDir()
+	paths := applicationPaths{
+		directory:         root,
+		database:          filepath.Join(root, "state.sqlite"),
+		runtimeDescriptor: filepath.Join(root, "runtime.json"),
+		token:             filepath.Join(root, "token"),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := runDaemon(ctx, paths); err != nil {
+		t.Fatalf("cancelled daemon: %v", err)
+	}
+	for _, path := range []string{paths.database, paths.runtimeDescriptor, paths.token} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cancelled daemon created %s: %v", path, err)
+		}
+	}
+}
+
+func TestConnectorRejectsReusedPortBeforeSendingAuthorization(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	httpServer := &http.Server{Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requestCount.Add(1)
+	})}
+	go func() { _ = httpServer.Serve(listener) }()
+	t.Cleanup(func() { _ = httpServer.Close() })
+
+	root := t.TempDir()
+	paths := applicationPaths{
+		runtimeDescriptor: filepath.Join(root, "runtime.json"),
+		token:             filepath.Join(root, "token"),
+	}
+	if _, err := daemon.LoadOrCreateToken(paths.token, bytes.NewReader(make([]byte, 32))); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	actualStartedAt, err := processStartedAt(os.Getpid())
+	if err != nil {
+		t.Fatalf("read process start: %v", err)
+	}
+	descriptor := contractv1.RuntimeDescriptor{
+		SchemaVersion:    contractv1.SchemaVersion,
+		Endpoint:         fmt.Sprintf("http://%s", listener.Addr()),
+		DaemonInstanceID: "daemon_stale",
+		DaemonVersion:    version,
+		PID:              os.Getpid(),
+		ProcessStartedAt: actualStartedAt.Add(-time.Second),
+		GeneratedAt:      time.Now().UTC(),
+	}
+	if err := daemon.PublishRuntimeDescriptor(paths.runtimeDescriptor, descriptor); err != nil {
+		t.Fatalf("publish stale descriptor: %v", err)
+	}
+
+	_, err = newConnector(paths).Status(context.Background())
+	if apiclient.CodeOf(err) != apiclient.ErrorRuntimeDescriptorStale {
+		t.Fatalf("status error: got %v (%s), want stale descriptor", err, apiclient.CodeOf(err))
+	}
+	if got := requestCount.Load(); got != 0 {
+		t.Fatalf("unrelated listener received %d authenticated request(s)", got)
+	}
+}
+
+func TestProcessIdentityMatchesCurrentProcess(t *testing.T) {
+	startedAt, err := processStartedAt(os.Getpid())
+	if err != nil {
+		t.Fatalf("processStartedAt: %v", err)
+	}
+	if err := verifyProcessIdentity(os.Getpid(), startedAt); err != nil {
+		t.Fatalf("verifyProcessIdentity: %v", err)
 	}
 }
 

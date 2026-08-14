@@ -40,14 +40,7 @@ func run(ctx context.Context, arguments []string) int {
 		return cli.ExitFailure
 	}
 
-	connector := apiclient.Connector{
-		Paths: apiclient.RuntimePaths{
-			Descriptor: paths.runtimeDescriptor,
-			Token:      paths.token,
-		},
-		DiscoveryPolicy: apiclient.DiscoveryPolicy{RequiredDaemonVersion: version},
-		ClientOptions:   apiclient.ClientOptions{RequiredDaemonVersion: version},
-	}
+	connector := newConnector(paths)
 
 	if len(arguments) == 1 && arguments[0] == "daemon" {
 		if err := runDaemon(ctx, paths); err != nil {
@@ -75,6 +68,20 @@ func run(ctx context.Context, arguments []string) int {
 		Stderr:  os.Stderr,
 	}
 	return application.Run(ctx, arguments)
+}
+
+func newConnector(paths applicationPaths) apiclient.Connector {
+	return apiclient.Connector{
+		Paths: apiclient.RuntimePaths{
+			Descriptor: paths.runtimeDescriptor,
+			Token:      paths.token,
+		},
+		DiscoveryPolicy: apiclient.DiscoveryPolicy{
+			RequiredDaemonVersion: version,
+			VerifyProcessIdentity: verifyProcessIdentity,
+		},
+		ClientOptions: apiclient.ClientOptions{RequiredDaemonVersion: version},
+	}
 }
 
 func writeVersion() int {
@@ -115,7 +122,13 @@ func localPaths() (applicationPaths, error) {
 }
 
 func runDaemon(parent context.Context, paths applicationPaths) error {
-	store, err := state.Open(parent, state.Config{Path: paths.database})
+	ctx, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	store, err := state.Open(ctx, state.Config{Path: paths.database})
 	if err != nil {
 		return err
 	}
@@ -125,14 +138,17 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
-	startedAt := time.Now().UTC()
-	if err := publishInitialSnapshot(parent, store, instanceID, startedAt); err != nil {
+	startedAt, err := processStartedAt(os.Getpid())
+	if err != nil {
 		return err
 	}
 
 	token, err := daemon.LoadOrCreateToken(paths.token, rand.Reader)
 	if err != nil {
 		return err
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	handler, err := daemon.NewHTTPHandler(daemon.HandlerConfig{
 		Token:            token,
@@ -148,9 +164,34 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
+	listenerOwned := true
+	defer func() {
+		if listenerOwned {
+			_ = listener.Close()
+		}
+	}()
 	server, err := daemon.NewLoopbackServer(listener, handler)
 	if err != nil {
 		return err
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	serveErrors := make(chan error, 1)
+	go func() {
+		serveErrors <- server.Serve()
+	}()
+	listenerOwned = false
+
+	if err := publishInitialSnapshot(ctx, store, instanceID, startedAt); err != nil {
+		if ctx.Err() != nil {
+			return shutdownServerAndWait(server, serveErrors, nil)
+		}
+		return shutdownServerAndWait(server, serveErrors, err)
+	}
+	if ctx.Err() != nil {
+		return shutdownServerAndWait(server, serveErrors, nil)
 	}
 
 	descriptor := contractv1.RuntimeDescriptor{
@@ -163,25 +204,33 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		GeneratedAt:      time.Now().UTC(),
 	}
 	if err := daemon.PublishRuntimeDescriptor(paths.runtimeDescriptor, descriptor); err != nil {
-		return err
+		return shutdownServerAndWait(server, serveErrors, err)
 	}
 	defer removeOwnedRuntimeDescriptor(paths.runtimeDescriptor, instanceID)
 
-	serveErrors := make(chan error, 1)
-	go func() {
-		serveErrors <- server.Serve()
-	}()
-
-	signalContext, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-
 	select {
 	case err := <-serveErrors:
-		return err
-	case <-signalContext.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdownContext)
+		return shutdownServer(server, err)
+	case <-ctx.Done():
+		return shutdownServerAndWait(server, serveErrors, nil)
+	}
+}
+
+func shutdownServer(server *daemon.LoopbackServer, cause error) error {
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return errors.Join(cause, server.Shutdown(shutdownContext))
+}
+
+func shutdownServerAndWait(server *daemon.LoopbackServer, serveErrors <-chan error, cause error) error {
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	shutdownErr := server.Shutdown(shutdownContext)
+	select {
+	case serveErr := <-serveErrors:
+		return errors.Join(cause, shutdownErr, serveErr)
+	case <-shutdownContext.Done():
+		return errors.Join(cause, shutdownErr, shutdownContext.Err())
 	}
 }
 
@@ -214,6 +263,18 @@ func publishInitialSnapshot(
 		Version:    version,
 		State:      "ready",
 		StartedAt:  startedAt,
+	}
+	if snapshot.Repositories == nil {
+		snapshot.Repositories = []contractv1.Repository{}
+	}
+	if snapshot.Environments == nil {
+		snapshot.Environments = []contractv1.Environment{}
+	}
+	if snapshot.Operations == nil {
+		snapshot.Operations = []contractv1.Operation{}
+	}
+	if snapshot.Alerts == nil {
+		snapshot.Alerts = []contractv1.Alert{}
 	}
 	_, err = store.CommitSnapshot(ctx, snapshot)
 	return err
