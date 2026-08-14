@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	helperModeVariable  = "SWITCHYARD_PROCESSHOST_TEST_MODE"
-	helperReadyVariable = "SWITCHYARD_PROCESSHOST_TEST_READY"
+	helperModeVariable       = "SWITCHYARD_PROCESSHOST_TEST_MODE"
+	helperReadyVariable      = "SWITCHYARD_PROCESSHOST_TEST_READY"
+	helperChildReadyVariable = "SWITCHYARD_PROCESSHOST_TEST_CHILD_READY"
 )
 
 func TestProcessHostHelper(t *testing.T) {
@@ -32,6 +33,11 @@ func TestProcessHostHelper(t *testing.T) {
 	case "child", "stubborn-child", "foreign":
 		fmt.Fprintln(os.Stdout, "helper child stdout")
 		fmt.Fprintln(os.Stderr, "helper child stderr")
+		if readyPath := os.Getenv(helperChildReadyVariable); readyPath != "" {
+			if err := os.WriteFile(readyPath, []byte("ready\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		for {
 			time.Sleep(time.Hour)
 		}
@@ -40,14 +46,20 @@ func TestProcessHostHelper(t *testing.T) {
 		if mode == "stubborn-parent" {
 			childMode = "stubborn-child"
 		}
+		readyPath := os.Getenv(helperReadyVariable)
+		childReadyPath := readyPath + ".child"
 		child := exec.Command(os.Args[0], "-test.run=TestProcessHostHelper")
-		child.Env = environmentWith(os.Environ(), helperModeVariable, childMode)
+		child.Env = environmentWith(
+			environmentWith(os.Environ(), helperModeVariable, childMode),
+			helperChildReadyVariable,
+			childReadyPath,
+		)
 		child.Stdout = os.Stdout
 		child.Stderr = os.Stderr
 		if err := child.Start(); err != nil {
 			t.Fatal(err)
 		}
-		readyPath := os.Getenv(helperReadyVariable)
+		waitForHelperFile(t, childReadyPath)
 		if err := os.WriteFile(readyPath, []byte(fmt.Sprintf("%d %d\n", os.Getpid(), child.Process.Pid)), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -58,6 +70,20 @@ func TestProcessHostHelper(t *testing.T) {
 		}
 	default:
 		t.Fatalf("unknown helper mode %q", mode)
+	}
+}
+
+func waitForHelperFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for child helper readiness")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

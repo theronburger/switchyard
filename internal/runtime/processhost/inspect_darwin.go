@@ -86,6 +86,7 @@ import (
 )
 
 const maximumProcessArgumentsBytes = 1024 * 1024
+const maximumStableInspectionAttempts = 8
 
 type systemInspector struct{}
 
@@ -101,10 +102,53 @@ func (systemInspector) Inspect(ctx context.Context, pid int) (ProcessSnapshot, e
 		return ProcessSnapshot{}, ErrProcessNotFound
 	}
 
+	var lastErr error
+	for attempt := 0; attempt < maximumStableInspectionAttempts; attempt++ {
+		snapshot, retry, err := inspectProcessOnce(pid)
+		if !retry {
+			return snapshot, err
+		}
+		lastErr = err
+		if err := waitForInspectionRetry(ctx); err != nil {
+			return ProcessSnapshot{}, err
+		}
+	}
+	return ProcessSnapshot{}, fmt.Errorf("%w: inspect pid %d: %v", ErrUnstableGroup, pid, lastErr)
+}
+
+func inspectProcessOnce(pid int) (ProcessSnapshot, bool, error) {
+	before, beforePath, err := inspectProcessMetadata(pid)
+	if err != nil {
+		return ProcessSnapshot{}, inspectionCanRetry(err), err
+	}
+	if before.Status == "zombie" {
+		return before, false, nil
+	}
+
+	arguments, err := inspectProcessArguments(pid)
+	if err != nil {
+		return ProcessSnapshot{}, inspectionCanRetry(err), err
+	}
+
+	after, afterPath, err := inspectProcessMetadata(pid)
+	if err != nil {
+		return ProcessSnapshot{}, inspectionCanRetry(err), err
+	}
+	if after.Status == "zombie" {
+		return after, false, nil
+	}
+	if !sameInspection(before.Identity, beforePath, after.Identity, afterPath) {
+		return ProcessSnapshot{}, true, ErrUnstableGroup
+	}
+	after.Identity.CommandFingerprint = fingerprintCommand(afterPath, arguments)
+	return after, false, nil
+}
+
+func inspectProcessMetadata(pid int) (ProcessSnapshot, string, error) {
 	var processInfo C.struct_switchyard_process_info
 	result, callErr := C.switchyard_inspect_process(C.int(pid), &processInfo)
 	if result != 0 {
-		return ProcessSnapshot{}, processInspectionError(pid, callErr)
+		return ProcessSnapshot{}, "", processInspectionError(pid, callErr)
 	}
 	snapshot := ProcessSnapshot{
 		Identity: ProcessIdentity{
@@ -117,16 +161,36 @@ func (systemInspector) Inspect(ctx context.Context, pid int) (ProcessSnapshot, e
 		MemoryBytes: uint64(processInfo.memory_bytes),
 		CPUTime:     time.Duration(uint64(processInfo.user_time) + uint64(processInfo.system_time)),
 	}
-	if snapshot.Status == "zombie" {
-		return snapshot, nil
-	}
-	arguments, err := inspectProcessArguments(pid)
-	if err != nil {
-		return ProcessSnapshot{}, err
-	}
 	executablePath := C.GoString(&processInfo.executable_path[0])
-	snapshot.Identity.CommandFingerprint = fingerprintCommand(executablePath, arguments)
-	return snapshot, nil
+	return snapshot, executablePath, nil
+}
+
+func sameInspection(
+	before ProcessIdentity,
+	beforePath string,
+	after ProcessIdentity,
+	afterPath string,
+) bool {
+	return before.PID == after.PID &&
+		before.ParentPID == after.ParentPID &&
+		before.ProcessGroupID == after.ProcessGroupID &&
+		before.StartedAt.Equal(after.StartedAt) &&
+		beforePath == afterPath
+}
+
+func inspectionCanRetry(err error) bool {
+	return errors.Is(err, syscall.EIO) || errors.Is(err, syscall.EINTR)
+}
+
+func waitForInspectionRetry(ctx context.Context) error {
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (inspector systemInspector) ListGroup(ctx context.Context, processGroupID int) ([]ProcessSnapshot, error) {
