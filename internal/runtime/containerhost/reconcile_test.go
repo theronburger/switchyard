@@ -38,6 +38,126 @@ func TestReconcilerRevalidatesFullIdentityBeforeStopAndRemove(t *testing.T) {
 	}
 }
 
+func TestReconcilerIgnoresUnrelatedInventoryAndUsageChurn(t *testing.T) {
+	identity := testIdentity("unrelated-churn")
+	plannedResource := ownedResource(ResourceContainer, "container-id", "unrelated-churn", identity, true)
+	plannedResource.SizeBytes = 1024
+	plannedInventory, err := NewInventory([]Resource{plannedResource})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (Planner{}).Build(plannedInventory, []Goal{{
+		Kind: ResourceContainer, Name: plannedResource.Name,
+		Identity: identity, DesiredState: DesiredStopped,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	liveResource := plannedResource
+	liveResource.SizeBytes = 16 * 1024
+	liveInventory, err := NewInventory([]Resource{
+		liveResource,
+		{Kind: ResourceVolume, ID: "foreign-volume", Name: "foreign-volume", SizeBytes: 1 << 30},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveInventory.Revision == plan.BaseRevision {
+		t.Fatal("test setup did not change the global inventory revision")
+	}
+	runner := &scriptedRunner{testing: t, runs: []scriptedRun{{command: plan.Actions[0].Command}}}
+	err = (Reconciler{
+		Runner: runner, Resources: &staticResources{
+			inventory: liveInventory, inspections: []inspectionResult{{resource: liveResource}},
+		},
+	}).Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.assertDone()
+}
+
+func TestReconcilerAllowsAConcurrentUnrelatedEnvironmentCreate(t *testing.T) {
+	identity := testIdentity("create-a")
+	binding := PortBinding{
+		Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP,
+	}
+	plannedInventory, err := NewInventory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (Planner{}).Build(plannedInventory, []Goal{{
+		Kind: ResourceContainer, Name: "environment-a", Image: "elasticmq:1.6.16",
+		PortBindings: []PortBinding{binding}, Identity: identity, DesiredState: DesiredRunning,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	concurrentIdentity := testIdentity("create-b")
+	concurrentBinding := PortBinding{
+		Host: LoopbackHostIPv4, HostPort: 19325, ContainerPort: 9324, Protocol: PortProtocolTCP,
+	}
+	concurrent := ownedResource(ResourceContainer, "environment-b-id", "environment-b", concurrentIdentity, true)
+	concurrent.PortBindings = []PortBinding{concurrentBinding}
+	concurrent.PublishedPortBindings = clonePortBindings(concurrent.PortBindings)
+	liveInventory, err := NewInventory([]Resource{concurrent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := Resource{
+		Kind: ResourceContainer, ID: "environment-a-id", Name: "environment-a",
+		Image: "elasticmq:1.6.16", PortBindings: []PortBinding{binding}, State: "created",
+		Labels: identity.Labels(),
+	}
+	runner := &scriptedRunner{testing: t, runs: []scriptedRun{
+		{command: plan.Actions[0].Command},
+		{command: plan.Actions[1].Command},
+	}}
+	err = (Reconciler{
+		Runner: runner, Resources: &staticResources{
+			inventory: liveInventory, inspections: []inspectionResult{{resource: created}},
+		},
+	}).Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.assertDone()
+}
+
+func TestReconcilerStillRejectsACreateTargetCollision(t *testing.T) {
+	identity := testIdentity("create-collision")
+	plannedInventory, err := NewInventory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (Planner{}).Build(plannedInventory, []Goal{{
+		Kind: ResourceContainer, Name: "colliding-name", Image: "elasticmq:1.6.16",
+		Identity: identity, DesiredState: DesiredRunning,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveInventory, err := NewInventory([]Resource{{
+		Kind: ResourceContainer, ID: "foreign-id", Name: "colliding-name",
+		Image: "colleague:dev", Labels: map[string]string{"team": "marketplace"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &scriptedRunner{testing: t}
+	err = (Reconciler{
+		Runner: runner, Resources: &staticResources{inventory: liveInventory},
+	}).Apply(context.Background(), plan)
+	if !errors.Is(err, ErrPlanExpired) {
+		t.Fatalf("error: got %v, want %v", err, ErrPlanExpired)
+	}
+	if len(runner.seen) != 0 {
+		t.Fatalf("colliding create executed commands: %+v", runner.seen)
+	}
+}
+
 func TestReconcilerNeverTouchesAResourceThatTurnsForeign(t *testing.T) {
 	identity := testIdentity("foreign-survival")
 	owned := ownedResource(ResourceContainer, "container-id", "foreign-survival", identity, true)

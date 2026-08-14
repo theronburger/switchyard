@@ -35,25 +35,13 @@ func (reconciler Reconciler) Apply(ctx context.Context, plan Plan) error {
 		}
 	}
 
-	current, err := reconciler.Resources.Inventory(ctx)
-	if err != nil {
-		return err
-	}
-	canonicalCurrent, err := NewInventory(current.Resources)
-	if err != nil {
-		return err
-	}
-	if canonicalCurrent.Revision != plan.BaseRevision {
-		return ErrPlanExpired
-	}
-
 	for _, action := range plan.Actions {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if action.Kind == ActionCreate {
-			if resourceCollision(canonicalCurrent, action) {
-				return ErrPlanExpired
+			if err := reconciler.verifyCreateTargetAvailable(ctx, action); err != nil {
+				return err
 			}
 		} else {
 			if err := reconciler.verifyActionTarget(ctx, action); err != nil {
@@ -66,6 +54,21 @@ func (reconciler Reconciler) Apply(ctx context.Context, plan Plan) error {
 		if _, err := reconciler.Runner.Run(ctx, action.Command.Clone()); err != nil {
 			return redactRunnerError(action.Command, err)
 		}
+	}
+	return nil
+}
+
+func (reconciler Reconciler) verifyCreateTargetAvailable(ctx context.Context, action Action) error {
+	current, err := reconciler.Resources.Inventory(ctx)
+	if err != nil {
+		return err
+	}
+	canonicalCurrent, err := NewInventory(current.Resources)
+	if err != nil {
+		return err
+	}
+	if resourceCollision(canonicalCurrent, action) {
+		return ErrPlanExpired
 	}
 	return nil
 }
