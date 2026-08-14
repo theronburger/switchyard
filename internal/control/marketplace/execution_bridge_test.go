@@ -110,6 +110,9 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		}
 	}
 	if !reflect.DeepEqual(organizer.Process.Environment, []string{
+		"HOME=/Users/test",
+		"PATH=/opt/switchyard/node/bin:/opt/homebrew/bin:/usr/bin:/bin",
+		"TMPDIR=/tmp/switchyard",
 		"DEED_NONPROFIT_API_URI=http://127.0.0.1:17101",
 		"DEED_ORGANIZER_PORT=17401",
 		"PORT=17401",
@@ -117,6 +120,9 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		t.Fatalf("organizer assigned environment: %#v", organizer.Process.Environment)
 	}
 	if !reflect.DeepEqual(nonprofit.Process.Environment, []string{
+		"HOME=/Users/test",
+		"PATH=/opt/switchyard/node/bin:/opt/homebrew/bin:/usr/bin:/bin",
+		"TMPDIR=/tmp/switchyard",
 		"DEED_NONPROFIT_API_URI=http://127.0.0.1:17101",
 		"DEED_NONPROFIT_SERVICE_PORT=17101",
 	}) {
@@ -333,12 +339,15 @@ func TestPlanBuilderRejectsHostileInputsWithoutSecretOutput(t *testing.T) {
 
 func testRegistration(environmentID, worktreeRoot string) EnvironmentRegistration {
 	return EnvironmentRegistration{
-		EnvironmentID:    environmentID,
-		WorktreeRoot:     worktreeRoot,
-		NodeExecutable:   "/opt/switchyard/node/bin/node",
-		YarnCJS:          filepath.Join(worktreeRoot, ".yarn", "releases", "yarn-3.2.4.cjs"),
-		RunRoot:          filepath.Join(filepath.Dir(worktreeRoot), "switchyard-runs"),
-		DaemonInstanceID: "daemon_instance_1",
+		EnvironmentID:      environmentID,
+		WorktreeRoot:       worktreeRoot,
+		NodeExecutable:     "/opt/switchyard/node/bin/node",
+		YarnCJS:            filepath.Join(worktreeRoot, ".yarn", "releases", "yarn-3.2.4.cjs"),
+		RunRoot:            filepath.Join(filepath.Dir(worktreeRoot), "switchyard-runs"),
+		HomeDirectory:      "/Users/test",
+		TemporaryDirectory: "/tmp/switchyard",
+		ExecutablePath:     "/opt/switchyard/node/bin:/opt/homebrew/bin:/usr/bin:/bin",
+		DaemonInstanceID:   "daemon_instance_1",
 	}
 }
 

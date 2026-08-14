@@ -179,8 +179,14 @@ func buildServiceLaunch(
 		}
 		arguments = append(arguments, argument)
 	}
-	environmentVariables := make([]string, 0, len(plan.Environment))
-	seenEnvironmentVariables := make(map[string]struct{}, len(plan.Environment))
+	environmentVariables := []string{
+		"HOME=" + registration.HomeDirectory,
+		"PATH=" + registration.ExecutablePath,
+		"TMPDIR=" + registration.TemporaryDirectory,
+	}
+	seenEnvironmentVariables := map[string]struct{}{
+		"HOME": {}, "PATH": {}, "TMPDIR": {},
+	}
 	for _, variable := range plan.Environment {
 		if variable.Name == "" || strings.ContainsAny(variable.Name, "=\x00") ||
 			strings.ContainsRune(variable.Value, 0) {

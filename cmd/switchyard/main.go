@@ -133,13 +133,6 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		return err
 	}
 	defer store.Close()
-	if _, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
-		Code:      "DAEMON_RESTARTED",
-		Message:   "The daemon restarted before the operation completed.",
-		Retryable: true,
-	}); err != nil {
-		return err
-	}
 
 	instanceID, err := newInstanceID()
 	if err != nil {
@@ -150,6 +143,34 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		return err
 	}
 	discoveredRepositories := discoverRepositoryInventory(ctx, time.Now().UTC())
+	if err := publishDaemonSnapshot(
+		ctx, store, instanceID, startedAt, "starting", discoveredRepositories,
+	); err != nil {
+		return err
+	}
+	runtime, err := buildEnvironmentRuntime(ctx, store, paths, instanceID, discoveredRepositories)
+	if err != nil {
+		return err
+	}
+	if runtime.actions != nil {
+		defer func() {
+			waitContext, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+			defer cancel()
+			_ = runtime.actions.CloseAndWait(waitContext)
+		}()
+	}
+	if _, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+		Code:      "DAEMON_RESTARTED",
+		Message:   "The daemon restarted before the operation completed.",
+		Retryable: true,
+	}); err != nil {
+		return err
+	}
+	if err := publishDaemonSnapshot(
+		ctx, store, instanceID, startedAt, "ready", discoveredRepositories,
+	); err != nil {
+		return err
+	}
 
 	token, err := daemon.LoadOrCreateToken(paths.token, rand.Reader)
 	if err != nil {
@@ -159,11 +180,12 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		return nil
 	}
 	handler, err := daemon.NewHTTPHandler(daemon.HandlerConfig{
-		Token:            token,
-		DaemonInstanceID: instanceID,
-		DaemonVersion:    version,
-		StartedAt:        startedAt,
-		StatusSource:     store,
+		Token:              token,
+		DaemonInstanceID:   instanceID,
+		DaemonVersion:      version,
+		StartedAt:          startedAt,
+		StatusSource:       store,
+		EnvironmentActions: runtime.actions,
 	})
 	if err != nil {
 		return err
@@ -191,13 +213,6 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		serveErrors <- server.Serve()
 	}()
 	listenerOwned = false
-
-	if err := publishInitialSnapshot(ctx, store, instanceID, startedAt, discoveredRepositories); err != nil {
-		if ctx.Err() != nil {
-			return shutdownServerAndWait(server, serveErrors, nil)
-		}
-		return shutdownServerAndWait(server, serveErrors, err)
-	}
 	if ctx.Err() != nil {
 		return shutdownServerAndWait(server, serveErrors, nil)
 	}
@@ -259,11 +274,12 @@ func removeOwnedRuntimeDescriptor(path string, instanceID string) {
 	_ = os.Remove(path)
 }
 
-func publishInitialSnapshot(
+func publishDaemonSnapshot(
 	ctx context.Context,
 	store *state.Store,
 	instanceID string,
 	startedAt time.Time,
+	daemonState string,
 	discoveredRepositories repositoryInventory,
 ) error {
 	snapshot, err := store.ReadSnapshot(ctx)
@@ -275,7 +291,7 @@ func publishInitialSnapshot(
 	snapshot.Daemon = contractv1.DaemonStatus{
 		InstanceID: instanceID,
 		Version:    version,
-		State:      "ready",
+		State:      daemonState,
 		StartedAt:  startedAt,
 	}
 	if snapshot.Repositories == nil {

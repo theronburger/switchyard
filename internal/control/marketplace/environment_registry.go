@@ -14,12 +14,15 @@ var (
 )
 
 type EnvironmentRegistration struct {
-	EnvironmentID    string
-	WorktreeRoot     string
-	NodeExecutable   string
-	YarnCJS          string
-	RunRoot          string
-	DaemonInstanceID string
+	EnvironmentID      string
+	WorktreeRoot       string
+	NodeExecutable     string
+	YarnCJS            string
+	RunRoot            string
+	HomeDirectory      string
+	TemporaryDirectory string
+	ExecutablePath     string
+	DaemonInstanceID   string
 }
 
 type EnvironmentRegistry struct {
@@ -66,6 +69,8 @@ func validateEnvironmentRegistration(registration EnvironmentRegistration) error
 		registration.NodeExecutable,
 		registration.YarnCJS,
 		registration.RunRoot,
+		registration.HomeDirectory,
+		registration.TemporaryDirectory,
 	}
 	for _, path := range paths {
 		if !cleanAbsolutePath(path) {
@@ -78,7 +83,22 @@ func validateEnvironmentRegistration(registration EnvironmentRegistration) error
 		!pathWithin(registration.WorktreeRoot, registration.YarnCJS) {
 		return ErrRegistryInvalid
 	}
+	if !validExecutablePath(registration.ExecutablePath) {
+		return ErrRegistryInvalid
+	}
 	return nil
+}
+
+func validExecutablePath(value string) bool {
+	if value == "" || strings.ContainsRune(value, 0) {
+		return false
+	}
+	for _, path := range filepath.SplitList(value) {
+		if !cleanAbsolutePath(path) {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanAbsolutePath(path string) bool {

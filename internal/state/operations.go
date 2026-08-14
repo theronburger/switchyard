@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	ErrIdempotencyConflict        = errors.New("idempotency key was already used for a different request")
-	ErrOperationNotFound          = errors.New("operation not found")
-	ErrInvalidOperationTransition = errors.New("invalid operation transition")
+	ErrIdempotencyConflict         = errors.New("idempotency key was already used for a different request")
+	ErrEnvironmentRevisionConflict = errors.New("environment revision does not match the mutation precondition")
+	ErrOperationNotFound           = errors.New("operation not found")
+	ErrInvalidOperationTransition  = errors.New("invalid operation transition")
 )
 
 type NewOperation struct {
@@ -67,6 +68,28 @@ func (store *Store) CreateOperation(ctx context.Context, request NewOperation) (
 	if !errors.Is(err, sql.ErrNoRows) {
 		_ = transaction.Rollback()
 		return contractv1.Operation{}, false, fmt.Errorf("read idempotent operation: %w", err)
+	}
+	if request.ExpectedEnvironmentRevision != nil {
+		if request.EnvironmentID == "" {
+			_ = transaction.Rollback()
+			return contractv1.Operation{}, false, errors.New("expected environment revision requires an environment id")
+		}
+		snapshot, err := readSnapshotTransaction(ctx, transaction)
+		if err != nil {
+			_ = transaction.Rollback()
+			return contractv1.Operation{}, false, fmt.Errorf("read environment revision precondition: %w", err)
+		}
+		currentRevision := int64(0)
+		for _, environment := range snapshot.Environments {
+			if environment.ID == request.EnvironmentID {
+				currentRevision = environment.Revision
+				break
+			}
+		}
+		if currentRevision != *request.ExpectedEnvironmentRevision {
+			_ = transaction.Rollback()
+			return contractv1.Operation{}, false, ErrEnvironmentRevisionConflict
+		}
 	}
 
 	now := store.now().UTC()

@@ -218,6 +218,72 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	assertSnapshotOperation(t, reopened, 4, createdOperation.ID, "succeeded")
 }
 
+func TestOperationExpectedEnvironmentRevisionIsAtomicAndRetrySafe(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	snapshot := validSnapshot()
+	snapshot.Repositories = []contractv1.Repository{{
+		ID: "repository_01", DisplayName: "repository", RootPath: "/tmp/repository",
+		Adapter: "marketplace", Worktrees: []contractv1.Worktree{{
+			ID: "worktree_01", Path: "/tmp/repository", HeadRevision: "abc",
+		}},
+	}}
+	snapshot.Environments = []contractv1.Environment{operationTestEnvironment(7)}
+	if _, err := store.CommitSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	requestBody := map[string]any{"environmentId": "environment_01", "expectedRevision": 7}
+	fingerprint, err := FingerprintRequest(requestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := int64(7)
+	request := NewOperation{
+		ID: "operation_revision", RequestID: "request_revision", IdempotencyKey: "idempotency_revision",
+		RequestFingerprint: fingerprint, Kind: "environment.stop", EnvironmentID: "environment_01",
+		ExpectedEnvironmentRevision: &expected,
+	}
+	operation, created, err := store.CreateOperation(ctx, request)
+	if err != nil || !created {
+		t.Fatalf("create operation=%+v created=%t err=%v", operation, created, err)
+	}
+
+	changed := snapshot
+	changed.Environments = []contractv1.Environment{operationTestEnvironment(8)}
+	if _, err := store.CommitSnapshot(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	retried, created, err := store.CreateOperation(ctx, request)
+	if err != nil || created || retried.ID != operation.ID {
+		t.Fatalf("idempotent retry operation=%+v created=%t err=%v", retried, created, err)
+	}
+
+	conflictingFingerprint, err := FingerprintRequest(map[string]any{"environmentId": "environment_01", "expectedRevision": 7, "other": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, created, err = store.CreateOperation(ctx, NewOperation{
+		ID: "operation_conflict", RequestID: "request_conflict", IdempotencyKey: "idempotency_conflict",
+		RequestFingerprint: conflictingFingerprint, Kind: "environment.stop", EnvironmentID: "environment_01",
+		ExpectedEnvironmentRevision: &expected,
+	})
+	if !errors.Is(err, ErrEnvironmentRevisionConflict) || created {
+		t.Fatalf("revision conflict created=%t err=%v", created, err)
+	}
+}
+
+func operationTestEnvironment(revision int64) contractv1.Environment {
+	return contractv1.Environment{
+		ID: "environment_01", Revision: revision,
+		RepositoryID: "repository_01", WorktreeID: "worktree_01", DisplayName: "environment",
+		DesiredState: "running", ObservedState: "running", Health: "healthy",
+		Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{},
+		InfrastructureLeases: []contractv1.InfrastructureLease{}, URLs: map[string]string{},
+		AttentionAlertIDs: []string{},
+	}
+}
+
 func TestFailInterruptedOperationsIsAtomicAndPreservesTerminalWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
