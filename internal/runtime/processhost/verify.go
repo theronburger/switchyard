@@ -136,9 +136,10 @@ func sameSnapshotIdentities(left, right []ProcessSnapshot) bool {
 
 func observationFromSnapshots(path, state string, snapshots []ProcessSnapshot, observedAt time.Time) Observation {
 	observation := Observation{
-		OwnershipPath: path,
-		State:         state,
-		ObservedAt:    observedAt,
+		OwnershipPath:     path,
+		State:             state,
+		OwnershipVerified: true,
+		ObservedAt:        observedAt,
 	}
 	for _, snapshot := range snapshots {
 		if snapshot.Status == "zombie" {

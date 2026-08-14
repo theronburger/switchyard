@@ -2,9 +2,13 @@ package environment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +16,7 @@ import (
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
+	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
 func TestStartAllocatesDistinctPortsAndLeavesForeignListenerAlone(t *testing.T) {
@@ -456,5 +461,93 @@ func TestRestartReconciliationRollsBackInterruptedStart(t *testing.T) {
 	result, exists, err := journal.Current(context.Background(), "env_restart")
 	if err != nil || !exists || result.State != domain.EnvironmentStopped {
 		t.Fatalf("reconciled environment: result=%+v exists=%t err=%v", result, exists, err)
+	}
+}
+
+func TestRestartReconciliationRefusesAppliedLaunchWithMissingOwnership(t *testing.T) {
+	journal := newMemoryJournal()
+	service := testServiceResult("env_missing_ownership", "run_missing_ownership", true)
+	journal.putOperation(OperationRecord{
+		ID: "op_missing_ownership", EnvironmentID: service.EnvironmentID, RunID: service.RunID,
+		Kind: OperationStart, State: domain.OperationRunning,
+		EnvironmentState: domain.EnvironmentStarting, Phase: PhaseLaunchingServices,
+		Rollback: []RollbackEntry{{
+			Kind: RollbackProcess, Armed: true, Applied: true, Process: &service,
+		}},
+	})
+	processes := &fakeProcesses{stopErr: os.ErrNotExist}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7600, nil), Processes: processes,
+		RollbackTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcomes, err := coordinator.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomes) != 1 || !errors.Is(outcomes[0].Err, processhost.ErrOrphanUnverified) ||
+		outcomes[0].State != domain.EnvironmentFailed {
+		t.Fatalf("reconcile outcomes: %+v", outcomes)
+	}
+	operation := journal.operation("op_missing_ownership")
+	if operation.State != domain.OperationFailed || !operation.Rollback[0].Armed {
+		t.Fatalf("missing ownership was marked clean: %+v", operation)
+	}
+	result, exists, err := journal.Current(context.Background(), service.EnvironmentID)
+	if err != nil || !exists || result.State != domain.EnvironmentFailed || len(result.Services) != 1 {
+		t.Fatalf("failed orphan result: result=%+v exists=%t err=%v", result, exists, err)
+	}
+}
+
+func TestRestartReconciliationRefusesCrashWindowIntentEvidence(t *testing.T) {
+	journal := newMemoryJournal()
+	service := testServiceResult("env_crash_window", "run_crash_window", true)
+	runDirectory := t.TempDir()
+	service.OwnershipPath = filepath.Join(runDirectory, processhost.OwnershipFileName)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	intent := processhost.LaunchIntent{
+		SchemaVersion: processhost.LaunchIntentSchemaVersion,
+		EnvironmentID: service.EnvironmentID, ServiceID: service.ID, RunID: service.RunID,
+		Executable: "/tmp/marketplace-service", LaunchFingerprint: strings.Repeat("0", 64),
+		RunDirectory: runDirectory, CreatedAt: now, UpdatedAt: now,
+	}
+	intentPayload, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(runDirectory, processhost.LaunchIntentFileName), append(intentPayload, '\n'), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	journal.putOperation(OperationRecord{
+		ID: "op_crash_window", EnvironmentID: service.EnvironmentID, RunID: service.RunID,
+		Kind: OperationStart, State: domain.OperationRunning,
+		EnvironmentState: domain.EnvironmentStarting, Phase: PhaseLaunchingServices,
+		Rollback: []RollbackEntry{{
+			Kind: RollbackProcess, Armed: true, Applied: false, Process: &service,
+		}},
+	})
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7600, nil), Processes: processhost.New(processhost.Config{}),
+		RollbackTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcomes, err := coordinator.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomes) != 1 || !errors.Is(outcomes[0].Err, processhost.ErrOrphanUnverified) ||
+		outcomes[0].State != domain.EnvironmentFailed {
+		t.Fatalf("reconcile outcomes: %+v", outcomes)
+	}
+	if operation := journal.operation("op_crash_window"); !operation.Rollback[0].Armed {
+		t.Fatalf("crash-window orphan was marked clean: %+v", operation)
 	}
 }

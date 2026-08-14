@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/theronburger/switchyard/internal/domain"
+	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
 func (coordinator *Coordinator) failStart(
@@ -111,8 +112,14 @@ func (coordinator *Coordinator) rollbackEntry(
 		return coordinator.infrastructure.StopOwned(ctx, cloneGoals(entry.Infrastructure))
 	case RollbackProcess:
 		_, err := coordinator.processes.Stop(ctx, entry.Process.OwnershipPath)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, processhost.ErrOrphanUnverified) {
+			return err
+		}
+		if errors.Is(err, os.ErrNotExist) && !entry.Applied {
 			return nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return processhost.ErrOrphanUnverified
 		}
 		return err
 	default:
@@ -134,7 +141,7 @@ func (coordinator *Coordinator) stopTarget(
 				return err
 			}
 			_, err := coordinator.processes.Stop(ctx, target.Services[index].OwnershipPath)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err != nil {
 				return err
 			}
 		}

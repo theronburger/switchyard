@@ -107,6 +107,9 @@ func TestHostStartsReconcilesObservesAndStopsOwnedDescendants(t *testing.T) {
 	}
 	ownershipPath := filepath.Join(runDirectory, OwnershipFileName)
 	t.Cleanup(func() { stopOwnedRun(host, ownershipPath) })
+	if _, err := os.Lstat(filepath.Join(runDirectory, LaunchIntentFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed launch retained intent: %v", err)
+	}
 
 	if ownership.ProcessGroupID != ownership.Leader.PID {
 		t.Fatalf("dedicated process group: leader %d, group %d", ownership.Leader.PID, ownership.ProcessGroupID)
@@ -159,6 +162,33 @@ func TestHostStartsReconcilesObservesAndStopsOwnedDescendants(t *testing.T) {
 		if fileInfo.Mode().Perm() != 0o600 {
 			t.Fatalf("mode for %s: got %04o, want 0600", logPath, fileInfo.Mode().Perm())
 		}
+	}
+}
+
+func TestStartRefusesAnUnverifiedPriorLaunchIntentWithoutForking(t *testing.T) {
+	runDirectory := filepath.Join(t.TempDir(), "run")
+	if err := os.MkdirAll(runDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	spec := helperLaunchSpec(runDirectory, readyPath, "parent")
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	intent := LaunchIntent{
+		SchemaVersion: LaunchIntentSchemaVersion, EnvironmentID: spec.EnvironmentID,
+		ServiceID: spec.ServiceID, RunID: spec.RunID, Executable: spec.Executable,
+		LaunchFingerprint: fingerprintCommand(spec.Executable, append([]string{spec.Executable}, spec.Arguments...)),
+		RunDirectory:      runDirectory, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := saveLaunchIntent(filepath.Join(runDirectory, LaunchIntentFileName), intent); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(Config{}).Start(context.Background(), spec)
+	if !errors.Is(err, ErrOrphanUnverified) {
+		t.Fatalf("start error: got %v, want %v", err, ErrOrphanUnverified)
+	}
+	if _, err := os.Stat(readyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused relaunch forked helper: %v", err)
 	}
 }
 

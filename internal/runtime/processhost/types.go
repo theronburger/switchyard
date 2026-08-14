@@ -8,18 +8,23 @@ import (
 )
 
 const (
-	OwnershipSchemaVersion = 1
-	OwnershipFileName      = "ownership.json"
-	StdoutLogFileName      = "stdout.log"
-	StderrLogFileName      = "stderr.log"
+	OwnershipSchemaVersion    = 1
+	OwnershipFileName         = "ownership.json"
+	LaunchIntentSchemaVersion = 1
+	LaunchIntentFileName      = "launch-intent.json"
+	StdoutLogFileName         = "stdout.log"
+	StderrLogFileName         = "stderr.log"
+	StateOrphanUnverified     = "orphaned-unverified"
 )
 
 var (
-	ErrAlreadyOwned      = errors.New("run directory already has an ownership record")
-	ErrOwnershipInvalid  = errors.New("process ownership record is invalid")
-	ErrOwnershipMismatch = errors.New("process identity no longer matches persisted ownership")
-	ErrProcessNotFound   = errors.New("process not found")
-	ErrUnstableGroup     = errors.New("process group membership changed during ownership verification")
+	ErrAlreadyOwned        = errors.New("run directory already has an ownership record")
+	ErrOwnershipInvalid    = errors.New("process ownership record is invalid")
+	ErrOwnershipMismatch   = errors.New("process identity no longer matches persisted ownership")
+	ErrProcessNotFound     = errors.New("process not found")
+	ErrUnstableGroup       = errors.New("process group membership changed during ownership verification")
+	ErrLaunchIntentInvalid = errors.New("process launch intent is invalid")
+	ErrOrphanUnverified    = errors.New("process evidence exists without verified ownership")
 )
 
 type LaunchSpec struct {
@@ -39,6 +44,23 @@ type ProcessIdentity struct {
 	ProcessGroupID     int       `json:"processGroupId"`
 	StartedAt          time.Time `json:"startedAt"`
 	CommandFingerprint string    `json:"commandFingerprint"`
+}
+
+// LaunchIntent is persisted before fork. It deliberately contains no raw
+// arguments or environment values; the exact executable and argv are bound by
+// LaunchFingerprint. CandidateLeader is evidence only and never grants signal
+// authority.
+type LaunchIntent struct {
+	SchemaVersion     int              `json:"schemaVersion"`
+	EnvironmentID     string           `json:"environmentId"`
+	ServiceID         string           `json:"serviceId"`
+	RunID             string           `json:"runId"`
+	Executable        string           `json:"executable"`
+	LaunchFingerprint string           `json:"launchFingerprint"`
+	RunDirectory      string           `json:"runDirectory"`
+	CreatedAt         time.Time        `json:"createdAt"`
+	UpdatedAt         time.Time        `json:"updatedAt"`
+	CandidateLeader   *ProcessIdentity `json:"candidateLeader,omitempty"`
 }
 
 type ExitStatus struct {
@@ -72,12 +94,17 @@ type ProcessSnapshot struct {
 }
 
 type Observation struct {
-	OwnershipPath string
-	State         string
-	MemberCount   int
-	MemoryBytes   uint64
-	CPUTime       time.Duration
-	ObservedAt    time.Time
+	OwnershipPath      string
+	IntentPath         string
+	State              string
+	OwnershipVerified  bool
+	HasLaunchIntent    bool
+	HasLogEvidence     bool
+	HasProcessEvidence bool
+	MemberCount        int
+	MemoryBytes        uint64
+	CPUTime            time.Duration
+	ObservedAt         time.Time
 }
 
 type ProcessInspector interface {

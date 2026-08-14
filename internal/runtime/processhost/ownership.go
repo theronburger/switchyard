@@ -90,14 +90,18 @@ func saveOwnership(path string, ownership Ownership) error {
 	if err := validateOwnership(path, ownership); err != nil {
 		return err
 	}
-	payload, err := json.Marshal(ownership)
+	return saveAtomicJSON(path, ".ownership.*", ownership)
+}
+
+func saveAtomicJSON(path, pattern string, value any) error {
+	payload, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 	payload = append(payload, '\n')
 
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".ownership.*")
+	temporary, err := os.CreateTemp(directory, pattern)
 	if err != nil {
 		return err
 	}
@@ -118,5 +122,17 @@ func saveOwnership(path string, ownership Ownership) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(directory)
+}
+
+func syncDirectory(directory string) error {
+	handle, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+	return handle.Sync()
 }

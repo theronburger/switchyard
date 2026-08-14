@@ -70,11 +70,17 @@ func (host *Host) Start(ctx context.Context, spec LaunchSpec) (Ownership, error)
 		return Ownership{}, err
 	}
 	ownershipPath := filepath.Join(spec.RunDirectory, OwnershipFileName)
+	intentPath := filepath.Join(spec.RunDirectory, LaunchIntentFileName)
 	runLock := host.runLock(ownershipPath)
 	runLock.Lock()
 	defer runLock.Unlock()
 	if _, err := os.Lstat(ownershipPath); err == nil {
 		return Ownership{}, ErrAlreadyOwned
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Ownership{}, err
+	}
+	if _, err := os.Lstat(intentPath); err == nil {
+		return Ownership{}, ErrOrphanUnverified
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Ownership{}, err
 	}
@@ -100,23 +106,46 @@ func (host *Host) Start(ctx context.Context, spec LaunchSpec) (Ownership, error)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	now := host.now().UTC()
+	intent := LaunchIntent{
+		SchemaVersion:     LaunchIntentSchemaVersion,
+		EnvironmentID:     spec.EnvironmentID,
+		ServiceID:         spec.ServiceID,
+		RunID:             spec.RunID,
+		Executable:        spec.Executable,
+		LaunchFingerprint: fingerprintCommand(spec.Executable, append([]string{spec.Executable}, spec.Arguments...)),
+		RunDirectory:      spec.RunDirectory,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := saveLaunchIntent(intentPath, intent); err != nil {
+		return Ownership{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Ownership{}, errors.Join(err, clearLaunchIntent(intentPath))
+	}
 	if err := command.Start(); err != nil {
-		return Ownership{}, fmt.Errorf("start owned process: %w", err)
+		return Ownership{}, errors.Join(fmt.Errorf("start owned process: %w", err), clearLaunchIntent(intentPath))
 	}
 
 	leader, err := host.inspectStartedLeader(ctx, command.Process.Pid)
 	if err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		return Ownership{}, err
+		return Ownership{}, errors.Join(err, clearLaunchIntent(intentPath))
 	}
 	if leader.Identity.ProcessGroupID != leader.Identity.PID {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		return Ownership{}, errors.New("started process did not enter its dedicated process group")
+		return Ownership{}, errors.Join(
+			errors.New("started process did not enter its dedicated process group"),
+			clearLaunchIntent(intentPath),
+		)
 	}
 
-	now := host.now().UTC()
+	now = host.now().UTC()
+	intent.CandidateLeader = &leader.Identity
+	intent.UpdatedAt = now
 	ownership := Ownership{
 		SchemaVersion:     OwnershipSchemaVersion,
 		EnvironmentID:     spec.EnvironmentID,
@@ -126,15 +155,29 @@ func (host *Host) Start(ctx context.Context, spec LaunchSpec) (Ownership, error)
 		ProcessGroupID:    leader.Identity.ProcessGroupID,
 		Leader:            leader.Identity,
 		Members:           []ProcessIdentity{leader.Identity},
-		LaunchFingerprint: fingerprintCommand(spec.Executable, append([]string{spec.Executable}, spec.Arguments...)),
+		LaunchFingerprint: intent.LaunchFingerprint,
 		StdoutPath:        stdoutPath,
 		StderrPath:        stderrPath,
 		StartedAt:         leader.Identity.StartedAt,
 		UpdatedAt:         now,
 	}
+	if err := saveLaunchIntent(intentPath, intent); err != nil {
+		host.cleanupFailedStart(ownership, command)
+		return Ownership{}, err
+	}
 	if err := saveOwnership(ownershipPath, ownership); err != nil {
 		host.cleanupFailedStart(ownership, command)
 		return Ownership{}, err
+	}
+	// The fsynced atomic ownership rename is the commit point. Clearing the
+	// intent only after that point means a crash can leave intent-only or both
+	// files, but can never erase the evidence before verified ownership exists.
+	if err := clearLaunchIntent(intentPath); err != nil {
+		go host.recordExit(ownershipPath, ownership.Leader, command)
+		stopContext, cancel := context.WithTimeout(context.Background(), host.gracePeriod+host.killWait)
+		_, stopErr := host.stopLocked(stopContext, ownershipPath, ownership)
+		cancel()
+		return Ownership{}, errors.Join(err, stopErr)
 	}
 
 	go host.recordExit(ownershipPath, ownership.Leader, command)
@@ -167,6 +210,12 @@ func (host *Host) Reconcile(ctx context.Context, ownershipPath string) (Observat
 
 	ownership, err := LoadOwnership(ownershipPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			observation, found, observationError := host.observeUnverifiedRun(ctx, ownershipPath)
+			if found || observationError != nil {
+				return observation, observationError
+			}
+		}
 		return Observation{}, err
 	}
 	snapshots, err := verifyOwnedGroup(ctx, host.inspector, ownership)
@@ -196,6 +245,12 @@ func (host *Host) Stop(ctx context.Context, ownershipPath string) (Observation, 
 
 	ownership, err := LoadOwnership(ownershipPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			observation, found, observationError := host.observeUnverifiedRun(ctx, ownershipPath)
+			if found || observationError != nil {
+				return observation, errors.Join(ErrOrphanUnverified, observationError)
+			}
+		}
 		return Observation{}, err
 	}
 	return host.stopLocked(ctx, ownershipPath, ownership)

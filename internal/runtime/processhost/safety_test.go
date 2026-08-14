@@ -3,11 +3,94 @@ package processhost
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestUnverifiedIntentAndLogsAreReportOnly(t *testing.T) {
+	ownershipPath, _ := writeSafetyIntent(t, nil)
+	runDirectory := filepath.Dir(ownershipPath)
+	if err := os.WriteFile(filepath.Join(runDirectory, StdoutLogFileName), []byte("possibly launched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signaler := &recordingSignaler{}
+	host := New(Config{Inspector: fixedInspector{}, Signaler: signaler})
+
+	observation, err := host.Observe(context.Background(), ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.State != StateOrphanUnverified || observation.OwnershipVerified ||
+		!observation.HasLaunchIntent || !observation.HasLogEvidence || observation.HasProcessEvidence {
+		t.Fatalf("orphan observation: %+v", observation)
+	}
+	stopped, err := host.Stop(context.Background(), ownershipPath)
+	if !errors.Is(err, ErrOrphanUnverified) || stopped.State != StateOrphanUnverified {
+		t.Fatalf("stop result: observation=%+v error=%v", stopped, err)
+	}
+	if len(signaler.signals) != 0 {
+		t.Fatalf("unverified intent sent signals: %v", signaler.signals)
+	}
+}
+
+func TestUnverifiedCandidateProcessRemainsReportOnly(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	candidate := ProcessIdentity{
+		PID: 5000, ParentPID: 1, ProcessGroupID: 5000, StartedAt: startedAt,
+		CommandFingerprint: fingerprintCommand("/tmp/helper", []string{"/tmp/helper"}),
+	}
+	ownershipPath, _ := writeSafetyIntent(t, &candidate)
+	snapshot := ProcessSnapshot{Identity: candidate, Status: "running", MemoryBytes: 4096}
+	signaler := &recordingSignaler{}
+	host := New(Config{Inspector: fixedInspector{group: []ProcessSnapshot{snapshot}}, Signaler: signaler})
+
+	observation, err := host.Observe(context.Background(), ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observation.HasProcessEvidence || observation.MemberCount != 1 {
+		t.Fatalf("candidate observation: %+v", observation)
+	}
+	_, err = host.Stop(context.Background(), ownershipPath)
+	if !errors.Is(err, ErrOrphanUnverified) {
+		t.Fatalf("stop error: got %v, want %v", err, ErrOrphanUnverified)
+	}
+	if len(signaler.signals) != 0 {
+		t.Fatalf("candidate-only evidence sent signals: %v", signaler.signals)
+	}
+}
+
+func TestUnverifiedIntentRejectsPIDReuseWithoutSignalling(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	candidate := ProcessIdentity{
+		PID: 5000, ParentPID: 1, ProcessGroupID: 5000, StartedAt: startedAt,
+		CommandFingerprint: fingerprintCommand("/tmp/helper", []string{"/tmp/helper"}),
+	}
+	ownershipPath, _ := writeSafetyIntent(t, &candidate)
+	reused := ProcessSnapshot{Identity: candidate, Status: "running"}
+	reused.Identity.StartedAt = startedAt.Add(time.Second)
+	reused.Identity.CommandFingerprint = fingerprintCommand("/tmp/foreign", []string{"/tmp/foreign"})
+	signaler := &recordingSignaler{}
+	host := New(Config{Inspector: fixedInspector{group: []ProcessSnapshot{reused}}, Signaler: signaler})
+
+	observation, err := host.Observe(context.Background(), ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.HasProcessEvidence {
+		t.Fatalf("reused pid was reported as launch evidence: %+v", observation)
+	}
+	_, err = host.Stop(context.Background(), ownershipPath)
+	if !errors.Is(err, ErrOrphanUnverified) {
+		t.Fatalf("stop error: got %v, want %v", err, ErrOrphanUnverified)
+	}
+	if len(signaler.signals) != 0 {
+		t.Fatalf("reused pid received signals: %v", signaler.signals)
+	}
+}
 
 type fixedInspector struct {
 	group []ProcessSnapshot
@@ -165,6 +248,31 @@ func writeSafetyOwnership(t *testing.T, startedAt time.Time) (string, Ownership)
 		t.Fatal(err)
 	}
 	return path, ownership
+}
+
+func writeSafetyIntent(t *testing.T, candidate *ProcessIdentity) (string, LaunchIntent) {
+	t.Helper()
+	runDirectory := t.TempDir()
+	now := time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC)
+	intent := LaunchIntent{
+		SchemaVersion: LaunchIntentSchemaVersion, EnvironmentID: "env_test",
+		ServiceID: "service_test", RunID: "run_test", Executable: "/tmp/helper",
+		LaunchFingerprint: fingerprintCommand("/tmp/helper", []string{"/tmp/helper"}),
+		RunDirectory:      runDirectory, CreatedAt: now, UpdatedAt: now,
+		CandidateLeader: candidate,
+	}
+	intentPath := filepath.Join(runDirectory, LaunchIntentFileName)
+	if err := saveLaunchIntent(intentPath, intent); err != nil {
+		t.Fatal(err)
+	}
+	fileInfo, err := os.Stat(intentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("intent mode: got %04o, want 0600", fileInfo.Mode().Perm())
+	}
+	return filepath.Join(runDirectory, OwnershipFileName), intent
 }
 
 func snapshotFor(pid, parentPID, processGroupID int, startedAt time.Time, fingerprint string) ProcessSnapshot {

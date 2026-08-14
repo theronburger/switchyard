@@ -325,6 +325,7 @@ type fakeProcesses struct {
 	calls       *[]string
 	starts      int
 	stops       int
+	stopErr     error
 	startSpecs  []processhost.LaunchSpec
 }
 
@@ -356,7 +357,7 @@ func (host *fakeProcesses) Stop(context.Context, string) (processhost.Observatio
 	if host.calls != nil {
 		*host.calls = append(*host.calls, "stop-process")
 	}
-	return processhost.Observation{State: "stopped"}, nil
+	return processhost.Observation{State: "stopped"}, host.stopErr
 }
 
 func (*fakeProcesses) Reconcile(context.Context, string) (processhost.Observation, error) {
