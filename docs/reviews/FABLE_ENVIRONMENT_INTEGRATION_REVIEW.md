@@ -11,7 +11,7 @@ Reviewed 2026-08-14 with `claude-fable-5` through the personal Fable profile. Th
 - Environment work could not inherit an HTTP request lifetime. The action service now returns an operation receipt immediately and runs accepted work under daemon lifetime, with bounded shutdown cleanup.
 - A second environment could overwrite another environment's Serverless projection. Marketplace projections now carry environment ownership and refuse cross-environment replacement.
 - LaunchAgent's minimal environment made implicit `node`, Yarn, Docker, `HOME`, `PATH`, and `TMPDIR` assumptions unsafe. Runtime registrations now resolve absolute executables and inject a controlled baseline environment.
-- Finite Marketplace preparation commands were being discarded. A dedicated exact-argv, bounded preparation phase is being integrated; persistent services remain direct process-host launches and never run through Turbo.
+- Finite Marketplace preparation commands were being discarded. A dedicated exact-argv, bounded preparation phase now runs before persistent services; persistent services remain direct process-host launches and never run through Turbo.
 
 ## Already resolved independently before the review returned
 
@@ -21,9 +21,9 @@ Reviewed 2026-08-14 with `claude-fable-5` through the personal Fable profile. Th
 
 ## Follow-up safety work
 
-- Close the narrow fork-before-ownership-record crash window with a durable pre-launch intent and report-only orphan evidence. An intent alone must never authorize a signal.
-- Continue live reconciliation/health refresh after daemon restart instead of relying only on the last terminal snapshot.
-- Prefer retrying a transient terminal publication failure before tearing down a verified-healthy environment.
-- Scale cleanup budgets with the concrete plan and retain idempotent recovery after partial cleanup.
+- The narrow fork-before-ownership-record crash window now has a durable pre-launch intent and report-only orphan evidence. An intent alone never authorizes a signal.
+- Live reconciliation and health refresh continue after daemon restart rather than relying only on the last terminal snapshot.
+- A transient terminal publication failure can still cause conservative teardown of a verified-healthy environment; retrying publication first remains a follow-up.
+- Cleanup remains bounded and restart-idempotent, but scaling the budget from the concrete plan remains a follow-up.
 
 The raw model response is intentionally not committed. This file records the actionable engineering conclusions and their disposition.

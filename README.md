@@ -78,7 +78,9 @@ The packaged app contains both the SwiftUI executable and the Go daemon. On firs
 
 ## Current milestone
 
-The app-owned daemon lifecycle, authenticated local API, SQLite state, live Marketplace/worktree inventory, safe native-process host, labelled Docker host, port allocator, health evaluation, CLI/MCP status surfaces, resumable event pages, and native app packaging are implemented. Starting real Marketplace environments through the public action surfaces and the two-worktree golden demonstration remain in progress; see [Next actions](docs/NEXT.md).
+The first end-to-end milestone is complete. The packaged app owns installation and repair, its LaunchAgent keeps the authenticated Go daemon alive, and the daemon discovers Marketplace worktrees, persists operations, allocates isolated ports, prepares services, starts owned process groups and labelled ElasticMQ containers, initializes queues, observes live health/resources, and safely reconciles across app and daemon restarts. Start and stop work through the SwiftUI app, CLI, and thin MCP surface; the app can also inspect and repair Codex and Claude MCP connections.
+
+The two-worktree Marketplace acceptance run passed with `organizer` and `nonprofit-service` healthy at the same time on distinct ports and infrastructure. Stopping either environment affected only its positively owned processes, container, projection, and leases; pre-existing Marketplace services and the foreign `demo-elasticmq` container survived. See the [golden Marketplace acceptance record](docs/reviews/GOLDEN_MARKETPLACE_2026-08-14.md) and [next actions](docs/NEXT.md).
 
 ## Documents
 
@@ -88,3 +90,5 @@ The app-owned daemon lifecycle, authenticated local API, SQLite state, live Mark
 - [Parallel build plan](docs/BUILD_PLAN.md)
 - [Decision log](docs/DECISIONS.md)
 - [Next actions](docs/NEXT.md)
+- [Golden Marketplace acceptance](docs/reviews/GOLDEN_MARKETPLACE_2026-08-14.md)
+- [Fable environment integration review](docs/reviews/FABLE_ENVIRONMENT_INTEGRATION_REVIEW.md)
