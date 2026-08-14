@@ -84,7 +84,7 @@ INSERT INTO operations(
 		request.IdempotencyKey,
 		request.RequestFingerprint[:],
 		request.Kind,
-		"queued",
+		"pending",
 		request.EnvironmentID,
 		environmentRevision,
 		now.Format(timeFormat),
@@ -100,7 +100,7 @@ INSERT INTO operations(
 	operation := contractv1.Operation{
 		ID:            request.ID,
 		Kind:          request.Kind,
-		State:         "queued",
+		State:         "pending",
 		EnvironmentID: request.EnvironmentID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -188,10 +188,10 @@ func (store *Store) TransitionOperation(
 
 func operationTransitionAllowed(currentState, nextState string) bool {
 	switch currentState {
-	case "queued":
-		return nextState == "running" || nextState == "failed" || nextState == "canceled"
+	case "pending":
+		return nextState == "running" || nextState == "failed" || nextState == "cancelled"
 	case "running":
-		return nextState == "succeeded" || nextState == "failed" || nextState == "canceled"
+		return nextState == "succeeded" || nextState == "failed" || nextState == "cancelled"
 	default:
 		return false
 	}
