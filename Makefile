@@ -1,4 +1,4 @@
-.PHONY: check check-format format go-check swift-check test race
+.PHONY: app-bundle check check-format format go-check swift-check test race
 
 GO_FILES := $(shell find cmd internal -name '*.go' -type f 2>/dev/null)
 
@@ -24,3 +24,6 @@ test:
 
 race:
 	go test -race ./...
+
+app-bundle:
+	./scripts/build-app-bundle.sh
