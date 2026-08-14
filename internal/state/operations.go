@@ -134,6 +134,64 @@ func (store *Store) ListOperations(ctx context.Context) ([]contractv1.Operation,
 	return operations, nil
 }
 
+func (store *Store) FailInterruptedOperations(
+	ctx context.Context,
+	operationError contractv1.ContractError,
+) ([]contractv1.Operation, error) {
+	if operationError.Code == "" || operationError.Message == "" {
+		return nil, errors.New("interrupted operation error code and message are required")
+	}
+	errorPayload, err := json.Marshal(operationError)
+	if err != nil {
+		return nil, fmt.Errorf("encode interrupted operation error: %w", err)
+	}
+
+	transaction, err := store.database.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin interrupted operation reconciliation: %w", err)
+	}
+	operations, err := listOperations(ctx, transaction)
+	if err != nil {
+		_ = transaction.Rollback()
+		return nil, fmt.Errorf("list interrupted operations: %w", err)
+	}
+
+	updatedAt := store.now().UTC()
+	interrupted := make([]contractv1.Operation, 0)
+	for _, operation := range operations {
+		if operation.State != "pending" && operation.State != "running" {
+			continue
+		}
+		if _, err := transaction.ExecContext(
+			ctx,
+			"UPDATE operations SET state = 'failed', updated_at = ?, error_json = ? WHERE id = ?",
+			updatedAt.Format(timeFormat),
+			errorPayload,
+			operation.ID,
+		); err != nil {
+			_ = transaction.Rollback()
+			return nil, fmt.Errorf("fail interrupted operation: %w", err)
+		}
+		operation.State = "failed"
+		operation.UpdatedAt = updatedAt
+		operationErrorCopy := operationError
+		operation.Error = &operationErrorCopy
+		interrupted = append(interrupted, operation)
+	}
+	if len(interrupted) == 0 {
+		_ = transaction.Rollback()
+		return []contractv1.Operation{}, nil
+	}
+	if err := store.commitOperationsSnapshot(ctx, transaction); err != nil {
+		_ = transaction.Rollback()
+		return nil, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return nil, fmt.Errorf("commit interrupted operation reconciliation: %w", err)
+	}
+	return interrupted, nil
+}
+
 func (store *Store) TransitionOperation(
 	ctx context.Context,
 	operationID string,

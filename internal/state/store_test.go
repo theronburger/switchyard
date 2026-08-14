@@ -217,6 +217,91 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	assertSnapshotOperation(t, reopened, 4, createdOperation.ID, "succeeded")
 }
 
+func TestFailInterruptedOperationsIsAtomicAndPreservesTerminalWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	if _, err := store.CommitSnapshot(ctx, validSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+
+	createOperation := func(id string) contractv1.Operation {
+		t.Helper()
+		fingerprint, err := FingerprintRequest(map[string]string{"operationId": id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation, _, err := store.CreateOperation(ctx, NewOperation{
+			ID:                 id,
+			RequestID:          "request_" + id,
+			IdempotencyKey:     "idempotency_" + id,
+			RequestFingerprint: fingerprint,
+			Kind:               "startEnvironment",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return operation
+	}
+
+	interruptedOperation := createOperation("operation_interrupted")
+	if _, err := store.TransitionOperation(ctx, interruptedOperation.ID, "running", nil); err != nil {
+		t.Fatal(err)
+	}
+	completedOperation := createOperation("operation_completed")
+	if _, err := store.TransitionOperation(ctx, completedOperation.ID, "running", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionOperation(ctx, completedOperation.ID, "succeeded", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	interrupted, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+		Code:      "DAEMON_RESTARTED",
+		Message:   "The daemon restarted before the operation completed.",
+		Retryable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interrupted) != 1 || interrupted[0].ID != interruptedOperation.ID ||
+		interrupted[0].State != "failed" || interrupted[0].Error == nil ||
+		interrupted[0].Error.Code != "DAEMON_RESTARTED" {
+		t.Fatalf("interrupted operations: got %+v", interrupted)
+	}
+
+	snapshot, err := store.ReadSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := snapshot.SnapshotRevision, int64(7); got != want {
+		t.Fatalf("reconciled snapshot revision: got %d, want %d", got, want)
+	}
+	states := make(map[string]string, len(snapshot.Operations))
+	for _, operation := range snapshot.Operations {
+		states[operation.ID] = operation.State
+	}
+	if states[interruptedOperation.ID] != "failed" || states[completedOperation.ID] != "succeeded" {
+		t.Fatalf("reconciled snapshot states: got %+v", states)
+	}
+
+	repeated, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+		Code: "DAEMON_RESTARTED", Message: "Restarted.", Retryable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeated) != 0 {
+		t.Fatalf("terminal operations were reconciled twice: %+v", repeated)
+	}
+	afterRepeat, err := store.ReadSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRepeat.SnapshotRevision != snapshot.SnapshotRevision {
+		t.Fatalf("no-op reconciliation advanced snapshot to %d", afterRepeat.SnapshotRevision)
+	}
+}
+
 func assertSnapshotOperation(t *testing.T, store *Store, revision int64, operationID, operationState string) {
 	t.Helper()
 	snapshot, err := store.ReadSnapshot(context.Background())

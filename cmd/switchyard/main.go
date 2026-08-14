@@ -133,6 +133,13 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		return err
 	}
 	defer store.Close()
+	if _, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+		Code:      "DAEMON_RESTARTED",
+		Message:   "The daemon restarted before the operation completed.",
+		Retryable: true,
+	}); err != nil {
+		return err
+	}
 
 	instanceID, err := newInstanceID()
 	if err != nil {
