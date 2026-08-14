@@ -13,6 +13,7 @@ swift_binary_directory="$(swift build --package-path "$repository_root/app" -c r
 mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources"
 install -m 0755 "$swift_binary_directory/SwitchyardApp" "$app_bundle/Contents/MacOS/SwitchyardApp"
 install -m 0644 "$repository_root/packaging/Switchyard-Info.plist" "$app_bundle/Contents/Info.plist"
+install -m 0644 "$repository_root/packaging/Switchyard.icns" "$app_bundle/Contents/Resources/Switchyard.icns"
 go build -trimpath -ldflags "-s -w" -o "$app_bundle/Contents/Resources/SwitchyardDaemon" "$repository_root/cmd/switchyard"
 codesign --force --deep --sign - "$app_bundle"
 

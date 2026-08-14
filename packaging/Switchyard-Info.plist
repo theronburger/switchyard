@@ -10,6 +10,8 @@
     <string>SwitchyardApp</string>
     <key>CFBundleIdentifier</key>
     <string>dev.theronburger.switchyard</string>
+    <key>CFBundleIconFile</key>
+    <string>Switchyard.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
