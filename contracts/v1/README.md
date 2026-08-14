@@ -16,6 +16,8 @@ Rules:
 
 `fixtures/status.json` is the canonical cross-language decoding fixture. Additive fields must not break clients. Contract changes are coordinator-owned and require the Go fixture test plus the Swift conformance executable. This machine currently has Command Line Tools rather than full Xcode, so its Swift toolchain ships without XCTest; the verifier deliberately has no external test dependency.
 
+`fixtures/start-environment-request.json`, `fixtures/stop-environment-request.json`, and `fixtures/mutation-receipt.json` freeze the asynchronous environment-action boundary. Starting names a discovered worktree and an explicit non-empty service set. Stopping names the environment in the route. Both carry a request ID, idempotency key, and optional expected environment revision; acceptance returns an operation ID immediately.
+
 ## Local transport
 
 `fixtures/runtime.json` is atomically written to a mode-`0600` file only after the listener and state store are ready. Its endpoint must be ephemeral loopback HTTP. The bearer token is a separate mode-`0600` file containing a base64url random value; it never appears in the descriptor, URLs, process arguments, status, or logs.

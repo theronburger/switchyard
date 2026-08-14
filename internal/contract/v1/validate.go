@@ -1,6 +1,17 @@
 package contractv1
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+const (
+	maximumOpaqueIDBytes       = 256
+	maximumIdempotencyKeyBytes = 512
+	maximumRequestedServices   = 32
+)
 
 func (snapshot StatusSnapshot) Validate() error {
 	if snapshot.SchemaVersion != SchemaVersion {
@@ -139,4 +150,77 @@ func validateEnvironment(environment Environment) error {
 	}
 
 	return nil
+}
+
+func (request MutationRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("schema version: got %d, want %d", request.SchemaVersion, SchemaVersion)
+	}
+	if !validOpaqueValue(request.RequestID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("request id is invalid")
+	}
+	if !validOpaqueValue(request.IdempotencyKey, maximumIdempotencyKeyBytes) {
+		return fmt.Errorf("idempotency key is invalid")
+	}
+	if request.ExpectedEnvironmentRevision != nil && *request.ExpectedEnvironmentRevision < 0 {
+		return fmt.Errorf("expected environment revision must not be negative")
+	}
+	return nil
+}
+
+func (request StartEnvironmentRequest) Validate() error {
+	if err := request.MutationRequest.Validate(); err != nil {
+		return err
+	}
+	if !validOpaqueValue(request.WorktreeID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("worktree id is invalid")
+	}
+	if request.ServiceIDs == nil || len(request.ServiceIDs) == 0 ||
+		len(request.ServiceIDs) > maximumRequestedServices {
+		return fmt.Errorf("service ids must be a non-empty bounded JSON array")
+	}
+	seen := make(map[string]struct{}, len(request.ServiceIDs))
+	for _, serviceID := range request.ServiceIDs {
+		if !validOpaqueValue(serviceID, maximumOpaqueIDBytes) {
+			return fmt.Errorf("service id is invalid")
+		}
+		if _, duplicate := seen[serviceID]; duplicate {
+			return fmt.Errorf("duplicate service id %q", serviceID)
+		}
+		seen[serviceID] = struct{}{}
+	}
+	return nil
+}
+
+func (request StopEnvironmentRequest) Validate() error {
+	return request.MutationRequest.Validate()
+}
+
+func (receipt MutationReceipt) Validate() error {
+	if receipt.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("schema version: got %d, want %d", receipt.SchemaVersion, SchemaVersion)
+	}
+	if !validOpaqueValue(receipt.RequestID, maximumOpaqueIDBytes) ||
+		!validOpaqueValue(receipt.OperationID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("mutation receipt identifiers are invalid")
+	}
+	if receipt.AcceptedAt.IsZero() {
+		return fmt.Errorf("mutation receipt acceptance time is required")
+	}
+	if receipt.EnvironmentID != "" && !validOpaqueValue(receipt.EnvironmentID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("mutation receipt environment id is invalid")
+	}
+	return nil
+}
+
+func validOpaqueValue(value string, maximumBytes int) bool {
+	if value == "" || len(value) > maximumBytes || strings.TrimSpace(value) != value || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }

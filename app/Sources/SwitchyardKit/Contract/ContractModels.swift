@@ -198,6 +198,56 @@ public struct ContractError: Decodable, Error, Sendable {
     public let requestedState: String?
 }
 
+public struct StartEnvironmentRequest: Codable, Sendable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let worktreeId: String
+    public let serviceIds: [String]
+
+    public init(
+        requestId: String,
+        idempotencyKey: String,
+        expectedEnvironmentRevision: Int64? = nil,
+        worktreeId: String,
+        serviceIds: [String]
+    ) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = expectedEnvironmentRevision
+        self.worktreeId = worktreeId
+        self.serviceIds = serviceIds
+    }
+}
+
+public struct StopEnvironmentRequest: Codable, Sendable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+
+    public init(
+        requestId: String,
+        idempotencyKey: String,
+        expectedEnvironmentRevision: Int64? = nil
+    ) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = expectedEnvironmentRevision
+    }
+}
+
+public struct MutationReceipt: Decodable, Sendable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let operationId: String
+    public let acceptedAt: Date
+    public let environmentId: String?
+}
+
 public struct EnvironmentContext: Decodable, Sendable {
     public let revision: Int64
     public let environmentId: String

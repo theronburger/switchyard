@@ -158,6 +158,16 @@ type MutationRequest struct {
 	ExpectedEnvironmentRevision *int64 `json:"expectedEnvironmentRevision,omitempty"`
 }
 
+type StartEnvironmentRequest struct {
+	MutationRequest
+	WorktreeID string   `json:"worktreeId"`
+	ServiceIDs []string `json:"serviceIds"`
+}
+
+type StopEnvironmentRequest struct {
+	MutationRequest
+}
+
 type MutationReceipt struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	RequestID     string    `json:"requestId"`

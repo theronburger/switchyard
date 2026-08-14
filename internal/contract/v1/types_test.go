@@ -125,3 +125,92 @@ func TestTransportFixtures(t *testing.T) {
 		})
 	}
 }
+
+func TestMutationFixtures(t *testing.T) {
+	tests := []struct {
+		file  string
+		value any
+	}{
+		{
+			file:  "start-environment-request.json",
+			value: &StartEnvironmentRequest{},
+		},
+		{
+			file:  "stop-environment-request.json",
+			value: &StopEnvironmentRequest{},
+		},
+		{
+			file:  "mutation-receipt.json",
+			value: &MutationReceipt{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.file, func(t *testing.T) {
+			fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", test.file)
+			contents, err := os.ReadFile(fixturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(contents, test.value); err != nil {
+				t.Fatal(err)
+			}
+			switch value := test.value.(type) {
+			case *StartEnvironmentRequest:
+				err = value.Validate()
+			case *StopEnvironmentRequest:
+				err = value.Validate()
+			case *MutationReceipt:
+				err = value.Validate()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestStartEnvironmentRequestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
+	valid := StartEnvironmentRequest{
+		MutationRequest: MutationRequest{
+			SchemaVersion:  SchemaVersion,
+			RequestID:      "request_test",
+			IdempotencyKey: "start:test",
+		},
+		WorktreeID: "worktree_test",
+		ServiceIDs: []string{"organizer"},
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*StartEnvironmentRequest)
+	}{
+		{name: "future schema", mutate: func(request *StartEnvironmentRequest) {
+			request.SchemaVersion++
+		}},
+		{name: "control in request id", mutate: func(request *StartEnvironmentRequest) {
+			request.RequestID = "request\nleak"
+		}},
+		{name: "negative revision", mutate: func(request *StartEnvironmentRequest) {
+			revision := int64(-1)
+			request.ExpectedEnvironmentRevision = &revision
+		}},
+		{name: "null services", mutate: func(request *StartEnvironmentRequest) {
+			request.ServiceIDs = nil
+		}},
+		{name: "duplicate services", mutate: func(request *StartEnvironmentRequest) {
+			request.ServiceIDs = []string{"organizer", "organizer"}
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := valid
+			request.ServiceIDs = append([]string(nil), valid.ServiceIDs...)
+			test.mutate(&request)
+			if err := request.Validate(); err == nil {
+				t.Fatal("invalid mutation request was accepted")
+			}
+		})
+	}
+}

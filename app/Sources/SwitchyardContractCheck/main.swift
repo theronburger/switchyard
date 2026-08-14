@@ -232,6 +232,45 @@ let runner = Runner()
 
 // MARK: - Contract decoding
 
+runner.check("mutation fixtures decode across the Swift boundary") {
+    let fixtures = fixtureURL.deletingLastPathComponent()
+    let decoder = ContractDecoder()
+    let start = try decoder.decode(
+        StartEnvironmentRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "start-environment-request.json"))
+    )
+    try expect(start.schemaVersion == contractSchemaVersion, "start request schema changed")
+    try expect(start.worktreeId.hasPrefix("worktree_"), "start worktree id did not decode")
+    try expect(start.serviceIds == ["organizer", "nonprofit-service"], "start service selection changed")
+
+    let stop = try decoder.decode(
+        StopEnvironmentRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "stop-environment-request.json"))
+    )
+    try expect(stop.expectedEnvironmentRevision == 3, "stop expected revision did not decode")
+
+    let receipt = try decoder.decode(
+        MutationReceipt.self,
+        from: Data(contentsOf: fixtures.appending(path: "mutation-receipt.json"))
+    )
+    try expect(receipt.operationId.hasPrefix("operation_"), "operation receipt did not decode")
+    try expect(receipt.environmentId == "environment_daad7f2bc132", "receipt environment changed")
+}
+
+runner.check("Swift mutation requests encode canonical non-null service arrays") {
+    let request = StartEnvironmentRequest(
+        requestId: "request_test",
+        idempotencyKey: "start:test",
+        worktreeId: "worktree_test",
+        serviceIds: ["organizer"]
+    )
+    let encoded = try JSONEncoder().encode(request)
+    let value = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    try expect(value?["schemaVersion"] as? Int == contractSchemaVersion, "encoded schema changed")
+    try expect(value?["serviceIds"] as? [String] == ["organizer"], "services did not encode as an array")
+    try expect(value?["expectedEnvironmentRevision"] == nil, "nil revision did not stay omitted")
+}
+
 runner.check("canonical fixture decodes with expected fields") {
     let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: fixtureData)
     try expect(snapshot.schemaVersion == contractSchemaVersion, "unexpected schema version \(snapshot.schemaVersion)")
