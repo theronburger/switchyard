@@ -4,6 +4,23 @@ import "time"
 
 const SchemaVersion = 1
 
+type RuntimeDescriptor struct {
+	SchemaVersion    int       `json:"schemaVersion"`
+	Endpoint         string    `json:"endpoint"`
+	DaemonInstanceID string    `json:"daemonInstanceId"`
+	DaemonVersion    string    `json:"daemonVersion"`
+	PID              int       `json:"pid"`
+	ProcessStartedAt time.Time `json:"processStartedAt"`
+	GeneratedAt      time.Time `json:"generatedAt"`
+}
+
+type Handshake struct {
+	SchemaVersion           int    `json:"schemaVersion"`
+	DaemonInstanceID        string `json:"daemonInstanceId"`
+	DaemonVersion           string `json:"daemonVersion"`
+	SupportedSchemaVersions []int  `json:"supportedSchemaVersions"`
+}
+
 type StatusSnapshot struct {
 	SchemaVersion    int           `json:"schemaVersion"`
 	SnapshotRevision int64         `json:"snapshotRevision"`

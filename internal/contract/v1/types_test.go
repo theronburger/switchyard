@@ -52,3 +52,27 @@ func TestStatusFixtureAllowsAdditiveFields(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTransportFixtures(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		into any
+	}{
+		{name: "runtime", file: "runtime.json", into: &RuntimeDescriptor{}},
+		{name: "handshake", file: "handshake.json", into: &Handshake{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", test.file)
+			contents, err := os.ReadFile(fixturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(contents, test.into); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
