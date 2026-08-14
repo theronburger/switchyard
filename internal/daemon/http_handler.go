@@ -11,10 +11,15 @@ import (
 	"time"
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	"github.com/theronburger/switchyard/internal/events"
 )
 
 type StatusSource interface {
 	ReadSnapshot(ctx context.Context) (contractv1.StatusSnapshot, error)
+}
+
+type EventSource interface {
+	ReadEvents(ctx context.Context, after events.Cursor, requestedLimit int) (events.Page, error)
 }
 
 type HandlerConfig struct {
@@ -23,6 +28,7 @@ type HandlerConfig struct {
 	DaemonVersion    string
 	StartedAt        time.Time
 	StatusSource     StatusSource
+	EventSource      EventSource
 }
 
 type errorResponse struct {
@@ -53,12 +59,17 @@ func NewHTTPHandler(config HandlerConfig) (http.Handler, error) {
 		return nil, errors.New("status source is required")
 	}
 
-	handler := &apiHandler{config: config}
+	eventSource := config.EventSource
+	if eventSource == nil {
+		eventSource, _ = config.StatusSource.(EventSource)
+	}
+	handler := &apiHandler{config: config, eventSource: eventSource}
 	return http.HandlerFunc(handler.serveHTTP), nil
 }
 
 type apiHandler struct {
-	config HandlerConfig
+	config      HandlerConfig
+	eventSource EventSource
 }
 
 func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http.Request) {
@@ -90,6 +101,13 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 			return
 		}
 		handler.status(response, request)
+	case "/v1/events":
+		if request.Method != http.MethodGet {
+			response.Header().Set("Allow", http.MethodGet)
+			writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+			return
+		}
+		handler.events(response, request)
 	default:
 		writeError(response, http.StatusNotFound, "NOT_FOUND", "Route not found", false)
 	}
