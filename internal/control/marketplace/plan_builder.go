@@ -219,6 +219,7 @@ func elasticMQReadinessArguments(endpoint string) []string {
 		"--retry-delay", "1",
 		"--retry-max-time", "45",
 		"--retry-connrefused",
+		"--retry-all-errors",
 		"--connect-timeout", "1",
 		"--max-time", "3",
 		"--request", "POST",

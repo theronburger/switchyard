@@ -130,19 +130,16 @@ func TestOSPreparationRunnerEnforcesPreparationTimeout(t *testing.T) {
 	waitForProcessExit(t, childPID)
 }
 
-func TestElasticMQReadinessRetriesConnectionRefusalAtAssignedEndpoint(t *testing.T) {
+func TestElasticMQReadinessRetriesEmptyReplyAtAssignedEndpoint(t *testing.T) {
 	if _, err := os.Lstat(marketplaceCurlExecutable); err != nil {
 		t.Skipf("system curl is unavailable: %v", err)
 	}
-	portProbe, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := portProbe.Addr().String()
-	if err := portProbe.Close(); err != nil {
-		t.Fatal(err)
-	}
-	endpoint := "http://" + address
+	defer listener.Close()
+	endpoint := "http://" + listener.Addr().String()
 	action := make(chan string, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if err := request.ParseForm(); err != nil {
@@ -153,15 +150,15 @@ func TestElasticMQReadinessRetriesConnectionRefusalAtAssignedEndpoint(t *testing
 		writer.Header().Set("Content-Type", "text/xml")
 		writer.WriteHeader(http.StatusOK)
 	})}
-	listenerResult := make(chan error, 1)
+	firstAcceptResult := make(chan error, 1)
 	serveResult := make(chan error, 1)
 	go func() {
-		time.Sleep(400 * time.Millisecond)
-		listener, listenErr := net.Listen("tcp4", address)
-		listenerResult <- listenErr
-		if listenErr != nil {
+		connection, acceptErr := listener.Accept()
+		firstAcceptResult <- acceptErr
+		if acceptErr != nil {
 			return
 		}
+		_ = connection.Close()
 		serveResult <- server.Serve(listener)
 	}()
 
@@ -180,17 +177,22 @@ func TestElasticMQReadinessRetriesConnectionRefusalAtAssignedEndpoint(t *testing
 	started := time.Now()
 	runErr := (OSPreparationRunner{}).Run(context.Background(), preparation)
 	elapsed := time.Since(started)
-	listenErr := <-listenerResult
+	var acceptErr error
+	select {
+	case acceptErr = <-firstAcceptResult:
+	case <-time.After(time.Second):
+		t.Fatal("readiness curl never reached the empty-reply listener")
+	}
 	shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownContext)
-	if listenErr == nil {
+	if acceptErr == nil {
 		if serveErr := <-serveResult; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			t.Fatalf("readiness server: %v", serveErr)
 		}
 	}
-	if listenErr != nil {
-		t.Fatalf("delayed readiness listener: %v", listenErr)
+	if acceptErr != nil {
+		t.Fatalf("initial empty-reply accept: %v", acceptErr)
 	}
 	if shutdownErr != nil {
 		t.Fatalf("readiness server shutdown: %v", shutdownErr)
@@ -199,7 +201,7 @@ func TestElasticMQReadinessRetriesConnectionRefusalAtAssignedEndpoint(t *testing
 		t.Fatalf("retried readiness: %v", runErr)
 	}
 	if elapsed < 750*time.Millisecond {
-		t.Fatalf("readiness did not wait for a retry after refusal: %s", elapsed)
+		t.Fatalf("readiness did not wait for a retry after an empty reply: %s", elapsed)
 	}
 	select {
 	case got := <-action:
