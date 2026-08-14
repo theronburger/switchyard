@@ -6,7 +6,9 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	marketplaceadapter "github.com/theronburger/switchyard/internal/adapters/marketplace"
 	"github.com/theronburger/switchyard/internal/control/environment"
@@ -20,6 +22,7 @@ const (
 	marketplaceServerlessProjection = "marketplace.serverless.nonprofit-service.v1"
 	readinessIDPrefix               = "marketplace.readiness."
 	readinessIDSuffix               = ".v1"
+	marketplacePreparationTimeout   = 10 * time.Minute
 )
 
 var ErrMarketplacePlanInvalid = errors.New("Marketplace execution plan is invalid")
@@ -81,6 +84,11 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 		if !found {
 			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 		}
+		preparations, err := buildPreparations(registration, request.RunID, servicePlan)
+		if err != nil {
+			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
+		}
+		plan.Preparations = append(plan.Preparations, preparations...)
 		launch, err := buildServiceLaunch(registration, request.RunID, definition, servicePlan)
 		if err != nil {
 			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
@@ -99,6 +107,52 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 		}
 	}
 	return plan, nil
+}
+
+func buildPreparations(
+	registration EnvironmentRegistration,
+	runID string,
+	plan marketplaceadapter.ServicePlan,
+) ([]environment.PreparationSpec, error) {
+	environmentVariables, err := plannedEnvironment(registration, plan.Environment)
+	if err != nil {
+		return nil, err
+	}
+	preparations := make([]environment.PreparationSpec, 0, len(plan.PrepareCommands))
+	for index, command := range plan.PrepareCommands {
+		if command.Executable != marketplaceadapter.RepositoryYarnExecutable ||
+			!safeRelativeDirectory(command.WorkingDirectory) {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		arguments := make([]string, 0, len(command.Arguments)+1)
+		arguments = append(arguments, registration.YarnCJS)
+		for _, argument := range command.Arguments {
+			if argument == "" || strings.ContainsRune(argument, 0) {
+				return nil, ErrMarketplacePlanInvalid
+			}
+			arguments = append(arguments, argument)
+		}
+		commandID := "command-" + strconv.Itoa(index)
+		preparations = append(preparations, environment.PreparationSpec{
+			ID:          plan.ID + ".prepare." + strconv.Itoa(index),
+			Executable:  registration.NodeExecutable,
+			Arguments:   arguments,
+			Environment: append([]string(nil), environmentVariables...),
+			Directory:   filepath.Join(registration.WorktreeRoot, command.WorkingDirectory),
+			RunDirectory: filepath.Join(
+				registration.RunRoot,
+				"environments",
+				registration.EnvironmentID,
+				"runs",
+				runID,
+				"preparations",
+				plan.ID,
+				commandID,
+			),
+			Timeout: marketplacePreparationTimeout,
+		})
+	}
+	return preparations, nil
 }
 
 func (builder PlanBuilder) definitions(
@@ -179,24 +233,9 @@ func buildServiceLaunch(
 		}
 		arguments = append(arguments, argument)
 	}
-	environmentVariables := []string{
-		"HOME=" + registration.HomeDirectory,
-		"PATH=" + registration.ExecutablePath,
-		"TMPDIR=" + registration.TemporaryDirectory,
-	}
-	seenEnvironmentVariables := map[string]struct{}{
-		"HOME": {}, "PATH": {}, "TMPDIR": {},
-	}
-	for _, variable := range plan.Environment {
-		if variable.Name == "" || strings.ContainsAny(variable.Name, "=\x00") ||
-			strings.ContainsRune(variable.Value, 0) {
-			return environment.ServiceLaunch{}, ErrMarketplacePlanInvalid
-		}
-		if _, duplicate := seenEnvironmentVariables[variable.Name]; duplicate {
-			return environment.ServiceLaunch{}, ErrMarketplacePlanInvalid
-		}
-		seenEnvironmentVariables[variable.Name] = struct{}{}
-		environmentVariables = append(environmentVariables, variable.Name+"="+variable.Value)
+	environmentVariables, err := plannedEnvironment(registration, plan.Environment)
+	if err != nil {
+		return environment.ServiceLaunch{}, err
 	}
 
 	infrastructurePorts := make(map[string]struct{})
@@ -249,6 +288,30 @@ func buildServiceLaunch(
 		PortKeys:  portKeys,
 		Readiness: environment.ReadinessSpec{ID: readinessID(plan.ID)},
 	}, nil
+}
+
+func plannedEnvironment(
+	registration EnvironmentRegistration,
+	variables []marketplaceadapter.EnvironmentVariable,
+) ([]string, error) {
+	planned := []string{
+		"HOME=" + registration.HomeDirectory,
+		"PATH=" + registration.ExecutablePath,
+		"TMPDIR=" + registration.TemporaryDirectory,
+	}
+	seen := map[string]struct{}{"HOME": {}, "PATH": {}, "TMPDIR": {}}
+	for _, variable := range variables {
+		if variable.Name == "" || strings.ContainsAny(variable.Name, "=\x00") ||
+			strings.ContainsRune(variable.Value, 0) {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		if _, duplicate := seen[variable.Name]; duplicate {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		seen[variable.Name] = struct{}{}
+		planned = append(planned, variable.Name+"="+variable.Value)
+	}
+	return planned, nil
 }
 
 func buildInfrastructureGoals(

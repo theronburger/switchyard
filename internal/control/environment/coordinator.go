@@ -19,6 +19,7 @@ type Config struct {
 	Journal         OperationJournal
 	Ports           PortAllocator
 	Planner         PlanBuilder
+	Preparations    PreparationRunner
 	Projections     ProjectionApplier
 	Infrastructure  InfrastructureHost
 	Processes       ProcessHost
@@ -31,6 +32,7 @@ type Coordinator struct {
 	journal         OperationJournal
 	ports           PortAllocator
 	planner         PlanBuilder
+	preparations    PreparationRunner
 	projections     ProjectionApplier
 	infrastructure  InfrastructureHost
 	processes       ProcessHost
@@ -55,6 +57,7 @@ func NewCoordinator(config Config) (*Coordinator, error) {
 		journal:         config.Journal,
 		ports:           config.Ports,
 		planner:         config.Planner,
+		preparations:    config.Preparations,
 		projections:     config.Projections,
 		infrastructure:  config.Infrastructure,
 		processes:       config.Processes,
@@ -166,6 +169,15 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 	}
 	if err := coordinator.requireExecutionDependencies(plan); err != nil {
 		return coordinator.failStart(operation, result, err)
+	}
+
+	for _, preparation := range plan.Preparations {
+		if err := coordinator.checkpoint(ctx, &operation, PhasePreparingServices); err != nil {
+			return coordinator.failStart(operation, result, err)
+		}
+		if err := coordinator.preparations.Run(ctx, clonePreparation(preparation)); err != nil {
+			return coordinator.failStart(operation, result, err)
+		}
 	}
 
 	if plan.Projection != nil {

@@ -329,6 +329,40 @@ type fakeProcesses struct {
 	startSpecs  []processhost.LaunchSpec
 }
 
+type fakePreparations struct {
+	journal     *memoryJournal
+	operationID string
+	calls       *[]string
+	specs       []PreparationSpec
+	err         error
+	entered     chan<- struct{}
+	block       <-chan struct{}
+}
+
+func (runner *fakePreparations) Run(ctx context.Context, preparation PreparationSpec) error {
+	if runner.journal != nil {
+		operation := runner.journal.operation(runner.operationID)
+		if operation.Phase != PhasePreparingServices {
+			return errors.New("preparation ran before its checkpoint")
+		}
+	}
+	runner.specs = append(runner.specs, clonePreparation(preparation))
+	if runner.calls != nil {
+		*runner.calls = append(*runner.calls, "prepare:"+preparation.ID)
+	}
+	if runner.entered != nil {
+		runner.entered <- struct{}{}
+	}
+	if runner.block != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-runner.block:
+		}
+	}
+	return runner.err
+}
+
 func (host *fakeProcesses) Start(_ context.Context, spec processhost.LaunchSpec) (processhost.Ownership, error) {
 	if host.journal != nil && !host.journal.persistedRollback(host.operationID, RollbackProcess) {
 		return processhost.Ownership{}, errors.New("process started before rollback was persisted")
@@ -427,6 +461,10 @@ func (planner *staticPlanner) Build(request PlanningRequest) (ExecutionPlan, err
 
 func cloneExecutionPlan(plan ExecutionPlan) ExecutionPlan {
 	copy := plan
+	copy.Preparations = append([]PreparationSpec(nil), plan.Preparations...)
+	for index := range copy.Preparations {
+		copy.Preparations[index] = clonePreparation(plan.Preparations[index])
+	}
 	if plan.Projection != nil {
 		projection := *plan.Projection
 		copy.Projection = &projection

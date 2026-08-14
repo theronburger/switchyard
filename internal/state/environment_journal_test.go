@@ -119,6 +119,7 @@ func TestEnvironmentJournalEveryUpdateIsDurableAndPublishesOneRevision(t *testin
 	store, journal, record := preparedPendingJournal(t)
 	phases := []environmentcontrol.OperationPhase{
 		environmentcontrol.PhaseReservingPorts,
+		environmentcontrol.PhasePreparingServices,
 		environmentcontrol.PhaseMaterializing,
 		environmentcontrol.PhaseEnsuringInfrastructure,
 		environmentcontrol.PhaseLaunchingServices,

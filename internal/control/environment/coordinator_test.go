@@ -105,6 +105,151 @@ func TestStartLateBindsExecutionPlanAfterAssignedPortsArePersisted(t *testing.T)
 	}
 }
 
+func TestStartCheckpointsAndCompletesFinitePreparationsBeforeOtherSideEffects(t *testing.T) {
+	journal := newMemoryJournal()
+	calls := make([]string, 0)
+	preparations := &fakePreparations{journal: journal, operationID: "op_prepare", calls: &calls}
+	projection := &fakeProjection{journal: journal, operationID: "op_prepare", calls: &calls}
+	planner := &staticPlanner{plan: ExecutionPlan{
+		Preparations: []PreparationSpec{
+			preparationSpec(t, "first"),
+			preparationSpec(t, "second"),
+		},
+		Projection: &ProjectionRequest{ID: "projection"},
+	}}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7080, &calls), Planner: planner,
+		Preparations: preparations, Projections: projection,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(context.Background(), StartRequest{
+		OperationID: "op_prepare", EnvironmentID: "env_prepare", RunID: "run_prepare",
+		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != domain.EnvironmentRunning ||
+		!slices.Equal(calls, []string{"prepare:first", "prepare:second", "apply-projection"}) {
+		t.Fatalf("preparation order: result=%+v calls=%v", result, calls)
+	}
+	preparationUpdates := 0
+	for _, event := range journal.events {
+		if event == "update:op_prepare:"+string(PhasePreparingServices) {
+			preparationUpdates++
+		}
+	}
+	if preparationUpdates != 2 {
+		t.Fatalf("each side effect was not checkpointed: %v", journal.events)
+	}
+}
+
+func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
+	t.Run("failure", func(t *testing.T) {
+		journal := newMemoryJournal()
+		ports := newFakePorts(7090, nil)
+		failure := errors.New("AWS_SECRET_ACCESS_KEY=secret@example.invalid")
+		coordinator, err := NewCoordinator(Config{
+			Journal: journal, Ports: ports,
+			Planner: &staticPlanner{plan: ExecutionPlan{Preparations: []PreparationSpec{
+				preparationSpec(t, "failure"),
+			}}},
+			Preparations:    &fakePreparations{journal: journal, operationID: "op_prepare_failure", err: failure},
+			RollbackTimeout: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = coordinator.Start(context.Background(), StartRequest{
+			OperationID: "op_prepare_failure", EnvironmentID: "env_prepare_failure",
+			RunID:  "run_prepare_failure",
+			Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		})
+		if !errors.Is(err, failure) {
+			t.Fatalf("preparation failure: %v", err)
+		}
+		operation := journal.operation("op_prepare_failure")
+		if operation.State != domain.OperationFailed || operation.Failure != "environment operation failed" ||
+			strings.Contains(operation.Failure, "secret") || strings.Contains(operation.Failure, "@") {
+			t.Fatalf("persisted failure leaked details: %+v", operation)
+		}
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		journal := newMemoryJournal()
+		ports := newFakePorts(7095, nil)
+		entered := make(chan struct{}, 1)
+		block := make(chan struct{})
+		coordinator, err := NewCoordinator(Config{
+			Journal: journal, Ports: ports,
+			Planner: &staticPlanner{plan: ExecutionPlan{Preparations: []PreparationSpec{
+				preparationSpec(t, "cancel"),
+			}}},
+			Preparations: &fakePreparations{
+				journal: journal, operationID: "op_prepare_cancel", entered: entered, block: block,
+			},
+			RollbackTimeout: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := coordinator.Start(ctx, StartRequest{
+				OperationID: "op_prepare_cancel", EnvironmentID: "env_prepare_cancel",
+				RunID:  "run_prepare_cancel",
+				Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+			})
+			done <- err
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("preparation was not reached")
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled preparation: %v", err)
+		}
+		operation := journal.operation("op_prepare_cancel")
+		if operation.State != domain.OperationCancelled ||
+			operation.Failure != "environment operation was cancelled" {
+			t.Fatalf("cancelled operation: %+v", operation)
+		}
+	})
+}
+
+func preparationSpec(t *testing.T, id string) PreparationSpec {
+	t.Helper()
+	return PreparationSpec{
+		ID: id, Executable: "/bin/echo", Arguments: []string{"prepare"},
+		Environment: []string{"HOME=/tmp", "PATH=/usr/bin:/bin", "TMPDIR=/tmp"},
+		Directory:   "/tmp", RunDirectory: filepath.Join(t.TempDir(), "preparations", id),
+		Timeout: time.Minute,
+	}
+}
+
+func TestPreparationRunDirectoriesCannotOverlapPersistentOwnership(t *testing.T) {
+	t.Parallel()
+	preparation := preparationSpec(t, "overlap")
+	plan := ExecutionPlan{
+		Preparations: []PreparationSpec{preparation},
+		Services: []ServiceLaunch{{
+			ID: "service_web",
+			Process: processhost.LaunchSpec{
+				EnvironmentID: "env_overlap", ServiceID: "service_web", RunID: "run_overlap",
+				RunDirectory: filepath.Join(preparation.RunDirectory, "persistent"),
+			},
+		}},
+	}
+	if err := validateExecutionPlan("env_overlap", "run_overlap", nil, plan); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("overlapping preparation and process ownership was accepted: %v", err)
+	}
+}
+
 func TestStartFailureRollsBackInReverseAfterPersistingOwnership(t *testing.T) {
 	journal := newMemoryJournal()
 	calls := make([]string, 0)

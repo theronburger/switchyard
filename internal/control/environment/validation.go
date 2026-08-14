@@ -3,6 +3,8 @@ package environment
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
@@ -49,6 +51,23 @@ func validateExecutionPlan(
 	leases []portlease.Lease,
 	plan ExecutionPlan,
 ) error {
+	preparationIDs := make(map[string]struct{}, len(plan.Preparations))
+	preparationRunDirectories := make([]string, 0, len(plan.Preparations))
+	for _, preparation := range plan.Preparations {
+		if !validPreparation(preparation) {
+			return ErrInvalidRequest
+		}
+		if _, duplicate := preparationIDs[preparation.ID]; duplicate {
+			return ErrInvalidRequest
+		}
+		for _, existing := range preparationRunDirectories {
+			if pathsOverlap(existing, preparation.RunDirectory) {
+				return ErrInvalidRequest
+			}
+		}
+		preparationIDs[preparation.ID] = struct{}{}
+		preparationRunDirectories = append(preparationRunDirectories, preparation.RunDirectory)
+	}
 	if plan.Projection != nil && plan.Projection.ID == "" {
 		return ErrInvalidRequest
 	}
@@ -73,6 +92,11 @@ func validateExecutionPlan(
 		if _, duplicate := seenServices[service.ID]; duplicate {
 			return ErrInvalidRequest
 		}
+		for _, preparationRunDirectory := range preparationRunDirectories {
+			if pathsOverlap(preparationRunDirectory, service.Process.RunDirectory) {
+				return ErrInvalidRequest
+			}
+		}
 		seenServices[service.ID] = struct{}{}
 		seenServicePorts := make(map[portlease.Key]struct{}, len(service.PortKeys))
 		for _, key := range service.PortKeys {
@@ -91,7 +115,50 @@ func validateExecutionPlan(
 	return nil
 }
 
+func pathsOverlap(left, right string) bool {
+	leftToRight, leftError := filepath.Rel(left, right)
+	rightToLeft, rightError := filepath.Rel(right, left)
+	return leftError == nil && pathIsWithin(leftToRight) ||
+		rightError == nil && pathIsWithin(rightToLeft)
+}
+
+func pathIsWithin(relative string) bool {
+	return relative == "." || relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func validPreparation(preparation PreparationSpec) bool {
+	if preparation.ID == "" || len(preparation.ID) > 256 ||
+		!filepath.IsAbs(preparation.Executable) || filepath.Clean(preparation.Executable) != preparation.Executable ||
+		!filepath.IsAbs(preparation.Directory) || filepath.Clean(preparation.Directory) != preparation.Directory ||
+		!filepath.IsAbs(preparation.RunDirectory) ||
+		filepath.Clean(preparation.RunDirectory) != preparation.RunDirectory ||
+		preparation.Timeout <= 0 || preparation.Timeout > 30*time.Minute {
+		return false
+	}
+	for _, argument := range preparation.Arguments {
+		if argument == "" || len(argument) > 1024*1024 || strings.ContainsRune(argument, 0) {
+			return false
+		}
+	}
+	seenEnvironment := make(map[string]struct{}, len(preparation.Environment))
+	for _, variable := range preparation.Environment {
+		name, _, found := strings.Cut(variable, "=")
+		if !found || name == "" || strings.ContainsRune(variable, 0) {
+			return false
+		}
+		if _, duplicate := seenEnvironment[name]; duplicate {
+			return false
+		}
+		seenEnvironment[name] = struct{}{}
+	}
+	return true
+}
+
 func (coordinator *Coordinator) requireExecutionDependencies(plan ExecutionPlan) error {
+	if len(plan.Preparations) != 0 && coordinator.preparations == nil {
+		return ErrInvalidRequest
+	}
 	if plan.Projection != nil && coordinator.projections == nil {
 		return ErrInvalidRequest
 	}
@@ -269,6 +336,13 @@ func leasesNotOwnedByRollback(leases []portlease.Lease, rollback []RollbackEntry
 
 func cloneLeases(leases []portlease.Lease) []portlease.Lease {
 	return append([]portlease.Lease(nil), leases...)
+}
+
+func clonePreparation(preparation PreparationSpec) PreparationSpec {
+	copy := preparation
+	copy.Arguments = append([]string(nil), preparation.Arguments...)
+	copy.Environment = append([]string(nil), preparation.Environment...)
+	return copy
 }
 
 func cloneGoals(goals []containerhost.Goal) []containerhost.Goal {

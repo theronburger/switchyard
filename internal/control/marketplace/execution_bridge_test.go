@@ -77,6 +77,29 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 	if plan.Projection == nil || plan.Projection.ID != marketplaceServerlessProjection {
 		t.Fatalf("projection identity: %#v", plan.Projection)
 	}
+	if len(plan.Preparations) != 2 {
+		t.Fatalf("preparation count: %#v", plan.Preparations)
+	}
+	preparations := make(map[string]environment.PreparationSpec, len(plan.Preparations))
+	for _, preparation := range plan.Preparations {
+		preparations[preparation.ID] = preparation
+		if preparation.Executable != registration.NodeExecutable ||
+			preparation.Directory != registration.WorktreeRoot ||
+			preparation.Timeout != marketplacePreparationTimeout ||
+			strings.Contains(strings.Join(preparation.Arguments, "\x00"), "start-changed") ||
+			!strings.Contains(preparation.RunDirectory, string(filepath.Separator)+"preparations"+string(filepath.Separator)) ||
+			strings.Contains(preparation.RunDirectory, string(filepath.Separator)+"services"+string(filepath.Separator)) {
+			t.Fatalf("unsafe preparation: %#v", preparation)
+		}
+	}
+	if !reflect.DeepEqual(preparations["organizer.prepare.0"].Arguments, []string{
+		registration.YarnCJS, "turbo", "run", "build:no-dependencies", "--filter=organizer", "--ui=stream",
+	}) || !reflect.DeepEqual(preparations["nonprofit-service.prepare.0"].Arguments, []string{
+		registration.YarnCJS, "turbo", "run", "build:no-dependencies",
+		"--filter=nonprofit-service", "--ui=stream",
+	}) {
+		t.Fatalf("preparation exact argv: %#v", plan.Preparations)
+	}
 	organizer := serviceLaunch(t, plan, "organizer")
 	nonprofit := serviceLaunch(t, plan, "nonprofit-service")
 	if organizer.Process.Executable != registration.NodeExecutable ||
@@ -127,6 +150,10 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		"DEED_NONPROFIT_SERVICE_PORT=17101",
 	}) {
 		t.Fatalf("nonprofit assigned environment: %#v", nonprofit.Process.Environment)
+	}
+	if !reflect.DeepEqual(preparations["organizer.prepare.0"].Environment, organizer.Process.Environment) ||
+		!reflect.DeepEqual(preparations["nonprofit-service.prepare.0"].Environment, nonprofit.Process.Environment) {
+		t.Fatalf("preparation environment is not controlled: %#v", plan.Preparations)
 	}
 	if !reflect.DeepEqual(nonprofit.PortKeys, []portlease.Key{
 		{EnvironmentID: "env_one", ServiceID: "nonprofit-service", Purpose: "http"},
@@ -219,6 +246,9 @@ func TestPlanBuilderKeepsTwoEnvironmentsDistinct(t *testing.T) {
 	}
 	if reflect.DeepEqual(firstPlan.Infrastructure[0].PortBindings, secondPlan.Infrastructure[0].PortBindings) {
 		t.Fatalf("infrastructure bindings collided:\nfirst=%#v\nsecond=%#v", firstPlan, secondPlan)
+	}
+	if reflect.DeepEqual(firstPlan.Preparations[0].RunDirectory, secondPlan.Preparations[0].RunDirectory) {
+		t.Fatalf("preparation run directories collided:\nfirst=%#v\nsecond=%#v", firstPlan, secondPlan)
 	}
 }
 

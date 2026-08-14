@@ -29,6 +29,7 @@ type OperationPhase string
 const (
 	PhasePending                OperationPhase = "pending"
 	PhaseReservingPorts         OperationPhase = "reserving-ports"
+	PhasePreparingServices      OperationPhase = "preparing-services"
 	PhaseMaterializing          OperationPhase = "materializing-projection"
 	PhaseEnsuringInfrastructure OperationPhase = "ensuring-infrastructure"
 	PhaseLaunchingServices      OperationPhase = "launching-services"
@@ -71,6 +72,16 @@ type HealthReport struct {
 	Health    string
 }
 
+type PreparationSpec struct {
+	ID           string
+	Executable   string
+	Arguments    []string
+	Environment  []string
+	Directory    string
+	RunDirectory string
+	Timeout      time.Duration
+}
+
 type ServiceLaunch struct {
 	ID        string
 	Process   processhost.LaunchSpec
@@ -94,6 +105,7 @@ type PlanningRequest struct {
 }
 
 type ExecutionPlan struct {
+	Preparations   []PreparationSpec
 	Projection     *ProjectionRequest
 	Infrastructure []containerhost.Goal
 	Services       []ServiceLaunch

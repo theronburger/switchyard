@@ -220,6 +220,7 @@ func validOperationPhase(phase environmentcontrol.OperationPhase) bool {
 	switch phase {
 	case environmentcontrol.PhasePending,
 		environmentcontrol.PhaseReservingPorts,
+		environmentcontrol.PhasePreparingServices,
 		environmentcontrol.PhaseMaterializing,
 		environmentcontrol.PhaseEnsuringInfrastructure,
 		environmentcontrol.PhaseLaunchingServices,

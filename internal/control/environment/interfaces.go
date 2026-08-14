@@ -32,6 +32,10 @@ type PlanBuilder interface {
 	Build(PlanningRequest) (ExecutionPlan, error)
 }
 
+type PreparationRunner interface {
+	Run(context.Context, PreparationSpec) error
+}
+
 type ProjectionApplier interface {
 	Plan(context.Context, string, string, ProjectionRequest, []portlease.Lease) (ProjectionChange, error)
 	Apply(context.Context, ProjectionChange) error

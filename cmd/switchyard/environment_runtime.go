@@ -120,6 +120,7 @@ func buildEnvironmentRuntime(
 	dockerInventory := containerhost.DockerInventory{Runner: dockerRunner, DockerBinary: dockerBinary}
 	coordinator, err := environmentcontrol.NewCoordinator(environmentcontrol.Config{
 		Journal: journal, Ports: ports, Planner: planner, Projections: projections,
+		Preparations: marketplacecontrol.OSPreparationRunner{},
 		Infrastructure: environmentcontrol.ContainerInfrastructureHost{
 			Resources: dockerInventory,
 			Planner:   containerhost.Planner{DockerBinary: dockerBinary},
