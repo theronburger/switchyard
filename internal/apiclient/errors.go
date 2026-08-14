@@ -20,6 +20,7 @@ const (
 	ErrorDaemonIncompatible           ErrorCode = "DAEMON_INCOMPATIBLE"
 	ErrorDaemonResponseInvalid        ErrorCode = "DAEMON_RESPONSE_INVALID"
 	ErrorDaemonStatusInvalid          ErrorCode = "DAEMON_STATUS_INVALID"
+	ErrorActionRequestInvalid         ErrorCode = "ACTION_REQUEST_INVALID"
 	ErrorUnknown                      ErrorCode = "UNKNOWN"
 )
 

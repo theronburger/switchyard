@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
@@ -143,8 +142,7 @@ func (c *Client) getJSON(ctx context.Context, path string, maximumBytes int64, d
 			ErrorDaemonResponseInvalid,
 			fmt.Errorf("daemon returned HTTP %d", response.StatusCode))
 	}
-	if !strings.Contains(strings.ToLower(response.Header.Get("Cache-Control")), "no-store") ||
-		!strings.EqualFold(response.Header.Get("X-Content-Type-Options"), "nosniff") {
+	if !secureResponseHeaders(response) {
 		return newCodedError(
 			ErrorDaemonResponseInvalid,
 			fmt.Errorf("daemon response is missing required security headers"))
