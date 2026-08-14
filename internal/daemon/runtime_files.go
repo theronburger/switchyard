@@ -7,28 +7,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
+
+	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 )
 
 const tokenByteCount = 32
 
 var ErrInsecureRuntimeFile = errors.New("runtime file permissions are not private")
 
-type RuntimeDescriptor struct {
-	SchemaVersion    int       `json:"schemaVersion"`
-	Endpoint         string    `json:"endpoint"`
-	DaemonInstanceID string    `json:"daemonInstanceId"`
-	DaemonVersion    string    `json:"daemonVersion"`
-	PID              int       `json:"pid"`
-	ProcessStartedAt time.Time `json:"processStartedAt"`
-	GeneratedAt      time.Time `json:"generatedAt"`
-}
+type RuntimeDescriptor = contractv1.RuntimeDescriptor
 
 func LoadOrCreateToken(path string, random io.Reader) (string, error) {
 	if path == "" {
@@ -134,8 +126,8 @@ func PublishRuntimeDescriptor(path string, descriptor RuntimeDescriptor) error {
 }
 
 func validateRuntimeDescriptor(descriptor RuntimeDescriptor) error {
-	if descriptor.SchemaVersion <= 0 {
-		return errors.New("runtime descriptor schema version is required")
+	if descriptor.SchemaVersion != contractv1.SchemaVersion {
+		return fmt.Errorf("runtime descriptor schema version is %d, want %d", descriptor.SchemaVersion, contractv1.SchemaVersion)
 	}
 	if descriptor.DaemonInstanceID == "" {
 		return errors.New("daemon instance id is required")
@@ -154,9 +146,8 @@ func validateRuntimeDescriptor(descriptor RuntimeDescriptor) error {
 	if err != nil {
 		return fmt.Errorf("parse daemon endpoint: %w", err)
 	}
-	endpointIP := net.ParseIP(parsedEndpoint.Hostname())
-	if parsedEndpoint.Scheme != "http" || endpointIP == nil || !endpointIP.IsLoopback() {
-		return errors.New("daemon endpoint must be loopback HTTP")
+	if parsedEndpoint.Scheme != "http" || parsedEndpoint.Hostname() != "127.0.0.1" {
+		return errors.New("daemon endpoint must use HTTP on 127.0.0.1")
 	}
 	if parsedEndpoint.User != nil || parsedEndpoint.RawQuery != "" || parsedEndpoint.Fragment != "" {
 		return errors.New("daemon endpoint must not contain credentials, query, or fragment")

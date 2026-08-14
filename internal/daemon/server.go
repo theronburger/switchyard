@@ -75,8 +75,8 @@ func (server *LoopbackServer) Shutdown(ctx context.Context) error {
 
 func validateLoopbackListener(listener net.Listener) error {
 	address, ok := listener.Addr().(*net.TCPAddr)
-	if !ok || address.IP == nil || !address.IP.IsLoopback() {
-		return errors.New("daemon listener must bind a loopback TCP address")
+	if !ok || address.IP == nil || !address.IP.Equal(net.ParseIP("127.0.0.1")) {
+		return errors.New("daemon listener must bind the loopback address 127.0.0.1")
 	}
 	return nil
 }

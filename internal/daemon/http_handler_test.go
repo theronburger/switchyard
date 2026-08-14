@@ -64,7 +64,7 @@ func TestHandshakeReturnsExactSupportedVersion(t *testing.T) {
 	if got, want := response.Code, http.StatusOK; got != want {
 		t.Fatalf("status: got %d, want %d", got, want)
 	}
-	var handshake handshakeResponse
+	var handshake contractv1.Handshake
 	if err := json.Unmarshal(response.Body.Bytes(), &handshake); err != nil {
 		t.Fatal(err)
 	}

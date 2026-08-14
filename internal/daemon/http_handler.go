@@ -25,13 +25,6 @@ type HandlerConfig struct {
 	StatusSource     StatusSource
 }
 
-type handshakeResponse struct {
-	SchemaVersion           int    `json:"schemaVersion"`
-	DaemonInstanceID        string `json:"daemonInstanceId"`
-	DaemonVersion           string `json:"daemonVersion"`
-	SupportedSchemaVersions []int  `json:"supportedSchemaVersions"`
-}
-
 type errorResponse struct {
 	SchemaVersion int              `json:"schemaVersion"`
 	Error         errorDescription `json:"error"`
@@ -103,7 +96,7 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 }
 
 func (handler *apiHandler) handshake(response http.ResponseWriter) {
-	writeJSON(response, http.StatusOK, handshakeResponse{
+	writeJSON(response, http.StatusOK, contractv1.Handshake{
 		SchemaVersion:           contractv1.SchemaVersion,
 		DaemonInstanceID:        handler.config.DaemonInstanceID,
 		DaemonVersion:           handler.config.DaemonVersion,

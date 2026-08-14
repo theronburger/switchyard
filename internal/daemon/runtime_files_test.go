@@ -93,17 +93,32 @@ func TestPublishRuntimeDescriptorIsPrivateAndContainsNoToken(t *testing.T) {
 	}
 }
 
-func TestPublishRuntimeDescriptorRejectsNonLoopbackEndpoint(t *testing.T) {
-	err := PublishRuntimeDescriptor(filepath.Join(t.TempDir(), "endpoint.json"), RuntimeDescriptor{
-		SchemaVersion:    1,
-		Endpoint:         "http://0.0.0.0:32123",
-		DaemonInstanceID: "daemon_01",
-		DaemonVersion:    "0.1.0-dev",
-		PID:              123,
-		ProcessStartedAt: time.Now(),
-		GeneratedAt:      time.Now(),
-	})
-	if err == nil {
-		t.Fatal("published a non-loopback endpoint")
+func TestPublishRuntimeDescriptorRejectsIncompatibleDescriptors(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		schemaVersion int
+		endpoint      string
+	}{
+		{name: "future schema", schemaVersion: 2, endpoint: "http://127.0.0.1:32123"},
+		{name: "wildcard", schemaVersion: 1, endpoint: "http://0.0.0.0:32123"},
+		{name: "other loopback", schemaVersion: 1, endpoint: "http://127.0.0.2:32123"},
+		{name: "IPv6 loopback", schemaVersion: 1, endpoint: "http://[::1]:32123"},
+		{name: "trailing path", schemaVersion: 1, endpoint: "http://127.0.0.1:32123/"},
+		{name: "missing port", schemaVersion: 1, endpoint: "http://127.0.0.1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := PublishRuntimeDescriptor(filepath.Join(t.TempDir(), "endpoint.json"), RuntimeDescriptor{
+				SchemaVersion:    test.schemaVersion,
+				Endpoint:         test.endpoint,
+				DaemonInstanceID: "daemon_01",
+				DaemonVersion:    "0.1.0-dev",
+				PID:              123,
+				ProcessStartedAt: time.Now(),
+				GeneratedAt:      time.Now(),
+			})
+			if err == nil {
+				t.Fatalf("published incompatible descriptor: version %d, endpoint %q", test.schemaVersion, test.endpoint)
+			}
+		})
 	}
 }
