@@ -205,6 +205,22 @@ func httpResponse(for request: URLRequest, status: Int) -> HTTPURLResponse {
     )!
 }
 
+func testLaunchAgentPaths(in directory: URL) -> LaunchAgentPaths {
+    LaunchAgentPaths(
+        installedBinaryURL: directory.appending(path: "Application Support/Switchyard/bin/switchyard"),
+        launchAgentURL: directory.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
+        standardOutputURL: directory.appending(path: "Application Support/Switchyard/logs/stdout.log"),
+        standardErrorURL: directory.appending(path: "Application Support/Switchyard/logs/stderr.log")
+    )
+}
+
+func writeTestFile(_ data: Data, to url: URL, permissions: Int) throws {
+    let fileManager = FileManager.default
+    try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try data.write(to: url)
+    try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+}
+
 guard CommandLine.arguments.count == 2 else {
     FileHandle.standardError.write(Data("usage: SwitchyardContractCheck STATUS_FIXTURE\n".utf8))
     exit(2)
@@ -710,6 +726,204 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
     )
 }
 
+await runner.checkAsync("unchanged LaunchAgent install does not rewrite owned files") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-unchanged-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let binaryData = Data("same-packaged-daemon".utf8)
+    let sourceURL = directory.appending(path: "bundle/SwitchyardDaemon")
+    let paths = testLaunchAgentPaths(in: directory)
+    try writeTestFile(binaryData, to: sourceURL, permissions: 0o700)
+    try writeTestFile(binaryData, to: paths.installedBinaryURL, permissions: 0o700)
+    let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+    let commands = RecordingExactRunner { command in
+        if command.arguments == ["version"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+            )
+        }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: sourceURL)),
+        commandRunner: commands,
+        paths: paths,
+        launchctlURL: launchctlURL,
+        userID: 501
+    )
+    let plan = try await manager.makeInstallPlan()
+    try writeTestFile(plan.propertyList, to: paths.launchAgentURL, permissions: 0o600)
+    let binaryAttributesBefore = try fileManager.attributesOfItem(atPath: paths.installedBinaryURL.path)
+    let plistAttributesBefore = try fileManager.attributesOfItem(atPath: paths.launchAgentURL.path)
+
+    try expect(try await manager.inspect() == .enabled, "matching helper was not enabled")
+    try expect(try await manager.inspect() == .enabled, "cached matching helper changed status")
+    try await manager.install()
+
+    let binaryAttributesAfter = try fileManager.attributesOfItem(atPath: paths.installedBinaryURL.path)
+    let plistAttributesAfter = try fileManager.attributesOfItem(atPath: paths.launchAgentURL.path)
+    try expect(
+        binaryAttributesBefore[.systemFileNumber] as? NSNumber == binaryAttributesAfter[.systemFileNumber] as? NSNumber,
+        "unchanged helper inode was replaced"
+    )
+    try expect(
+        binaryAttributesBefore[.modificationDate] as? Date == binaryAttributesAfter[.modificationDate] as? Date,
+        "unchanged helper modification date changed"
+    )
+    try expect(
+        plistAttributesBefore[.systemFileNumber] as? NSNumber == plistAttributesAfter[.systemFileNumber] as? NSNumber,
+        "unchanged plist inode was replaced"
+    )
+    let launchctlCommands = commands.commands.filter { $0.executableURL == launchctlURL }
+    try expect(
+        launchctlCommands.map(\.arguments) == [
+            ["print", "gui/501/com.theronburger.switchyard.daemon"],
+            ["print", "gui/501/com.theronburger.switchyard.daemon"],
+            ["print", "gui/501/com.theronburger.switchyard.daemon"],
+            ["kickstart", "-k", "gui/501/com.theronburger.switchyard.daemon"],
+        ],
+        "unchanged install launchctl argv changed"
+    )
+}
+
+await runner.checkAsync("changed packaged helper is detected atomically replaced and kickstarted") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-update-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let sourceURL = directory.appending(path: "bundle/SwitchyardDaemon")
+    let paths = testLaunchAgentPaths(in: directory)
+    let packagedData = Data("new-daemon-with-same-semantic-version".utf8)
+    try writeTestFile(packagedData, to: sourceURL, permissions: 0o700)
+    try writeTestFile(Data("old-daemon-with-same-version".utf8), to: paths.installedBinaryURL, permissions: 0o700)
+    let installedAttributesBefore = try fileManager.attributesOfItem(atPath: paths.installedBinaryURL.path)
+    let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+    let commands = RecordingExactRunner { command in
+        if command.arguments == ["version"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+            )
+        }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: sourceURL)),
+        commandRunner: commands,
+        paths: paths,
+        launchctlURL: launchctlURL,
+        userID: 501
+    )
+    let plan = try await manager.makeInstallPlan()
+    try writeTestFile(plan.propertyList, to: paths.launchAgentURL, permissions: 0o600)
+
+    try expect(try await manager.inspect() == .outdated, "changed helper was not marked outdated")
+    try expect(commands.commands.isEmpty, "outdated detection invoked launchctl before reinstall")
+    try await manager.install()
+
+    let installedAttributesAfter = try fileManager.attributesOfItem(atPath: paths.installedBinaryURL.path)
+    try expect(try Data(contentsOf: paths.installedBinaryURL) == packagedData, "packaged helper was not installed")
+    try expect(
+        installedAttributesBefore[.systemFileNumber] as? NSNumber != installedAttributesAfter[.systemFileNumber] as? NSNumber,
+        "helper replacement was not atomic"
+    )
+    let launchctlCommands = commands.commands.filter { $0.executableURL == launchctlURL }
+    try expect(
+        launchctlCommands.map(\.arguments) == [
+            ["print", "gui/501/com.theronburger.switchyard.daemon"],
+            ["kickstart", "-k", "gui/501/com.theronburger.switchyard.daemon"],
+        ],
+        "updated helper launchctl argv changed: \(launchctlCommands)"
+    )
+}
+
+await runner.checkAsync("unsafe helper symlink is refused without mutation") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-symlink-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let realSourceURL = directory.appending(path: "bundle/real-daemon")
+    let symlinkURL = directory.appending(path: "bundle/SwitchyardDaemon")
+    let paths = testLaunchAgentPaths(in: directory)
+    let installedData = Data("installed-daemon".utf8)
+    try writeTestFile(Data("packaged-daemon".utf8), to: realSourceURL, permissions: 0o700)
+    try fileManager.createSymbolicLink(at: symlinkURL, withDestinationURL: realSourceURL)
+    try writeTestFile(installedData, to: paths.installedBinaryURL, permissions: 0o700)
+    let commands = RecordingExactRunner { _ in ExactCommandResult(exitCode: 0) }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: symlinkURL)),
+        commandRunner: commands,
+        paths: paths,
+        userID: 501
+    )
+    let plan = try await manager.makeInstallPlan()
+    try writeTestFile(plan.propertyList, to: paths.launchAgentURL, permissions: 0o600)
+
+    do {
+        _ = try await manager.inspect()
+        throw CheckError("symlinked packaged helper was accepted")
+    } catch let error as DaemonServiceError {
+        try expect(error == .binaryInvalid, "unexpected symlink error: \(error)")
+    }
+    try expect(try Data(contentsOf: paths.installedBinaryURL) == installedData, "symlink refusal mutated installed helper")
+    try expect(commands.commands.isEmpty, "symlink refusal invoked a command")
+}
+
+await runner.checkAsync("outdated plist is replaced without carrying credentials") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-plist-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let sourceURL = directory.appending(path: "bundle/SwitchyardDaemon")
+    let paths = testLaunchAgentPaths(in: directory)
+    let binaryData = Data("matching-daemon".utf8)
+    try writeTestFile(binaryData, to: sourceURL, permissions: 0o700)
+    try writeTestFile(binaryData, to: paths.installedBinaryURL, permissions: 0o700)
+    let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+    let commands = RecordingExactRunner { command in
+        if command.arguments == ["version"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+            )
+        }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: sourceURL)),
+        commandRunner: commands,
+        paths: paths,
+        launchctlURL: launchctlURL,
+        userID: 501
+    )
+    let plan = try await manager.makeInstallPlan()
+    var stalePlist = try PropertyListSerialization.propertyList(
+        from: plan.propertyList,
+        options: [],
+        format: nil
+    ) as! [String: Any]
+    stalePlist["EnvironmentVariables"] = ["SWITCHYARD_TOKEN": sampleTokenRaw]
+    let staleData = try PropertyListSerialization.data(
+        fromPropertyList: stalePlist,
+        format: .xml,
+        options: 0
+    )
+    try writeTestFile(staleData, to: paths.launchAgentURL, permissions: 0o600)
+
+    try expect(try await manager.inspect() == .outdated, "noncanonical plist was not marked outdated")
+    try await manager.install()
+    let repairedPlist = try Data(contentsOf: paths.launchAgentURL)
+    let repairedText = String(decoding: repairedPlist, as: UTF8.self)
+    try expect(!repairedText.contains(sampleTokenRaw), "credential survived plist replacement")
+    try expect(!repairedText.contains("SWITCHYARD_TOKEN"), "credential key survived plist replacement")
+}
+
 // MARK: - Daemon client
 
 await runner.checkAsync("daemon client authenticates and decodes status") {
@@ -836,6 +1050,11 @@ runner.check("lifecycle install, approval, and kickstart paths") {
     try expect(machine.state == .locatingEndpoint, "kicked daemon should be re-located")
     try machine.handle(.endpointInvalid(reason: "stale descriptor"))
     try expect(machine.state == .unreachable(reason: "stale descriptor"), "invalid descriptor should be unreachable")
+
+    var outdated = DaemonLifecycleMachine()
+    try outdated.handle(.begin)
+    try outdated.handle(.registrationChecked(.outdated))
+    try expect(outdated.state == .registrationRequired, "outdated helper should enter the install path")
 }
 
 runner.check("lifecycle repair paths") {
@@ -985,6 +1204,39 @@ await runner.checkAsync("lifecycle controller refuses an invalid runtime without
     }
     let serviceCalls = await service.calls
     try expect(serviceCalls == ["inspect"], "invalid runtime must not be kickstarted: \(serviceCalls)")
+}
+
+await runner.checkAsync("lifecycle refresh automatically reinstalls an outdated helper") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let handshakeBody = """
+    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions": [1]}
+    """
+    let connection = DaemonConnection(
+        descriptor: sampleDescriptor,
+        client: try DaemonClient(
+            descriptor: sampleDescriptor,
+            token: token,
+            transport: MockTransport { request in
+                let body = request.url?.path == "/v1/status" ? fixtureData : Data(handshakeBody.utf8)
+                return (body, httpResponse(for: request, status: 200))
+            }
+        )
+    )
+    let service = StubServiceManager(status: .outdated)
+    let sleeps = LockedRecorder<Duration>()
+    let controller = DaemonLifecycleController(
+        serviceManager: service,
+        connectionFactory: StubConnectionFactory([.failure(.processIdentityMismatch), .success(connection)]),
+        doctor: StubDoctor(report: DoctorReport(checks: [])),
+        sleeper: StubSleeper(calls: sleeps),
+        waitPolicy: EndpointWaitPolicy(delays: [.milliseconds(1), .milliseconds(2)])
+    )
+    let result = await controller.refresh()
+    try expect(result.state.isOperational, "updated lifecycle did not reconnect")
+    let calls = await service.calls
+    try expect(calls == ["inspect", "install", "inspect"], "outdated refresh did not reinstall exactly once: \(calls)")
+    try expect(sleeps.values == [.milliseconds(1), .milliseconds(2)], "restart did not retry stale process identity safely")
 }
 
 // MARK: - Connection Doctor

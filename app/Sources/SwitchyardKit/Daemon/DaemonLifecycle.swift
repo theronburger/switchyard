@@ -6,6 +6,7 @@ public enum DaemonRegistrationStatus: String, Sendable, Equatable, CaseIterable 
     case requiresApproval
     case enabled
     case notFound
+    case outdated
 }
 
 /// An authenticated, version-compatible connection to a live daemon.
@@ -104,11 +105,11 @@ public enum DaemonLifecycleState: Sendable, Equatable {
         case .idle:
             return "The app has not checked the daemon yet."
         case .checkingRegistration:
-            return "Checking whether the Switchyard helper is installed as a login item."
+            return "Checking whether the Switchyard user LaunchAgent is installed and loaded."
         case .registrationRequired:
-            return "The background helper is not installed. Repair All installs and registers it."
+            return "The background helper is missing or out of date. Switchyard installs and registers the packaged version."
         case .approvalRequired:
-            return "macOS needs your approval before the helper can run. Open Login Items settings to allow Switchyard."
+            return "macOS has not loaded the Switchyard user LaunchAgent. Repair All retries its registration."
         case .startingDaemon:
             return "Asking launchd to start the Switchyard daemon."
         case .locatingEndpoint:
@@ -215,7 +216,7 @@ public struct DaemonLifecycleMachine: Sendable, Equatable {
                 return .locatingEndpoint
             case .requiresApproval:
                 return .approvalRequired
-            case .notRegistered, .notFound:
+            case .notRegistered, .notFound, .outdated:
                 return .registrationRequired
             }
 

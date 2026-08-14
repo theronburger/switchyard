@@ -15,6 +15,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
     private let launchctlURL: URL
     private let userID: uid_t
     private let fileManager: FileManager
+    private var fingerprintCache = BoundedFileFingerprintCache()
 
     public init(
         binaryProvider: any DaemonBinaryProviding = BundleDaemonBinaryProvider(),
@@ -36,8 +37,22 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         guard fileManager.fileExists(atPath: paths.launchAgentURL.path) else {
             return .notRegistered
         }
-        guard fileManager.isExecutableFile(atPath: paths.installedBinaryURL.path) else {
+        guard isOwnedInstalledExecutable(at: paths.installedBinaryURL) else {
             return .notFound
+        }
+        if let packagedBinary = try packagedBinaryIfAvailable() {
+            guard isRegularExecutable(at: packagedBinary.sourceURL) else {
+                throw DaemonServiceError.binaryInvalid
+            }
+            let plan = try LaunchAgentPlanBuilder.make(
+                binary: packagedBinary,
+                paths: paths,
+                userID: userID
+            )
+            guard propertyListMatches(plan.propertyList),
+                  try binariesMatch(packagedBinary.sourceURL, paths.installedBinaryURL) else {
+                return .outdated
+            }
         }
         let result = try commandRunner.run(ExactCommand(
             executableURL: launchctlURL,
@@ -92,16 +107,21 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         try createPrivateDirectory(plan.paths.installedBinaryURL.deletingLastPathComponent())
         try createPrivateDirectory(plan.paths.standardOutputURL.deletingLastPathComponent())
         try createPrivateDirectory(plan.paths.launchAgentURL.deletingLastPathComponent())
-        try installBinaryAtomically(plan.binary.sourceURL, at: plan.paths.installedBinaryURL)
+        var installedBinaryMatches = false
+        if isOwnedInstalledExecutable(at: plan.paths.installedBinaryURL) {
+            installedBinaryMatches = try binariesMatch(plan.binary.sourceURL, plan.paths.installedBinaryURL)
+        }
+        if !installedBinaryMatches {
+            try installBinaryAtomically(plan.binary.sourceURL, at: plan.paths.installedBinaryURL)
+        }
         try verifyDaemonBinary(at: plan.paths.installedBinaryURL, expectedVersion: plan.binary.expectedVersion)
-        try writeAtomically(plan.propertyList, to: plan.paths.launchAgentURL, permissions: 0o600)
+        if !propertyListMatches(plan.propertyList) {
+            try writeAtomically(plan.propertyList, to: plan.paths.launchAgentURL, permissions: 0o600)
+        }
     }
 
     private func verifyDaemonBinary(at url: URL, expectedVersion: String) throws {
-        var fileStatus = Darwin.stat()
-        guard lstat(url.path, &fileStatus) == 0,
-              fileStatus.st_mode & S_IFMT == S_IFREG,
-              access(url.path, X_OK) == 0 else {
+        guard isRegularExecutable(at: url) else {
             throw DaemonServiceError.binaryInvalid
         }
         let result = try commandRunner.run(ExactCommand(executableURL: url, arguments: ["version"]))
@@ -119,6 +139,71 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+    }
+
+    private func packagedBinaryIfAvailable() throws -> DaemonBinary? {
+        do {
+            return try binaryProvider.daemonBinary()
+        } catch let error as DaemonBinarySourceError where error == .notPackaged {
+            return nil
+        }
+    }
+
+    private func isRegularExecutable(at url: URL) -> Bool {
+        var fileStatus = Darwin.stat()
+        return lstat(url.path, &fileStatus) == 0
+            && fileStatus.st_mode & S_IFMT == S_IFREG
+            && access(url.path, X_OK) == 0
+    }
+
+    private func isOwnedInstalledExecutable(at url: URL) -> Bool {
+        var fileStatus = Darwin.stat()
+        return lstat(url.path, &fileStatus) == 0
+            && fileStatus.st_mode & S_IFMT == S_IFREG
+            && fileStatus.st_uid == getuid()
+            && Int(fileStatus.st_mode) & 0o777 == 0o700
+            && access(url.path, X_OK) == 0
+    }
+
+    private func binariesMatch(_ packagedURL: URL, _ installedURL: URL) throws -> Bool {
+        do {
+            let packagedDigest = try fingerprintCache.fingerprint(at: packagedURL)
+            let installedDigest = try fingerprintCache.fingerprint(at: installedURL)
+            return packagedDigest == installedDigest
+        } catch {
+            throw DaemonServiceError.binaryInvalid
+        }
+    }
+
+    private func propertyListMatches(_ expectedData: Data) -> Bool {
+        var fileStatus = Darwin.stat()
+        guard lstat(paths.launchAgentURL.path, &fileStatus) == 0,
+              fileStatus.st_mode & S_IFMT == S_IFREG,
+              fileStatus.st_uid == getuid() else {
+            return false
+        }
+        let installedData: Data
+        do {
+            installedData = try readSecureRuntimeFile(
+                at: paths.launchAgentURL,
+                maximumBytes: 64 * 1024,
+                requireOwnerOnlyPermissions: true
+            )
+        } catch {
+            return false
+        }
+        guard let installed = try? PropertyListSerialization.propertyList(
+            from: installedData,
+            options: [],
+            format: nil
+        ), let expected = try? PropertyListSerialization.propertyList(
+            from: expectedData,
+            options: [],
+            format: nil
+        ), let installedObject = installed as? NSObject else {
+            return false
+        }
+        return installedObject.isEqual(expected)
     }
 
     private func installBinaryAtomically(_ sourceURL: URL, at destinationURL: URL) throws {

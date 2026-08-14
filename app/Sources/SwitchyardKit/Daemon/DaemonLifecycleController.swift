@@ -62,13 +62,13 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
     }
 
     public func refresh() async -> DaemonLifecycleResult {
-        await run(installIfMissing: true)
+        await run(installIfMissing: true, waitForRestartedEndpoint: false)
     }
 
     public func repair() async -> DaemonLifecycleResult {
         do {
             try await serviceManager.repair()
-            return await run(installIfMissing: false)
+            return await run(installIfMissing: false, waitForRestartedEndpoint: true)
         } catch {
             return await result(
                 state: .unreachable(reason: safeServiceMessage(
@@ -80,8 +80,12 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
         }
     }
 
-    private func run(installIfMissing: Bool) async -> DaemonLifecycleResult {
+    private func run(
+        installIfMissing: Bool,
+        waitForRestartedEndpoint initialWaitForRestartedEndpoint: Bool
+    ) async -> DaemonLifecycleResult {
         var machine = DaemonLifecycleMachine()
+        var waitForRestartedEndpoint = initialWaitForRestartedEndpoint
         apply(.begin, to: &machine)
 
         let registration: DaemonRegistrationStatus
@@ -98,12 +102,13 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
         if registration == .requiresApproval {
             return await result(state: machine.state, snapshot: nil)
         }
-        if registration == .notRegistered || registration == .notFound {
+        if registration == .notRegistered || registration == .notFound || registration == .outdated {
             guard installIfMissing else {
                 return await result(state: machine.state, snapshot: nil)
             }
             do {
                 try await serviceManager.install()
+                waitForRestartedEndpoint = true
                 apply(.registrationSubmitted, to: &machine)
                 let installedStatus = try await serviceManager.inspect()
                 apply(.registrationChecked(installedStatus), to: &machine)
@@ -121,38 +126,53 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
             }
         }
 
-        return await connect(machine: machine)
+        return await connect(machine: machine, waitForRestartedEndpoint: waitForRestartedEndpoint)
     }
 
-    private func connect(machine initialMachine: DaemonLifecycleMachine) async -> DaemonLifecycleResult {
+    private func connect(
+        machine initialMachine: DaemonLifecycleMachine,
+        waitForRestartedEndpoint: Bool
+    ) async -> DaemonLifecycleResult {
         var machine = initialMachine
         var connection: DaemonConnection
-        do {
-            connection = try connectionFactory.connect()
-        } catch let error as RuntimeConnectionError where error.descriptorIsMissing {
-            apply(.endpointMissing, to: &machine)
+        if waitForRestartedEndpoint {
             do {
-                try await serviceManager.kickstart()
-                apply(.daemonStarted, to: &machine)
-            } catch {
-                apply(.daemonStartFailed(reason: "macOS could not start the Switchyard daemon."), to: &machine)
-                return await result(state: machine.state, snapshot: nil)
-            }
-            do {
-                connection = try await waitForEndpoint()
+                connection = try await waitForEndpoint(retryTransientIdentity: true)
             } catch let error as RuntimeConnectionError {
                 apply(.endpointInvalid(reason: error.description), to: &machine)
                 return await result(state: machine.state, snapshot: nil)
             } catch {
-                apply(.endpointInvalid(reason: "The Switchyard daemon did not publish a verified endpoint in time."), to: &machine)
+                apply(.endpointInvalid(reason: "The restarted Switchyard daemon did not publish a verified endpoint in time."), to: &machine)
                 return await result(state: machine.state, snapshot: nil)
             }
-        } catch let error as RuntimeConnectionError {
-            apply(.endpointInvalid(reason: error.description), to: &machine)
-            return await result(state: machine.state, snapshot: nil)
-        } catch {
-            apply(.endpointInvalid(reason: "The Switchyard daemon runtime could not be verified."), to: &machine)
-            return await result(state: machine.state, snapshot: nil)
+        } else {
+            do {
+                connection = try connectionFactory.connect()
+            } catch let error as RuntimeConnectionError where error.descriptorIsMissing {
+                apply(.endpointMissing, to: &machine)
+                do {
+                    try await serviceManager.kickstart()
+                    apply(.daemonStarted, to: &machine)
+                } catch {
+                    apply(.daemonStartFailed(reason: "macOS could not start the Switchyard daemon."), to: &machine)
+                    return await result(state: machine.state, snapshot: nil)
+                }
+                do {
+                    connection = try await waitForEndpoint(retryTransientIdentity: true)
+                } catch let error as RuntimeConnectionError {
+                    apply(.endpointInvalid(reason: error.description), to: &machine)
+                    return await result(state: machine.state, snapshot: nil)
+                } catch {
+                    apply(.endpointInvalid(reason: "The Switchyard daemon did not publish a verified endpoint in time."), to: &machine)
+                    return await result(state: machine.state, snapshot: nil)
+                }
+            } catch let error as RuntimeConnectionError {
+                apply(.endpointInvalid(reason: error.description), to: &machine)
+                return await result(state: machine.state, snapshot: nil)
+            } catch {
+                apply(.endpointInvalid(reason: "The Switchyard daemon runtime could not be verified."), to: &machine)
+                return await result(state: machine.state, snapshot: nil)
+            }
         }
 
         apply(.endpointFound(connection.descriptor), to: &machine)
@@ -192,7 +212,7 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
         }
     }
 
-    private func waitForEndpoint() async throws -> DaemonConnection {
+    private func waitForEndpoint(retryTransientIdentity: Bool) async throws -> DaemonConnection {
         var lastError: Error = RuntimeConnectionError.descriptorUnavailable
         for delay in waitPolicy.delays {
             try await sleeper.sleep(for: delay)
@@ -200,9 +220,11 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
                 return try connectionFactory.connect()
             } catch {
                 lastError = error
-                if let runtimeError = error as? RuntimeConnectionError,
-                   !runtimeError.descriptorIsMissing {
-                    throw runtimeError
+                if let runtimeError = error as? RuntimeConnectionError {
+                    let retryable = retryTransientIdentity
+                        ? runtimeError.retryableWhileDaemonStarts
+                        : runtimeError.descriptorIsMissing
+                    if !retryable { throw runtimeError }
                 }
             }
         }

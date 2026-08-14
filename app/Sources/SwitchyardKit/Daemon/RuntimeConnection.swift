@@ -130,4 +130,14 @@ public enum RuntimeConnectionError: Error, Sendable, CustomStringConvertible {
             return false
         }
     }
+
+    public var retryableWhileDaemonStarts: Bool {
+        if descriptorIsMissing { return true }
+        switch self {
+        case .processIdentityUnavailable, .processIdentityMismatch:
+            return true
+        default:
+            return false
+        }
+    }
 }

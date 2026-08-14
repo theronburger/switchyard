@@ -200,6 +200,8 @@ public struct LiveConnectionDoctor: DoctorRunning {
             return "macOS has not loaded the Switchyard user LaunchAgent."
         case .notFound:
             return "The installed Switchyard daemon binary is missing."
+        case .outdated:
+            return "The installed Switchyard helper does not match this app."
         }
     }
 }
