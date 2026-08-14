@@ -12,6 +12,7 @@ import (
 
 var (
 	ErrLeaseNotFound    = errors.New("port lease not found")
+	ErrLeaseConflict    = errors.New("port lease conflicts with restored ownership")
 	ErrNoAvailablePorts = errors.New("no available ports")
 )
 
@@ -110,6 +111,50 @@ func (allocator *Allocator) Reserve(ctx context.Context, key Key, preferredPorts
 		return Lease{}, err
 	}
 	return leases[0], nil
+}
+
+// Restore atomically re-seeds exact leases from durable environment state.
+// It deliberately does not probe the operating system: a healthy restored
+// service is expected to already have its port bound. Callers must restore all
+// persisted leases before accepting new reservations.
+func (allocator *Allocator) Restore(leases []Lease) error {
+	allocator.mutex.Lock()
+	defer allocator.mutex.Unlock()
+
+	batchKeys := make(map[Key]struct{}, len(leases))
+	batchPorts := make(map[int]struct{}, len(leases))
+	for _, lease := range leases {
+		if err := validateKey(lease.Key); err != nil {
+			return err
+		}
+		if lease.Host != allocator.host {
+			return fmt.Errorf("%w: lease host does not match allocator host", ErrLeaseConflict)
+		}
+		if lease.Port < 1 || lease.Port > 65535 {
+			return fmt.Errorf("%w: lease port is outside 1..65535", ErrLeaseConflict)
+		}
+		if _, duplicate := batchKeys[lease.Key]; duplicate {
+			return fmt.Errorf("%w: duplicate lease key", ErrLeaseConflict)
+		}
+		if _, duplicate := batchPorts[lease.Port]; duplicate {
+			return fmt.Errorf("%w: duplicate lease port", ErrLeaseConflict)
+		}
+		batchKeys[lease.Key] = struct{}{}
+		batchPorts[lease.Port] = struct{}{}
+
+		if existing, exists := allocator.byKey[lease.Key]; exists && existing != lease {
+			return fmt.Errorf("%w: lease key already owns another port", ErrLeaseConflict)
+		}
+		if existingKey, exists := allocator.byPort[lease.Port]; exists && existingKey != lease.Key {
+			return fmt.Errorf("%w: lease port already has another owner", ErrLeaseConflict)
+		}
+	}
+
+	for _, lease := range leases {
+		allocator.byKey[lease.Key] = lease
+		allocator.byPort[lease.Port] = lease.Key
+	}
+	return nil
 }
 
 func (allocator *Allocator) ReserveSet(ctx context.Context, reservations []Reservation) ([]Lease, error) {

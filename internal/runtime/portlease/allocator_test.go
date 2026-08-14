@@ -184,6 +184,92 @@ func TestReserveSetPreservesEarlierStableLeaseOnFailure(t *testing.T) {
 	}
 }
 
+func TestRestoreRehydratesExactLeaseWithoutProbingBoundPort(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	port := listener.Addr().(*net.TCPAddr).Port
+	probes := 0
+	allocator := newTestAllocator(t, Config{
+		FirstPort: 30000,
+		LastPort:  30010,
+		Probe: func(context.Context, string, int) error {
+			probes++
+			return errors.New("probe must not run during restore")
+		},
+	})
+	lease := Lease{
+		Key:  Key{EnvironmentID: "env_01", ServiceID: "organizer", Purpose: "http"},
+		Host: "127.0.0.1", Port: port,
+	}
+	if err := allocator.Restore([]Lease{lease}); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 0 {
+		t.Fatalf("restore probed the operating system %d times", probes)
+	}
+	if got := allocator.Leases(); len(got) != 1 || got[0] != lease {
+		t.Fatalf("restored leases: got %+v, want %+v", got, lease)
+	}
+	if err := allocator.Restore([]Lease{lease}); err != nil {
+		t.Fatalf("idempotent restore: %v", err)
+	}
+}
+
+func TestRestoreRejectsConflictsAtomically(t *testing.T) {
+	allocator := newTestAllocator(t, Config{
+		FirstPort: 30000,
+		LastPort:  30010,
+		Probe:     func(context.Context, string, int) error { return nil },
+	})
+	stable := Lease{
+		Key:  Key{EnvironmentID: "env_stable", ServiceID: "organizer", Purpose: "http"},
+		Host: "127.0.0.1", Port: 30000,
+	}
+	if err := allocator.Restore([]Lease{stable}); err != nil {
+		t.Fatal(err)
+	}
+	conflicting := []Lease{
+		{
+			Key:  Key{EnvironmentID: "env_new", ServiceID: "organizer", Purpose: "http"},
+			Host: "127.0.0.1", Port: 30001,
+		},
+		{
+			Key:  Key{EnvironmentID: "env_other", ServiceID: "organizer", Purpose: "http"},
+			Host: "127.0.0.1", Port: stable.Port,
+		},
+	}
+	if err := allocator.Restore(conflicting); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("restore conflict: got %v, want %v", err, ErrLeaseConflict)
+	}
+	if got := allocator.Leases(); len(got) != 1 || got[0] != stable {
+		t.Fatalf("failed restore changed leases: got %+v, want %+v", got, stable)
+	}
+}
+
+func TestRestoreRejectsMalformedLease(t *testing.T) {
+	allocator := newTestAllocator(t, Config{
+		FirstPort: 30000,
+		LastPort:  30010,
+		Probe:     func(context.Context, string, int) error { return nil },
+	})
+	tests := []Lease{
+		{Key: Key{EnvironmentID: "env", ServiceID: "service", Purpose: "http"}, Host: "localhost", Port: 30000},
+		{Key: Key{EnvironmentID: "env", ServiceID: "service", Purpose: "http"}, Host: "127.0.0.1", Port: 0},
+		{Key: Key{EnvironmentID: "", ServiceID: "service", Purpose: "http"}, Host: "127.0.0.1", Port: 30000},
+	}
+	for _, lease := range tests {
+		if err := allocator.Restore([]Lease{lease}); err == nil {
+			t.Fatalf("restore accepted malformed lease: %+v", lease)
+		}
+	}
+	if leases := allocator.Leases(); len(leases) != 0 {
+		t.Fatalf("malformed restores changed leases: %+v", leases)
+	}
+}
+
 func TestReleaseMakesPortAvailable(t *testing.T) {
 	allocator := newTestAllocator(t, Config{
 		FirstPort: 30000,
