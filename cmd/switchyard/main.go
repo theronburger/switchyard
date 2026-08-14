@@ -200,6 +200,11 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if ctx.Err() != nil {
 		return shutdownServerAndWait(server, serveErrors, nil)
 	}
+	select {
+	case serveErr := <-serveErrors:
+		return shutdownServer(server, serveErr)
+	default:
+	}
 
 	descriptor := contractv1.RuntimeDescriptor{
 		SchemaVersion:    contractv1.SchemaVersion,
