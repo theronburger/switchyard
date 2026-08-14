@@ -291,6 +291,42 @@ func TestStartFailureRollsBackInReverseAfterPersistingOwnership(t *testing.T) {
 	}
 }
 
+func TestStartRefusesHealthyProbeWhenOwnedProcessAlreadyExited(t *testing.T) {
+	journal := newMemoryJournal()
+	processes := &fakeProcesses{reconcileObservation: processhost.Observation{
+		State: "exited", OwnershipVerified: true,
+	}}
+	planner := &staticPlanner{plan: ExecutionPlan{Services: []ServiceLaunch{{
+		ID: "service_web",
+		Process: processhost.LaunchSpec{
+			EnvironmentID: "env_false_healthy", ServiceID: "service_web", RunID: "run_false_healthy",
+			Executable: "/bin/echo", Directory: "/tmp", RunDirectory: t.TempDir(),
+		},
+		Readiness: ReadinessSpec{ID: "health"},
+	}}}}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7100, nil), Planner: planner,
+		Processes: processes, Readiness: &fakeReadiness{}, RollbackTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(context.Background(), StartRequest{
+		OperationID: "op_false_healthy", EnvironmentID: "env_false_healthy", RunID: "run_false_healthy",
+		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+	})
+	if !errors.Is(err, ErrProcessNotRunning) {
+		t.Fatalf("start error: got %v, want %v", err, ErrProcessNotRunning)
+	}
+	if result.State != domain.EnvironmentStopped || processes.stops != 1 {
+		t.Fatalf("false healthy process was published: result=%+v stops=%d", result, processes.stops)
+	}
+	current, exists, currentErr := journal.Current(context.Background(), result.EnvironmentID)
+	if currentErr != nil || !exists || current.State != domain.EnvironmentStopped || len(current.Services) != 0 {
+		t.Fatalf("false healthy public result: current=%+v exists=%t err=%v", current, exists, currentErr)
+	}
+}
+
 func TestStartCancellationRollsBackWithIndependentCleanupContext(t *testing.T) {
 	journal := newMemoryJournal()
 	ports := newFakePorts(7200, nil)

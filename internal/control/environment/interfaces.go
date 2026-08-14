@@ -16,6 +16,8 @@ type OperationJournal interface {
 	Update(context.Context, OperationRecord) error
 	Publish(context.Context, OperationRecord, EnvironmentResult) error
 	Current(context.Context, string) (EnvironmentResult, bool, error)
+	ListCurrent(context.Context, string, int) (CurrentEnvironmentPage, error)
+	RefreshCurrent(context.Context, EnvironmentResult) (bool, error)
 	Incomplete(context.Context) ([]OperationRecord, error)
 }
 

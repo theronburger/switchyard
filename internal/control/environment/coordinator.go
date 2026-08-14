@@ -227,6 +227,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		serviceResult := ServiceResult{
 			ID: service.ID, EnvironmentID: request.EnvironmentID, RunID: request.RunID,
 			OwnershipPath: filepath.Join(service.Process.RunDirectory, processhost.OwnershipFileName), Owned: true,
+			Readiness: service.Readiness,
 		}
 		entry := RollbackEntry{Kind: RollbackProcess, Armed: true, Process: cloneService(&serviceResult)}
 		entryIndex, err := coordinator.arm(ctx, &operation, PhaseLaunchingServices, entry)
@@ -244,6 +245,9 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 			return coordinator.failStart(operation, result, ErrForeignOwnership)
 		}
 		serviceResult.Process = ownership
+		serviceResult.Observation = ServiceObservation{
+			State: "running", ProcessCount: len(ownership.Members), ObservedAt: coordinator.now().UTC(),
+		}
 		result.Services = append(result.Services, serviceResult)
 		operation.Rollback[entryIndex].Process = cloneService(&serviceResult)
 		if err := coordinator.applied(ctx, &operation, entryIndex); err != nil {
@@ -274,6 +278,9 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 			}
 			result.Services[index].Health = health
 		}
+		if err := coordinator.verifyStartedProcesses(ctx, &result); err != nil {
+			return coordinator.failStart(operation, result, err)
+		}
 	}
 
 	if err := transitionEnvironment(&operation, domain.EnvironmentRunning); err != nil {
@@ -289,6 +296,29 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		return coordinator.failStart(operation, result, err)
 	}
 	return result, nil
+}
+
+func (coordinator *Coordinator) verifyStartedProcesses(
+	ctx context.Context,
+	result *EnvironmentResult,
+) error {
+	for index := range result.Services {
+		observation, err := coordinator.processes.Reconcile(ctx, result.Services[index].OwnershipPath)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return ErrForeignOwnership
+		}
+		if !observation.OwnershipVerified {
+			return ErrForeignOwnership
+		}
+		if observation.State != "running" || observation.MemberCount <= 0 {
+			return ErrProcessNotRunning
+		}
+		result.Services[index].Observation = serviceObservation(observation, nil, coordinator.now().UTC())
+	}
+	return nil
 }
 
 func (coordinator *Coordinator) Stop(ctx context.Context, request StopRequest) (EnvironmentResult, error) {

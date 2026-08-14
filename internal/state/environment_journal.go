@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"time"
 
@@ -44,11 +45,7 @@ type EnvironmentJournal struct {
 	projector EnvironmentProjector
 }
 
-type CurrentEnvironmentPage struct {
-	Results           []environmentcontrol.EnvironmentResult
-	NextEnvironmentID string
-	HasMore           bool
-}
+type CurrentEnvironmentPage = environmentcontrol.CurrentEnvironmentPage
 
 func NewEnvironmentJournal(store *Store, projector EnvironmentProjector) (*EnvironmentJournal, error) {
 	if store == nil || projector == nil {
@@ -271,6 +268,105 @@ WHERE environment_id = ?`, environmentID).Scan(&version, &payload)
 		return environmentcontrol.EnvironmentResult{}, false, ErrEnvironmentResultInvalid
 	}
 	return result, true, nil
+}
+
+// RefreshCurrent atomically republishes a live observation without rewriting
+// the terminal operation that originally created the environment. Only health
+// and bounded runtime observation fields may change.
+func (journal *EnvironmentJournal) RefreshCurrent(
+	ctx context.Context,
+	result environmentcontrol.EnvironmentResult,
+) (bool, error) {
+	result = normalizeEnvironmentResult(result)
+	if err := validateEnvironmentResult(result); err != nil || result.State != domain.EnvironmentRunning {
+		return false, ErrEnvironmentResultInvalid
+	}
+	resultPayload, err := json.Marshal(result)
+	if err != nil {
+		return false, ErrEnvironmentResultInvalid
+	}
+	transaction, err := journal.store.database.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("begin environment observation refresh: %w", err)
+	}
+	var version int
+	var operationID string
+	var currentPayload []byte
+	err = transaction.QueryRowContext(ctx, `
+SELECT schema_version, operation_id, result_json
+FROM environment_current_results
+WHERE environment_id = ?`, result.EnvironmentID).Scan(&version, &operationID, &currentPayload)
+	if err != nil {
+		_ = transaction.Rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrEnvironmentRecordNotFound
+		}
+		return false, fmt.Errorf("read environment observation target: %w", err)
+	}
+	currentResult, err := decodeEnvironmentResult(version, currentPayload)
+	if err != nil || !validEnvironmentRefresh(currentResult, result) {
+		_ = transaction.Rollback()
+		return false, ErrEnvironmentResultInvalid
+	}
+
+	snapshot, err := readSnapshotTransaction(ctx, transaction)
+	if err != nil {
+		_ = transaction.Rollback()
+		return false, err
+	}
+	current := findEnvironment(snapshot.Environments, result.EnvironmentID)
+	if current == nil {
+		_ = transaction.Rollback()
+		return false, ErrEnvironmentProjection
+	}
+	projected, err := journal.projector(cloneContractEnvironment(current), result)
+	if err != nil {
+		_ = transaction.Rollback()
+		return false, ErrEnvironmentProjection
+	}
+	projected = normalizeContractEnvironment(projected)
+	projected.Revision = current.Revision
+	if projected.ID != result.EnvironmentID {
+		_ = transaction.Rollback()
+		return false, ErrEnvironmentProjection
+	}
+	if reflect.DeepEqual(projected, *current) {
+		_ = transaction.Rollback()
+		return false, nil
+	}
+	projected.Revision = current.Revision + 1
+	projectedEnvironments := mergeEnvironment(snapshot.Environments, projected)
+	projectedSnapshot := snapshot
+	projectedSnapshot.Environments = projectedEnvironments
+	if err := projectedSnapshot.Validate(); err != nil {
+		_ = transaction.Rollback()
+		return false, ErrEnvironmentProjection
+	}
+
+	now := journal.store.now().UTC()
+	update, err := transaction.ExecContext(ctx, `
+UPDATE environment_current_results
+SET result_json = ?, updated_at = ?
+WHERE environment_id = ? AND operation_id = ?`,
+		resultPayload, now.Format(timeFormat), result.EnvironmentID, operationID,
+	)
+	if err != nil {
+		_ = transaction.Rollback()
+		return false, fmt.Errorf("persist environment observation refresh: %w", err)
+	}
+	if rows, rowsError := update.RowsAffected(); rowsError != nil || rows != 1 {
+		_ = transaction.Rollback()
+		return false, ErrEnvironmentRecordNotFound
+	}
+	snapshot.Environments = projectedEnvironments
+	if _, err := journal.store.commitEnvironmentJournalSnapshot(ctx, transaction, &snapshot.Environments); err != nil {
+		_ = transaction.Rollback()
+		return false, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return false, fmt.Errorf("commit environment observation refresh: %w", err)
+	}
+	return true, nil
 }
 
 func (journal *EnvironmentJournal) ListCurrent(

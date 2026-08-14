@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,11 +106,16 @@ func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T)
 		Ports: []portlease.Lease{lease}, Infrastructure: []containerhost.Goal{},
 		Services: []environmentcontrol.ServiceResult{{
 			ID: "organizer", EnvironmentID: metadata.EnvironmentID, RunID: "run_01", Owned: true,
+			OwnershipPath: "/private/secret/worktree/.switchyard/ownership.json",
 			Process: processhost.Ownership{
 				EnvironmentID: metadata.EnvironmentID, ServiceID: "organizer", RunID: "run_01",
 				StartedAt: now, Members: []processhost.ProcessIdentity{{PID: 100}},
+				StdoutPath: "/private/secret/worktree/stdout.log",
 			},
 			Health: environmentcontrol.HealthReport{Readiness: "ready", Health: "healthy"},
+			Observation: environmentcontrol.ServiceObservation{
+				State: "running", ProcessCount: 3, MemoryBytes: 8192, ObservedAt: now,
+			},
 		}},
 		UpdatedAt: now,
 	})
@@ -132,8 +139,16 @@ func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T)
 	}
 	if projected.Health != "healthy" || projected.URLs["organizer"] != "http://127.0.0.1:17005" ||
 		len(projected.Services) != 1 || projected.Services[0].Run == nil ||
-		projected.Services[0].Run.ProcessCount != 1 {
+		projected.Services[0].Run.ProcessCount != 3 || projected.Services[0].Run.MemoryBytes != 8192 ||
+		projected.Resources.MemoryBytes != 8192 || projected.Services[0].Run.CPUPercent != 0 {
 		t.Fatalf("projected environment: %+v", projected)
+	}
+	payload, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "/private/secret") || strings.Contains(string(payload), "ownership.json") {
+		t.Fatalf("public environment leaked a private runtime path: %s", payload)
 	}
 }
 

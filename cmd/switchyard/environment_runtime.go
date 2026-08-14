@@ -35,7 +35,8 @@ const (
 )
 
 type environmentRuntime struct {
-	actions *daemon.EnvironmentActionService
+	actions      *daemon.EnvironmentActionService
+	observerDone <-chan error
 }
 
 type marketplaceEnvironment struct {
@@ -143,6 +144,21 @@ func buildEnvironmentRuntime(
 			return nil, errors.New("an interrupted environment could not be recovered safely")
 		}
 	}
+	observer, err := environmentcontrol.NewLiveObserver(environmentcontrol.LiveObserverConfig{
+		Coordinator: coordinator,
+	})
+	if err != nil {
+		return nil, err
+	}
+	initialObservation, cancelInitialObservation := context.WithTimeout(
+		ctx, environmentcontrol.DefaultLiveObservationTimeout,
+	)
+	err = observer.RefreshOnce(initialObservation)
+	cancelInitialObservation()
+	if err != nil {
+		return nil, err
+	}
+	observerDone := make(chan error, 1)
 	resolver := newMarketplaceActionResolver(environments, marketplaceadapter.DefaultCatalog())
 	actions, err := daemon.NewEnvironmentActionService(daemon.EnvironmentActionServiceConfig{
 		Lifecycle: ctx, Store: store, Journal: journal, Coordinator: coordinator, Resolver: resolver,
@@ -150,7 +166,29 @@ func buildEnvironmentRuntime(
 	if err != nil {
 		return nil, err
 	}
-	return &environmentRuntime{actions: actions}, nil
+	go func() {
+		observerDone <- observer.Run(ctx)
+	}()
+	return &environmentRuntime{actions: actions, observerDone: observerDone}, nil
+}
+
+func (runtime *environmentRuntime) CloseAndWait(ctx context.Context) error {
+	var actionError error
+	if runtime.actions != nil {
+		actionError = runtime.actions.CloseAndWait(ctx)
+	}
+	var observerError error
+	if runtime.observerDone != nil {
+		select {
+		case observerError = <-runtime.observerDone:
+			if errors.Is(observerError, context.Canceled) {
+				observerError = nil
+			}
+		case <-ctx.Done():
+			observerError = ctx.Err()
+		}
+	}
+	return errors.Join(actionError, observerError)
 }
 
 func restoreEnvironmentLeases(
@@ -380,6 +418,7 @@ func marketplaceEnvironmentProjector(
 		sort.Strings(orderedServiceIDs)
 		allHealthy := len(orderedServiceIDs) > 0 && result.State == domain.EnvironmentRunning
 		anyUnhealthy := false
+		anyProcessDegraded := false
 		for _, serviceID := range orderedServiceIDs {
 			definition, known := catalog.Definition(serviceID)
 			if !known {
@@ -392,13 +431,28 @@ func marketplaceEnvironmentProjector(
 				PortLeaseIDs: append([]string(nil), leaseIDsByService[serviceID]...),
 			}
 			if running {
+				if serviceResult.Observation.State != "" {
+					service.ObservedState = serviceResult.Observation.State
+				}
 				service.Health = serviceResult.Health.Health
 				if service.Health == "" {
 					service.Health = "unknown"
 				}
+				processCount := len(serviceResult.Process.Members)
+				if !serviceResult.Observation.ObservedAt.IsZero() {
+					processCount = serviceResult.Observation.ProcessCount
+				}
 				service.Run = &contractv1.ServiceRun{
 					ID: result.RunID, StartedAt: serviceResult.Process.StartedAt,
-					ProcessCount: len(serviceResult.Process.Members),
+					ProcessCount: processCount, CPUPercent: serviceResult.Observation.CPUPercent,
+					MemoryBytes: serviceResult.Observation.MemoryBytes,
+				}
+				projected.Resources.MemoryBytes = saturatingResourceAdd(
+					projected.Resources.MemoryBytes, serviceResult.Observation.MemoryBytes,
+				)
+				projected.Resources.CPUPercent += serviceResult.Observation.CPUPercent
+				if service.ObservedState != string(domain.EnvironmentRunning) || serviceResult.Observation.Code != "" {
+					anyProcessDegraded = true
 				}
 			}
 			if service.Health != "healthy" {
@@ -408,6 +462,12 @@ func marketplaceEnvironmentProjector(
 				anyUnhealthy = true
 			}
 			projected.Services = append(projected.Services, service)
+		}
+		if projected.Resources.CPUPercent > 100 {
+			projected.Resources.CPUPercent = 100
+		}
+		if result.State == domain.EnvironmentRunning && anyProcessDegraded {
+			projected.ObservedState = "degraded"
 		}
 		if allHealthy {
 			projected.Health = "healthy"
@@ -431,6 +491,16 @@ func marketplaceEnvironmentProjector(
 		})
 		return projected, nil
 	}
+}
+
+func saturatingResourceAdd(total, value int64) int64 {
+	if value <= 0 {
+		return total
+	}
+	if total > int64(^uint64(0)>>1)-value {
+		return int64(^uint64(0) >> 1)
+	}
+	return total + value
 }
 
 func stableEnvironmentID(worktreeID string) string {

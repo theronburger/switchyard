@@ -152,11 +152,11 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
-	if runtime.actions != nil {
+	if runtime.actions != nil || runtime.observerDone != nil {
 		defer func() {
 			waitContext, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 			defer cancel()
-			_ = runtime.actions.CloseAndWait(waitContext)
+			_ = runtime.CloseAndWait(waitContext)
 		}()
 	}
 	if _, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{

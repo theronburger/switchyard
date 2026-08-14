@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	ErrInvalidRequest   = errors.New("environment operation request is invalid")
-	ErrInvalidState     = errors.New("environment state does not allow this operation")
-	ErrForeignOwnership = errors.New("environment contains a foreign or unverifiable resource")
-	ErrProtectedInfra   = errors.New("container infrastructure is protected from mutation")
+	ErrInvalidRequest    = errors.New("environment operation request is invalid")
+	ErrInvalidState      = errors.New("environment state does not allow this operation")
+	ErrForeignOwnership  = errors.New("environment contains a foreign or unverifiable resource")
+	ErrProtectedInfra    = errors.New("container infrastructure is protected from mutation")
+	ErrProcessNotRunning = errors.New("environment process is not running after readiness")
 )
 
 type OperationKind string
@@ -72,6 +73,21 @@ type HealthReport struct {
 	Health    string
 }
 
+const (
+	ServiceObservationProcessFailed       = "PROCESS_OBSERVATION_FAILED"
+	ServiceObservationOwnershipUnverified = "PROCESS_OWNERSHIP_UNVERIFIED"
+	ServiceObservationHealthFailed        = "HEALTH_OBSERVATION_FAILED"
+)
+
+type ServiceObservation struct {
+	State        string
+	ProcessCount int
+	MemoryBytes  int64
+	CPUPercent   float64
+	Code         string
+	ObservedAt   time.Time
+}
+
 type PreparationSpec struct {
 	ID           string
 	Executable   string
@@ -118,7 +134,9 @@ type ServiceResult struct {
 	OwnershipPath string
 	Owned         bool
 	Process       processhost.Ownership
+	Readiness     ReadinessSpec
 	Health        HealthReport
+	Observation   ServiceObservation
 }
 
 type StartRequest struct {
@@ -175,4 +193,10 @@ type ReconcileOutcome struct {
 	EnvironmentID string
 	State         domain.EnvironmentState
 	Err           error
+}
+
+type CurrentEnvironmentPage struct {
+	Results           []EnvironmentResult
+	NextEnvironmentID string
+	HasMore           bool
 }

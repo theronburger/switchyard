@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -74,6 +76,47 @@ func (journal *memoryJournal) Current(_ context.Context, environmentID string) (
 	defer journal.mutex.Unlock()
 	result, exists := journal.current[environmentID]
 	return cloneEnvironment(result), exists, nil
+}
+
+func (journal *memoryJournal) ListCurrent(
+	_ context.Context,
+	afterEnvironmentID string,
+	limit int,
+) (CurrentEnvironmentPage, error) {
+	journal.mutex.Lock()
+	defer journal.mutex.Unlock()
+	ids := make([]string, 0, len(journal.current))
+	for environmentID := range journal.current {
+		if environmentID > afterEnvironmentID {
+			ids = append(ids, environmentID)
+		}
+	}
+	sort.Strings(ids)
+	page := CurrentEnvironmentPage{Results: make([]EnvironmentResult, 0, limit), NextEnvironmentID: afterEnvironmentID}
+	for index, environmentID := range ids {
+		if index == limit {
+			page.HasMore = true
+			break
+		}
+		page.Results = append(page.Results, cloneEnvironment(journal.current[environmentID]))
+		page.NextEnvironmentID = environmentID
+	}
+	return page, nil
+}
+
+func (journal *memoryJournal) RefreshCurrent(_ context.Context, result EnvironmentResult) (bool, error) {
+	journal.mutex.Lock()
+	defer journal.mutex.Unlock()
+	current, exists := journal.current[result.EnvironmentID]
+	if !exists || current.RunID != result.RunID || current.State != domain.EnvironmentRunning {
+		return false, errors.New("stale environment refresh")
+	}
+	if reflect.DeepEqual(current, result) {
+		return false, nil
+	}
+	journal.current[result.EnvironmentID] = cloneEnvironment(result)
+	journal.events = append(journal.events, "refresh:"+result.EnvironmentID)
+	return true, nil
 }
 
 func (journal *memoryJournal) Incomplete(context.Context) ([]OperationRecord, error) {
@@ -320,13 +363,15 @@ func (host *fakeInfrastructure) StopOwned(context.Context, []containerhost.Goal)
 }
 
 type fakeProcesses struct {
-	journal     *memoryJournal
-	operationID string
-	calls       *[]string
-	starts      int
-	stops       int
-	stopErr     error
-	startSpecs  []processhost.LaunchSpec
+	journal              *memoryJournal
+	operationID          string
+	calls                *[]string
+	starts               int
+	stops                int
+	stopErr              error
+	reconcileObservation processhost.Observation
+	reconcileErr         error
+	startSpecs           []processhost.LaunchSpec
 }
 
 type fakePreparations struct {
@@ -394,8 +439,11 @@ func (host *fakeProcesses) Stop(context.Context, string) (processhost.Observatio
 	return processhost.Observation{State: "stopped"}, host.stopErr
 }
 
-func (*fakeProcesses) Reconcile(context.Context, string) (processhost.Observation, error) {
-	return processhost.Observation{State: "running"}, nil
+func (host *fakeProcesses) Reconcile(context.Context, string) (processhost.Observation, error) {
+	if host.reconcileObservation.State == "" && host.reconcileErr == nil {
+		return processhost.Observation{State: "running", OwnershipVerified: true, MemberCount: 1}, nil
+	}
+	return host.reconcileObservation, host.reconcileErr
 }
 
 type fakeReadiness struct {

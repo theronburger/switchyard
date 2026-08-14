@@ -3,6 +3,7 @@ package state
 import (
 	"net"
 	"path/filepath"
+	"reflect"
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
@@ -196,6 +197,35 @@ func validServiceResult(environmentID, runID string, service environmentcontrol.
 	if !validServiceIdentity(environmentID, runID, service) || service.Process.EnvironmentID != environmentID ||
 		service.Process.RunID != runID || service.Process.ServiceID != service.ID || service.Process.Members == nil {
 		return false
+	}
+	return validServiceObservation(service.Observation)
+}
+
+func validServiceObservation(observation environmentcontrol.ServiceObservation) bool {
+	return observation.ProcessCount >= 0 && observation.MemoryBytes >= 0 && observation.CPUPercent >= 0 &&
+		observation.CPUPercent <= 100 && len(observation.State) <= 64 && len(observation.Code) <= 128
+}
+
+func validEnvironmentRefresh(
+	current environmentcontrol.EnvironmentResult,
+	next environmentcontrol.EnvironmentResult,
+) bool {
+	if current.EnvironmentID != next.EnvironmentID || current.RunID != next.RunID ||
+		current.State != domain.EnvironmentRunning || next.State != domain.EnvironmentRunning ||
+		!reflect.DeepEqual(current.Ports, next.Ports) || !reflect.DeepEqual(current.Projection, next.Projection) ||
+		!reflect.DeepEqual(current.Infrastructure, next.Infrastructure) || len(current.Services) != len(next.Services) {
+		return false
+	}
+	for index := range current.Services {
+		left := current.Services[index]
+		right := next.Services[index]
+		left.Health = environmentcontrol.HealthReport{}
+		right.Health = environmentcontrol.HealthReport{}
+		left.Observation = environmentcontrol.ServiceObservation{}
+		right.Observation = environmentcontrol.ServiceObservation{}
+		if !reflect.DeepEqual(left, right) {
+			return false
+		}
 	}
 	return true
 }

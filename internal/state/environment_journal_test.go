@@ -17,6 +17,7 @@ import (
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
+	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
 func TestEnvironmentJournalMigrationAndIncompleteRecordSurviveReopen(t *testing.T) {
@@ -237,6 +238,102 @@ func TestEnvironmentJournalPublishIsAtomicSingleRevisionAndSurvivesReopen(t *tes
 	current, exists, err = journal.Current(ctx, "env_01")
 	if err != nil || !exists || current.EnvironmentID != "env_01" {
 		t.Fatalf("reopened current result: %+v exists=%t err=%v", current, exists, err)
+	}
+}
+
+func TestEnvironmentJournalRefreshesOnlyValidatedPublicObservationChangesAtomically(t *testing.T) {
+	ctx := context.Background()
+	projector := func(current *contractv1.Environment, result environmentcontrol.EnvironmentResult) (contractv1.Environment, error) {
+		projected, err := defaultProjector(current, result)
+		if err != nil {
+			return contractv1.Environment{}, err
+		}
+		projected.Services = []contractv1.Service{}
+		projected.PortLeases = []contractv1.PortLease{}
+		projected.InfrastructureLeases = []contractv1.InfrastructureLease{}
+		projected.URLs = map[string]string{}
+		projected.AttentionAlertIDs = []string{}
+		if len(result.Services) != 0 {
+			service := result.Services[0]
+			projected.Health = service.Health.Health
+			projected.Services = append(projected.Services, contractv1.Service{
+				ID: service.ID, DisplayName: service.ID, Kind: "native", DesiredState: "running",
+				ObservedState: service.Observation.State, Health: service.Health.Health,
+				PortLeaseIDs: []string{}, Run: &contractv1.ServiceRun{
+					ID: result.RunID, StartedAt: service.Process.StartedAt,
+					ProcessCount: service.Observation.ProcessCount,
+					CPUPercent:   service.Observation.CPUPercent, MemoryBytes: service.Observation.MemoryBytes,
+				},
+			})
+		}
+		return projected, nil
+	}
+	store, journal, record := preparedRunningJournal(t, projector)
+	record.State = domain.OperationSucceeded
+	record.EnvironmentState = domain.EnvironmentRunning
+	record.Phase = environmentcontrol.PhaseComplete
+	result := successfulEnvironmentResult(record.EnvironmentID)
+	startedAt := time.Date(2026, 8, 14, 11, 0, 0, 0, time.UTC)
+	result.Services = []environmentcontrol.ServiceResult{{
+		ID: "service_web", EnvironmentID: result.EnvironmentID, RunID: result.RunID,
+		OwnershipPath: filepath.Join(t.TempDir(), processhost.OwnershipFileName), Owned: true,
+		Process: processhost.Ownership{
+			EnvironmentID: result.EnvironmentID, ServiceID: "service_web", RunID: result.RunID,
+			Members: []processhost.ProcessIdentity{{PID: 1234}}, StartedAt: startedAt,
+		},
+		Readiness: environmentcontrol.ReadinessSpec{ID: "health.v1"},
+		Health:    environmentcontrol.HealthReport{Readiness: "ready", Health: "healthy"},
+		Observation: environmentcontrol.ServiceObservation{
+			State: "running", ProcessCount: 1, MemoryBytes: 1024, ObservedAt: result.UpdatedAt,
+		},
+	}}
+	if err := journal.Publish(ctx, record, result); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotRevision(t, store)
+
+	unchanged := result
+	unchanged.UpdatedAt = unchanged.UpdatedAt.Add(time.Minute)
+	unchanged.Services = append([]environmentcontrol.ServiceResult(nil), result.Services...)
+	unchanged.Services[0].Observation.ObservedAt = unchanged.UpdatedAt
+	changed, err := journal.RefreshCurrent(ctx, unchanged)
+	if err != nil || changed {
+		t.Fatalf("private-only refresh: changed=%t err=%v", changed, err)
+	}
+	if revision := snapshotRevision(t, store); revision != before {
+		t.Fatalf("private-only refresh advanced revision %d -> %d", before, revision)
+	}
+
+	refreshed := unchanged
+	refreshed.Services = append([]environmentcontrol.ServiceResult(nil), unchanged.Services...)
+	refreshed.Services[0].Observation.ProcessCount = 3
+	refreshed.Services[0].Observation.MemoryBytes = 8192
+	refreshed.Services[0].Health.Health = "degraded"
+	changed, err = journal.RefreshCurrent(ctx, refreshed)
+	if err != nil || !changed {
+		t.Fatalf("public refresh: changed=%t err=%v", changed, err)
+	}
+	if revision := snapshotRevision(t, store); revision != before+1 {
+		t.Fatalf("public refresh revision: got %d, want %d", revision, before+1)
+	}
+	snapshot, err := store.ReadSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceRun := snapshot.Environments[0].Services[0].Run
+	if snapshot.Environments[0].Revision != 2 || snapshot.Environments[0].Health != "degraded" ||
+		serviceRun == nil || serviceRun.ProcessCount != 3 || serviceRun.MemoryBytes != 8192 {
+		t.Fatalf("refreshed public environment: %+v", snapshot.Environments[0])
+	}
+
+	tampered := refreshed
+	tampered.Services = append([]environmentcontrol.ServiceResult(nil), refreshed.Services...)
+	tampered.Services[0].OwnershipPath = filepath.Join(t.TempDir(), "foreign", processhost.OwnershipFileName)
+	if changed, err := journal.RefreshCurrent(ctx, tampered); !errors.Is(err, ErrEnvironmentResultInvalid) || changed {
+		t.Fatalf("ownership tamper: changed=%t err=%v", changed, err)
+	}
+	if revision := snapshotRevision(t, store); revision != before+1 {
+		t.Fatalf("rejected ownership tamper advanced revision to %d", revision)
 	}
 }
 
