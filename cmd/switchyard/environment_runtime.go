@@ -571,11 +571,15 @@ func requireExecutable(path string) (string, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return "", errors.New("runtime executable path is invalid")
 	}
-	info, err := os.Lstat(path)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !filepath.IsAbs(resolved) || filepath.Clean(resolved) != resolved {
+		return "", errors.New("runtime executable is unavailable")
+	}
+	info, err := os.Lstat(resolved)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 == 0 {
 		return "", errors.New("runtime executable is unavailable")
 	}
-	return path, nil
+	return resolved, nil
 }
 
 func readBoundedRegularFile(path string, maximumBytes int64) ([]byte, error) {
