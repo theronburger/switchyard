@@ -60,6 +60,33 @@ CREATE INDEX events_environment_sequence
     ON events(environment_id, sequence);
 `,
 	},
+	{
+		version: 2,
+		sql: `
+CREATE TABLE environment_operation_records (
+    operation_id TEXT PRIMARY KEY REFERENCES operations(id),
+    schema_version INTEGER NOT NULL,
+    environment_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    operation_state TEXT NOT NULL,
+    record_json BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX environment_operation_records_incomplete
+    ON environment_operation_records(operation_state, created_at, operation_id);
+
+CREATE TABLE environment_current_results (
+    environment_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    operation_id TEXT NOT NULL REFERENCES environment_operation_records(operation_id),
+    result_json BLOB NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {

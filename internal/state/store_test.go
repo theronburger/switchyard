@@ -37,7 +37,8 @@ func TestOpenRejectsNewerDatabaseSchema(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "state.sqlite")
 	store := openTestStore(t, databasePath)
-	if _, err := store.database.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", 2, time.Now().UTC().Format(timeFormat)); err != nil {
+	futureVersion := migrations[len(migrations)-1].version + 1
+	if _, err := store.database.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", futureVersion, time.Now().UTC().Format(timeFormat)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

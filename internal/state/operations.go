@@ -155,11 +155,19 @@ func (store *Store) FailInterruptedOperations(
 		_ = transaction.Rollback()
 		return nil, fmt.Errorf("list interrupted operations: %w", err)
 	}
+	environmentOwned, err := incompleteEnvironmentOperationIDs(ctx, transaction)
+	if err != nil {
+		_ = transaction.Rollback()
+		return nil, fmt.Errorf("list environment-owned operations: %w", err)
+	}
 
 	updatedAt := store.now().UTC()
 	interrupted := make([]contractv1.Operation, 0)
 	for _, operation := range operations {
 		if operation.State != "pending" && operation.State != "running" {
+			continue
+		}
+		if _, owned := environmentOwned[operation.ID]; owned {
 			continue
 		}
 		if _, err := transaction.ExecContext(
@@ -190,6 +198,29 @@ func (store *Store) FailInterruptedOperations(
 		return nil, fmt.Errorf("commit interrupted operation reconciliation: %w", err)
 	}
 	return interrupted, nil
+}
+
+func incompleteEnvironmentOperationIDs(ctx context.Context, transaction *sql.Tx) (map[string]struct{}, error) {
+	rows, err := transaction.QueryContext(ctx, `
+SELECT operation_id
+FROM environment_operation_records
+WHERE operation_state IN ('pending', 'running')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	owned := make(map[string]struct{})
+	for rows.Next() {
+		var operationID string
+		if err := rows.Scan(&operationID); err != nil {
+			return nil, err
+		}
+		owned[operationID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return owned, nil
 }
 
 func (store *Store) TransitionOperation(
