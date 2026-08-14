@@ -50,6 +50,33 @@ func TestReserveProbesOperatingSystem(t *testing.T) {
 	}
 }
 
+func TestReserveRejectsWildcardListenerOnDarwin(t *testing.T) {
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	if port == 65535 {
+		t.Skip("cannot construct a bounded fallback after the listener port")
+	}
+
+	allocator, err := NewAllocator(Config{
+		Host: "127.0.0.1", FirstPort: port + 1, LastPort: port + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{EnvironmentID: "environment-wildcard", ServiceID: "service", Purpose: "http"}
+	lease, err := allocator.Reserve(context.Background(), key, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Port == port {
+		t.Fatalf("reserved wildcard-owned listener port %d", port)
+	}
+}
+
 func TestReserveIsStableForAServicePurpose(t *testing.T) {
 	allocator := newTestAllocator(t, Config{
 		FirstPort: 30000,

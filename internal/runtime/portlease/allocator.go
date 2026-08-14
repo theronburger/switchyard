@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"syscall"
 )
 
 var (
@@ -309,6 +310,18 @@ func validateKey(key Key) error {
 }
 
 func ProbeOperatingSystem(ctx context.Context, host string, port int) error {
+	address := net.JoinHostPort(host, strconv.Itoa(port))
+	connection, dialErr := (&net.Dialer{}).DialContext(ctx, "tcp4", address)
+	if dialErr == nil {
+		_ = connection.Close()
+		return errors.New("port already accepts TCP connections")
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		return dialErr
+	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
