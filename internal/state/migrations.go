@@ -87,6 +87,47 @@ CREATE TABLE environment_current_results (
 );
 `,
 	},
+	{
+		version: 3,
+		sql: `
+CREATE TABLE workspace_operation_records (
+    operation_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    worktree_id TEXT NOT NULL,
+    workspace_state TEXT NOT NULL,
+    record_json BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX workspace_operation_records_incomplete_worktree
+    ON workspace_operation_records(worktree_id)
+    WHERE workspace_state IN ('pending', 'running');
+
+CREATE INDEX workspace_operation_records_incomplete
+    ON workspace_operation_records(workspace_state, created_at, operation_id);
+
+CREATE TABLE workspace_current_results (
+    worktree_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    operation_id TEXT NOT NULL REFERENCES workspace_operation_records(operation_id),
+    result_json BLOB NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`,
+	},
+	{
+		version: 4,
+		sql: `
+ALTER TABLE operations ADD COLUMN phase TEXT NOT NULL DEFAULT '';
+`,
+	},
+	{
+		version: 5,
+		sql: `
+ALTER TABLE operations ADD COLUMN run_id TEXT;
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {

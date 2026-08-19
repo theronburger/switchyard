@@ -79,6 +79,29 @@ extension Environment {
         services.reduce(0) { $0 + ($1.run?.processCount ?? 0) }
     }
 
+    public var hasRetainedResources: Bool {
+        !services.isEmpty || !portLeases.isEmpty || !infrastructureLeases.isEmpty
+    }
+
+    public var hasUnverifiableServices: Bool {
+        services.contains { $0.observedState == .unverifiable }
+    }
+
+    public var allowsStopRequest: Bool {
+        switch observedState {
+        case .running, .failed, .orphaned, .degraded:
+            true
+        case .unknown:
+            hasRetainedResources && hasUnverifiableServices
+        case .stopped, .starting, .stopping, .exited, .unverifiable:
+            false
+        }
+    }
+
+    public var allowsRebuildRequest: Bool {
+        allowsStopRequest
+    }
+
     /// Sorted so URLs render deterministically.
     public var sortedURLs: [(service: String, url: String)] {
         urls.sorted { $0.key < $1.key }.map { (service: $0.key, url: $0.value) }
@@ -88,5 +111,11 @@ extension Environment {
 extension WorktreeState {
     public var isClean: Bool {
         !hasTrackedChanges && !hasUntrackedFiles && !hasUnpushedCommits
+    }
+}
+
+extension LineChanges {
+    public var isEmpty: Bool {
+        additions == 0 && deletions == 0 && files == 0
     }
 }

@@ -9,7 +9,6 @@ import (
 func canonicalPortBindings(bindings []PortBinding) ([]PortBinding, error) {
 	canonical := clonePortBindings(bindings)
 	seenHostPorts := make(map[int]struct{}, len(canonical))
-	seenContainerPorts := make(map[int]struct{}, len(canonical))
 	for _, binding := range canonical {
 		if binding.Host != LoopbackHostIPv4 {
 			return nil, errors.New("container host binding must use literal IPv4 loopback")
@@ -24,10 +23,6 @@ func canonicalPortBindings(bindings []PortBinding) ([]PortBinding, error) {
 			return nil, errors.New("container host port binding is duplicated")
 		}
 		seenHostPorts[binding.HostPort] = struct{}{}
-		if _, duplicate := seenContainerPorts[binding.ContainerPort]; duplicate {
-			return nil, errors.New("container target port binding is duplicated")
-		}
-		seenContainerPorts[binding.ContainerPort] = struct{}{}
 	}
 	sortPortBindings(canonical)
 	return canonical, nil

@@ -76,7 +76,6 @@ func TestPlannerRejectsUnsafeOrAmbiguousPortBindings(t *testing.T) {
 		{name: "udp", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocol("udp")}}},
 		{name: "empty protocol", kind: ResourceContainer, bindings: []PortBinding{{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324}}},
 		{name: "duplicate host port", kind: ResourceContainer, bindings: []PortBinding{valid, {Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9325, Protocol: PortProtocolTCP}}},
-		{name: "duplicate target port", kind: ResourceContainer, bindings: []PortBinding{valid, {Host: LoopbackHostIPv4, HostPort: 19325, ContainerPort: 9324, Protocol: PortProtocolTCP}}},
 		{name: "volume port", kind: ResourceVolume, bindings: []PortBinding{valid}},
 		{name: "network port", kind: ResourceNetwork, bindings: []PortBinding{valid}},
 	}
@@ -94,6 +93,23 @@ func TestPlannerRejectsUnsafeOrAmbiguousPortBindings(t *testing.T) {
 				t.Fatal("unsafe port binding was accepted")
 			}
 		})
+	}
+}
+
+func TestPlannerAllowsOneContainerPortOnMultipleIsolatedHostPorts(t *testing.T) {
+	bindings := []PortBinding{
+		{Host: LoopbackHostIPv4, HostPort: 19324, ContainerPort: 9324, Protocol: PortProtocolTCP},
+		{Host: LoopbackHostIPv4, HostPort: 29324, ContainerPort: 9324, Protocol: PortProtocolTCP},
+	}
+	plan, err := (Planner{}).Build(Inventory{}, []Goal{{
+		Kind: ResourceContainer, Name: "shared-environment-elasticmq", Image: "softwaremill/elasticmq",
+		PortBindings: bindings, Identity: testIdentity("shared-ports"), DesiredState: DesiredRunning,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Actions) != 2 || len(plan.Actions[0].PortBindings) != 2 {
+		t.Fatalf("shared target bindings were not preserved: %#v", plan.Actions)
 	}
 }
 

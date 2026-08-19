@@ -13,12 +13,48 @@ struct ConnectionDoctorView: View {
                     .font(.largeTitle.bold())
                 lifecycleCard
                 agentConnectionsCard
+                githubCard
                 checksCard
             }
             .padding(20)
             .frame(maxWidth: 640, alignment: .leading)
+            .switchyardScrollbars()
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var githubCard: some View {
+        SectionCard(title: "GitHub CLI", systemImage: "arrow.triangle.branch") {
+            let observations = model.snapshot?.repositories.flatMap(\.worktrees).compactMap(\.pullRequest) ?? []
+            let accounts = Array(Set(observations.compactMap(\.account))).sorted()
+            if observations.isEmpty {
+                Text("Waiting for the daemon's first GitHub observation.")
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: observations.contains(where: { $0.status == .unavailable }) ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(observations.contains(where: { $0.status == .unavailable }) ? .orange : .green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(accounts.isEmpty ? "GitHub observation active" : "Authenticated as \(accounts.joined(separator: ", "))")
+                            .font(.callout.weight(.medium))
+                        Text("\(observations.count(where: { $0.status == .found })) pull requests · \(observations.count(where: { $0.status == .none })) branches without a PR · \(observations.count(where: { $0.stale })) stale")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                if let unavailable = observations.first(where: { $0.status == .unavailable }) {
+                    Divider()
+                    Text(githubErrorDescription(unavailable.errorCode))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Text("Switchyard uses the existing Keychain-backed gh login. It never stores or requests a GitHub token, and GitHub availability does not affect environment health.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var lifecycleCard: some View {

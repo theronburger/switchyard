@@ -40,6 +40,9 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         guard isOwnedInstalledExecutable(at: paths.installedBinaryURL) else {
             return .notFound
         }
+        guard commandLinkMatches() else {
+            return .outdated
+        }
         if let packagedBinary = try packagedBinaryIfAvailable() {
             guard isRegularExecutable(at: packagedBinary.sourceURL) else {
                 throw DaemonServiceError.binaryInvalid
@@ -115,6 +118,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
             try installBinaryAtomically(plan.binary.sourceURL, at: plan.paths.installedBinaryURL)
         }
         try verifyDaemonBinary(at: plan.paths.installedBinaryURL, expectedVersion: plan.binary.expectedVersion)
+        try installCommandLinkIfNeeded()
         if !propertyListMatches(plan.propertyList) {
             try writeAtomically(plan.propertyList, to: plan.paths.launchAgentURL, permissions: 0o600)
         }
@@ -139,6 +143,55 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+    }
+
+    private func installCommandLinkIfNeeded() throws {
+        guard let commandLinkURL = paths.commandLinkURL else { return }
+        let directoryURL = commandLinkURL.deletingLastPathComponent()
+        do {
+            try fileManager.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o755]
+            )
+        } catch {
+            throw DaemonServiceError.commandLinkFailed
+        }
+        var directoryStatus = Darwin.stat()
+        guard lstat(directoryURL.path, &directoryStatus) == 0,
+              directoryStatus.st_mode & S_IFMT == S_IFDIR,
+              directoryStatus.st_uid == getuid(),
+              Int(directoryStatus.st_mode) & 0o022 == 0 else {
+            throw DaemonServiceError.commandLinkFailed
+        }
+        var linkStatus = Darwin.stat()
+        if lstat(commandLinkURL.path, &linkStatus) == 0 {
+            guard linkStatus.st_mode & S_IFMT == S_IFLNK,
+                  linkStatus.st_uid == getuid(),
+                  commandLinkMatches() else {
+                throw DaemonServiceError.commandLinkConflict
+            }
+            return
+        }
+        guard errno == ENOENT,
+              symlink(paths.installedBinaryURL.path, commandLinkURL.path) == 0 else {
+            throw DaemonServiceError.commandLinkFailed
+        }
+        guard commandLinkMatches() else {
+            throw DaemonServiceError.commandLinkFailed
+        }
+    }
+
+    private func commandLinkMatches() -> Bool {
+        guard let commandLinkURL = paths.commandLinkURL else { return true }
+        var linkStatus = Darwin.stat()
+        guard lstat(commandLinkURL.path, &linkStatus) == 0,
+              linkStatus.st_mode & S_IFMT == S_IFLNK,
+              linkStatus.st_uid == getuid(),
+              let destination = try? fileManager.destinationOfSymbolicLink(atPath: commandLinkURL.path) else {
+            return false
+        }
+        return destination == paths.installedBinaryURL.path
     }
 
     private func packagedBinaryIfAvailable() throws -> DaemonBinary? {
@@ -265,6 +318,8 @@ public enum DaemonServiceError: Error, Sendable, Equatable, CustomStringConverti
     case binaryInvalid
     case binaryVersionMismatch
     case binaryCopyFailed
+    case commandLinkConflict
+    case commandLinkFailed
     case propertyListWriteFailed
     case launchctlFailed
 
@@ -276,6 +331,10 @@ public enum DaemonServiceError: Error, Sendable, Equatable, CustomStringConverti
             return "the packaged Switchyard daemon version is incompatible with this app"
         case .binaryCopyFailed:
             return "the Switchyard daemon could not be installed atomically"
+        case .commandLinkConflict:
+            return "the sy command already exists and is not owned by Switchyard"
+        case .commandLinkFailed:
+            return "the sy command could not be installed safely"
         case .propertyListWriteFailed:
             return "the Switchyard user LaunchAgent could not be written atomically"
         case .launchctlFailed:

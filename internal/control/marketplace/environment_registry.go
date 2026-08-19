@@ -15,6 +15,7 @@ var (
 
 type EnvironmentRegistration struct {
 	EnvironmentID      string
+	RepositoryRoot     string
 	WorktreeRoot       string
 	NodeExecutable     string
 	YarnCJS            string
@@ -65,6 +66,7 @@ func validateEnvironmentRegistration(registration EnvironmentRegistration) error
 		return ErrRegistryInvalid
 	}
 	paths := []string{
+		registration.RepositoryRoot,
 		registration.WorktreeRoot,
 		registration.NodeExecutable,
 		registration.YarnCJS,

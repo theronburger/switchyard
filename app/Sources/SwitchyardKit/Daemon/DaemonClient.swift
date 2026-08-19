@@ -169,6 +169,48 @@ public struct DaemonClient: Sendable {
         return receipt
     }
 
+    public func createWorktree(_ request: CreateWorktreeRequest) async throws -> MutationReceipt {
+        try Self.validate(request)
+        let receipt = try await post(
+            MutationReceipt.self,
+            pathComponents: ["v1", "worktrees"],
+            body: request,
+            requestId: request.requestId
+        )
+        try Self.validate(receipt, requestId: request.requestId)
+        return receipt
+    }
+
+    public func archiveWorktree(_ request: ArchiveWorktreeRequest) async throws -> MutationReceipt {
+        try Self.validate(request)
+        guard Self.validPathIdentifier(request.worktreeId) else {
+            throw DaemonClientError.invalidRequest("worktree ID is not safe for the local API path")
+        }
+        let receipt = try await post(
+            MutationReceipt.self,
+            pathComponents: ["v1", "worktrees", request.worktreeId, "archive"],
+            body: request,
+            requestId: request.requestId
+        )
+        try Self.validate(receipt, requestId: request.requestId)
+        return receipt
+    }
+
+    public func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt {
+        try Self.validate(request)
+        guard Self.validPathIdentifier(request.worktreeId) else {
+            throw DaemonClientError.invalidRequest("worktree ID is not safe for the local API path")
+        }
+        let receipt = try await post(
+            MutationReceipt.self,
+            pathComponents: ["v1", "worktrees", request.worktreeId, "adopt"],
+            body: request,
+            requestId: request.requestId
+        )
+        try Self.validate(receipt, requestId: request.requestId)
+        return receipt
+    }
+
     private func get<Value: Decodable>(_ type: Value.Type, path: String) async throws -> Value {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "GET"
@@ -257,6 +299,11 @@ public struct DaemonClient: Sendable {
             expectedEnvironmentRevision: request.expectedEnvironmentRevision
         )
         guard validOpaqueValue(request.worktreeId, maximumBytes: 256),
+              validOpaqueValue(request.targetId, maximumBytes: 256),
+              (request.confirmedTargetId == nil || (
+                  request.confirmedTargetId == request.targetId &&
+                      validOpaqueValue(request.confirmedTargetId ?? "", maximumBytes: 256)
+              )),
               !request.serviceIds.isEmpty,
               request.serviceIds.count <= 32,
               Set(request.serviceIds).count == request.serviceIds.count,
@@ -272,6 +319,47 @@ public struct DaemonClient: Sendable {
             idempotencyKey: request.idempotencyKey,
             expectedEnvironmentRevision: request.expectedEnvironmentRevision
         )
+    }
+
+    private static func validate(_ request: CreateWorktreeRequest) throws {
+        try validateMutation(
+            schemaVersion: request.schemaVersion,
+            requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey,
+            expectedEnvironmentRevision: request.expectedEnvironmentRevision
+        )
+        guard request.expectedEnvironmentRevision == nil,
+              validOpaqueValue(request.repositoryId, maximumBytes: 256),
+              validOpaqueValue(request.branch, maximumBytes: 256),
+              request.startPoint.map({ validOpaqueValue($0, maximumBytes: 256) }) ?? true else {
+            throw DaemonClientError.invalidRequest("repository, branch, or base is invalid")
+        }
+    }
+
+    private static func validate(_ request: ArchiveWorktreeRequest) throws {
+        try validateMutation(
+            schemaVersion: request.schemaVersion,
+            requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey,
+            expectedEnvironmentRevision: request.expectedEnvironmentRevision
+        )
+        guard request.expectedEnvironmentRevision == nil,
+              validOpaqueValue(request.worktreeId, maximumBytes: 256) else {
+            throw DaemonClientError.invalidRequest("worktree selection is invalid")
+        }
+    }
+
+    private static func validate(_ request: AdoptWorktreeRequest) throws {
+        try validateMutation(
+            schemaVersion: request.schemaVersion,
+            requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey,
+            expectedEnvironmentRevision: request.expectedEnvironmentRevision
+        )
+        guard request.expectedEnvironmentRevision == nil,
+              validOpaqueValue(request.worktreeId, maximumBytes: 256) else {
+            throw DaemonClientError.invalidRequest("worktree selection is invalid")
+        }
     }
 
     private static func validateMutation(
@@ -292,6 +380,7 @@ public struct DaemonClient: Sendable {
         guard receipt.schemaVersion == contractSchemaVersion,
               receipt.requestId == requestId,
               validOpaqueValue(receipt.operationId, maximumBytes: 256),
+              receipt.runId.map({ validOpaqueValue($0, maximumBytes: 256) }) ?? true,
               receipt.environmentId.map({ validOpaqueValue($0, maximumBytes: 256) }) ?? true else {
             throw DaemonClientError.malformedResponse("mutation receipt identity or schema is invalid")
         }

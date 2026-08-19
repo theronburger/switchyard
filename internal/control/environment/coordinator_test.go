@@ -19,6 +19,26 @@ import (
 	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
+func TestSafeFailureClassifiesOwnershipVerificationRefusal(t *testing.T) {
+	tests := []error{
+		processhost.ErrOwnershipMismatch,
+		processhost.ErrOrphanUnverified,
+		errors.Join(errors.New("stop failed"), processhost.ErrOwnershipMismatch),
+	}
+	for _, err := range tests {
+		if got := safeFailure(err); got != OperationFailureOwnershipUnverified {
+			t.Fatalf("safeFailure(%v) = %q, want %q", err, got, OperationFailureOwnershipUnverified)
+		}
+	}
+}
+
+func TestSafeFailureDetailIdentifiesFinalPublication(t *testing.T) {
+	failure := safeFailureDetail(errors.New("private persistence detail"), PhaseComplete)
+	if failure.Phase != PhasePublishingResult || failure.Diagnostic != "" || failure.Code != "ENVIRONMENT_OPERATION_FAILED" {
+		t.Fatalf("publication failure: %+v", failure)
+	}
+}
+
 func TestStartAllocatesDistinctPortsAndLeavesForeignListenerAlone(t *testing.T) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -102,6 +122,30 @@ func TestStartLateBindsExecutionPlanAfterAssignedPortsArePersisted(t *testing.T)
 	}
 	if len(result.Services) != 1 || result.State != domain.EnvironmentRunning {
 		t.Fatalf("late-bound result: %+v", result)
+	}
+}
+
+func TestStoppedEnvironmentCanRestartOnADifferentTarget(t *testing.T) {
+	journal := newMemoryJournal()
+	journal.putCurrent(EnvironmentResult{
+		EnvironmentID: "env_switch", RunID: "run_old", TargetID: "production",
+		State: domain.EnvironmentStopped,
+	})
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: newFakePorts(7060, nil), Planner: &staticPlanner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(context.Background(), StartRequest{
+		OperationID: "op_switch", EnvironmentID: "env_switch", RunID: "run_new",
+		Intent: &PlanIntent{Adapter: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != domain.EnvironmentRunning || result.TargetID != "demo" || result.RunID != "run_new" {
+		t.Fatalf("switched target result: %+v", result)
 	}
 }
 
@@ -271,6 +315,45 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		}
 	})
 
+	t.Run("structured failure", func(t *testing.T) {
+		journal := newMemoryJournal()
+		ports := newFakePorts(7092, nil)
+		exitCode := 2
+		failure := safeTestOperationError{private: "secret@example.invalid", failure: OperationFailure{
+			Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.",
+			ResourceKind: "service", ResourceID: "nonprofit-service", Retryable: false,
+			Diagnostic:   "src/example.ts:4:2: TS2304: Cannot find name 'Missing'.",
+			LogReference: "run_test/preparations/nonprofit-service/command-0",
+			NextAction:   "fix_service_build", ExitCode: &exitCode,
+		}}
+		coordinator, err := NewCoordinator(Config{
+			Journal: journal, Ports: ports,
+			Planner: &staticPlanner{plan: ExecutionPlan{Preparations: []PreparationSpec{
+				preparationSpec(t, "structured-failure"),
+			}}},
+			Preparations:    &fakePreparations{journal: journal, operationID: "op_structured_failure", err: failure},
+			RollbackTimeout: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = coordinator.Start(context.Background(), StartRequest{
+			OperationID: "op_structured_failure", EnvironmentID: "env_structured_failure",
+			RunID:  "run_structured_failure",
+			Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"nonprofit-service"}},
+		})
+		if !errors.Is(err, failure) {
+			t.Fatalf("structured preparation failure: %v", err)
+		}
+		operation := journal.operation("op_structured_failure")
+		if operation.Failure != "environment operation failed" || operation.FailureDetail == nil ||
+			operation.FailureDetail.Phase != PhasePreparingServices || operation.FailureDetail.Retryable ||
+			operation.FailureDetail.Diagnostic != failure.failure.Diagnostic ||
+			strings.Contains(operation.FailureDetail.Message+operation.FailureDetail.Diagnostic, "secret") {
+			t.Fatalf("durable structured failure: %+v", operation)
+		}
+	})
+
 	t.Run("cancellation", func(t *testing.T) {
 		journal := newMemoryJournal()
 		ports := newFakePorts(7095, nil)
@@ -314,6 +397,19 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 			t.Fatalf("cancelled operation: %+v", operation)
 		}
 	})
+}
+
+type safeTestOperationError struct {
+	private string
+	failure OperationFailure
+}
+
+func (failure safeTestOperationError) Error() string {
+	return failure.private
+}
+
+func (failure safeTestOperationError) OperationFailure() OperationFailure {
+	return failure.failure
 }
 
 func preparationSpec(t *testing.T, id string) PreparationSpec {
@@ -648,7 +744,7 @@ func TestStopReversesOnlyPersistedOwnedResources(t *testing.T) {
 	}
 	plan := fullExecutionPlan(t, "env_stop", "run_stop")
 	journal.putCurrent(EnvironmentResult{
-		EnvironmentID: "env_stop", RunID: "run_stop", State: domain.EnvironmentRunning,
+		EnvironmentID: "env_stop", RunID: "run_stop", TargetID: "production", State: domain.EnvironmentRunning,
 		Ports: leases,
 		Projection: &ProjectionChange{
 			ID: "projection", EnvironmentID: "env_stop", RunID: "run_stop",
@@ -674,7 +770,7 @@ func TestStopReversesOnlyPersistedOwnedResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != domain.EnvironmentStopped || len(result.Ports) != 0 ||
+	if result.State != domain.EnvironmentStopped || result.TargetID != "production" || len(result.Ports) != 0 ||
 		len(result.Services) != 0 || len(result.Infrastructure) != 0 || result.Projection != nil {
 		t.Fatalf("stopped result: %+v", result)
 	}
@@ -706,6 +802,7 @@ func TestRestartReconciliationRollsBackInterruptedStart(t *testing.T) {
 		ID: "op_restart", EnvironmentID: "env_restart", RunID: "run_restart",
 		Kind: OperationStart, State: domain.OperationRunning,
 		EnvironmentState: domain.EnvironmentStarting, Phase: PhaseLaunchingServices,
+		Intent: &PlanIntent{Adapter: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
 		Rollback: []RollbackEntry{
 			{Kind: RollbackPorts, Armed: true, Applied: true, PortKeys: []portlease.Key{key}, Leases: leases},
 			{Kind: RollbackProjection, Armed: true, Applied: true, Projection: &projection},
@@ -742,7 +839,7 @@ func TestRestartReconciliationRollsBackInterruptedStart(t *testing.T) {
 		t.Fatalf("reconciled operation: %+v", operation)
 	}
 	result, exists, err := journal.Current(context.Background(), "env_restart")
-	if err != nil || !exists || result.State != domain.EnvironmentStopped {
+	if err != nil || !exists || result.State != domain.EnvironmentStopped || result.TargetID != "demo" {
 		t.Fatalf("reconciled environment: result=%+v exists=%t err=%v", result, exists, err)
 	}
 }

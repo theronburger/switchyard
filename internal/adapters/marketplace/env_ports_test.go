@@ -22,13 +22,15 @@ DEED_WALLET_PORT=4017
 	want := []PortDefault{
 		{EnvironmentVariable: "DEED_NONPROFIT_SERVICE_PORT", Port: 4016},
 		{EnvironmentVariable: "DEED_ORGANIZER_PORT", Port: 7002},
+		{EnvironmentVariable: "DEED_WALLET_PORT", Port: 4017},
 	}
 	if !reflect.DeepEqual(defaults, want) {
 		t.Fatalf("defaults: got %#v, want %#v", defaults, want)
 	}
 	for _, portDefault := range defaults {
 		if portDefault.EnvironmentVariable != "DEED_NONPROFIT_SERVICE_PORT" &&
-			portDefault.EnvironmentVariable != "DEED_ORGANIZER_PORT" {
+			portDefault.EnvironmentVariable != "DEED_ORGANIZER_PORT" &&
+			portDefault.EnvironmentVariable != "DEED_WALLET_PORT" {
 			t.Fatalf("unrelated data escaped: %#v", portDefault)
 		}
 	}

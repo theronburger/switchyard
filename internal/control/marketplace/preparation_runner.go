@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,12 +22,46 @@ const (
 	defaultPreparationLogBytes = 4 * 1024 * 1024
 	defaultPreparationGrace    = 2 * time.Second
 	defaultPreparationKillWait = 2 * time.Second
+	maximumDiagnosticTailBytes = 64 * 1024
+	maximumDiagnosticBytes     = 768
 )
 
 var (
 	ErrPreparationInvalid = errors.New("Marketplace preparation is invalid")
 	ErrPreparationFailed  = errors.New("Marketplace preparation failed")
+	typeScriptDiagnostic  = regexp.MustCompile(`([A-Za-z0-9_./-]+\.(?:ts|tsx))\((\d+),(\d+)\): error (TS\d+): ([^\r\n]+)`)
+	ansiEscape            = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 )
+
+type PreparationFailure struct {
+	PreparationID string
+	ServiceID     string
+	Diagnostic    string
+	LogReference  string
+	ExitCode      *int
+}
+
+func (failure *PreparationFailure) Error() string {
+	return ErrPreparationFailed.Error()
+}
+
+func (failure *PreparationFailure) Unwrap() error {
+	return ErrPreparationFailed
+}
+
+func (failure *PreparationFailure) OperationFailure() environment.OperationFailure {
+	message := "Service preparation failed."
+	if failure.ServiceID != "" {
+		message = failure.ServiceID + " preparation failed."
+	}
+	return environment.OperationFailure{
+		Code: "SERVICE_PREPARATION_FAILED", Message: message, Retryable: false,
+		ResourceKind: "service", ResourceID: failure.ServiceID,
+		Step: failure.PreparationID, Diagnostic: failure.Diagnostic,
+		LogReference: failure.LogReference, NextAction: "fix_service_build",
+		ExitCode: failure.ExitCode,
+	}
+}
 
 type OSPreparationRunner struct {
 	MaximumLogBytes int64
@@ -47,16 +83,18 @@ func (runner OSPreparationRunner) Run(ctx context.Context, preparation environme
 	if err := preparePreparationDirectory(preparation.RunDirectory); err != nil {
 		return ErrPreparationInvalid
 	}
+	stdoutPath := filepath.Join(preparation.RunDirectory, PreparationStdoutLog)
 	stdout, err := openPreparationLog(
-		filepath.Join(preparation.RunDirectory, PreparationStdoutLog),
+		stdoutPath,
 		maximumLogBytes,
 	)
 	if err != nil {
 		return ErrPreparationInvalid
 	}
 	defer stdout.Close()
+	stderrPath := filepath.Join(preparation.RunDirectory, PreparationStderrLog)
 	stderr, err := openPreparationLog(
-		filepath.Join(preparation.RunDirectory, PreparationStderrLog),
+		stderrPath,
 		maximumLogBytes,
 	)
 	if err != nil {
@@ -81,11 +119,11 @@ func (runner OSPreparationRunner) Run(ctx context.Context, preparation environme
 	}()
 	select {
 	case err := <-waited:
-		return preparationResult(preparationContext, err)
+		return preparationResult(preparationContext, err, preparation, stdoutPath, stderrPath)
 	case <-preparationContext.Done():
 		select {
 		case err := <-waited:
-			return preparationResult(preparationContext, err)
+			return preparationResult(preparationContext, err, preparation, stdoutPath, stderrPath)
 		default:
 		}
 		terminationError := terminatePreparationGroup(command.Process.Pid, waited, gracePeriod, killWait)
@@ -223,14 +261,101 @@ func (log *preparationLog) Close() error {
 	return log.file.Close()
 }
 
-func preparationResult(ctx context.Context, err error) error {
+func preparationResult(
+	ctx context.Context,
+	err error,
+	preparation environment.PreparationSpec,
+	stdoutPath string,
+	stderrPath string,
+) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
-		return ErrPreparationFailed
+		var exitCode *int
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			code := exitError.ExitCode()
+			exitCode = &code
+		}
+		return &PreparationFailure{
+			PreparationID: preparation.ID,
+			ServiceID:     preparation.ServiceID,
+			Diagnostic:    safePreparationDiagnostic(preparation.Directory, stdoutPath, stderrPath),
+			LogReference:  preparation.LogReference,
+			ExitCode:      exitCode,
+		}
 	}
 	return nil
+}
+
+func safePreparationDiagnostic(directory string, paths ...string) string {
+	for pathIndex := len(paths) - 1; pathIndex >= 0; pathIndex-- {
+		contents := readDiagnosticTail(paths[pathIndex])
+		lines := strings.Split(string(contents), "\n")
+		for lineIndex := len(lines) - 1; lineIndex >= 0; lineIndex-- {
+			line := ansiEscape.ReplaceAllString(lines[lineIndex], "")
+			match := typeScriptDiagnostic.FindStringSubmatch(line)
+			if len(match) != 6 || unsafeDiagnostic(match[5]) {
+				continue
+			}
+			path := match[1]
+			if filepath.IsAbs(path) {
+				relative, err := filepath.Rel(directory, path)
+				if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					continue
+				}
+				path = filepath.ToSlash(relative)
+			}
+			diagnostic := path + ":" + match[2] + ":" + match[3] + ": " + match[4] + ": " + strings.TrimSpace(match[5])
+			if len(diagnostic) > maximumDiagnosticBytes {
+				diagnostic = diagnostic[:maximumDiagnosticBytes]
+			}
+			return diagnostic
+		}
+	}
+	return ""
+}
+
+func readDiagnosticTail(path string) []byte {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	size := info.Size()
+	start := size - maximumDiagnosticTailBytes
+	if start < 0 {
+		start = 0
+	}
+	contents := make([]byte, size-start)
+	read, err := file.ReadAt(contents, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil
+	}
+	return contents[:read]
+}
+
+func unsafeDiagnostic(message string) bool {
+	upper := strings.ToUpper(message)
+	for _, forbidden := range []string{
+		"SECRET", "TOKEN", "PASSWORD", "AUTHORIZATION", "COOKIE", "PRIVATE KEY", "AWS_",
+	} {
+		if strings.Contains(upper, forbidden) {
+			return true
+		}
+	}
+	for _, character := range message {
+		if character < 0x20 && character != '\t' {
+			return true
+		}
+	}
+	_, err := strconv.Unquote(`"` + strings.ReplaceAll(message, `"`, `\"`) + `"`)
+	return err != nil
 }
 
 func terminatePreparationGroup(

@@ -85,6 +85,84 @@ func TestClientStartsAndStopsEnvironmentAfterHandshake(t *testing.T) {
 	}
 }
 
+func TestClientCreatesAdoptsAndArchivesWorktreesAfterHandshake(t *testing.T) {
+	now := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
+	token := testToken()
+	snapshot := validSnapshot(now)
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		secureJSONHeaders(response)
+		if request.Header.Get("Authorization") != "Bearer "+token || request.Header.Get("Origin") != "" {
+			t.Errorf("workspace mutation authentication changed")
+		}
+		if request.URL.Path == "/handshake" {
+			writeTestHandshake(t, response, snapshot)
+			return
+		}
+		paths = append(paths, request.URL.Path)
+		response.WriteHeader(http.StatusAccepted)
+		switch request.URL.Path {
+		case "/v1/worktrees":
+			var mutation contractv1.CreateWorktreeRequest
+			decodeTestRequest(t, request, &mutation)
+			if mutation.Validate() != nil || mutation.RepositoryID != "repository_01" ||
+				mutation.Branch != "feature/go-service" || mutation.StartPoint != "origin/main" {
+				t.Errorf("create mutation: %+v", mutation)
+			}
+			writeTestJSON(t, response, validClientReceipt(mutation.RequestID, "", now))
+		case "/v1/worktrees/worktree_01/archive":
+			var mutation contractv1.ArchiveWorktreeRequest
+			decodeTestRequest(t, request, &mutation)
+			if mutation.Validate() != nil || mutation.WorktreeID != "worktree_01" {
+				t.Errorf("archive mutation: %+v", mutation)
+			}
+			writeTestJSON(t, response, validClientReceipt(mutation.RequestID, "", now))
+		case "/v1/worktrees/worktree_01/adopt":
+			var mutation contractv1.AdoptWorktreeRequest
+			decodeTestRequest(t, request, &mutation)
+			if mutation.Validate() != nil || mutation.WorktreeID != "worktree_01" {
+				t.Errorf("adopt mutation: %+v", mutation)
+			}
+			writeTestJSON(t, response, validClientReceipt(mutation.RequestID, "", now))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(connectionForServer(t, server.URL, token, snapshot, now), ClientOptions{})
+	_, err := client.CreateWorktree(context.Background(), contractv1.CreateWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_create", IdempotencyKey: "create:key",
+		},
+		RepositoryID: "repository_01", Branch: "feature/go-service", StartPoint: "origin/main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.AdoptWorktree(context.Background(), contractv1.AdoptWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_adopt", IdempotencyKey: "adopt:key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ArchiveWorktree(context.Background(), contractv1.ArchiveWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_archive", IdempotencyKey: "archive:key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(paths, ","); got != "/v1/worktrees,/v1/worktrees/worktree_01/adopt,/v1/worktrees/worktree_01/archive" {
+		t.Fatalf("workspace paths: %s", got)
+	}
+}
+
 func TestClientRejectsInvalidMutationBeforeTransport(t *testing.T) {
 	var calls atomic.Int32
 	client := NewClient(Connection{}, ClientOptions{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -102,6 +180,15 @@ func TestClientRejectsInvalidMutationBeforeTransport(t *testing.T) {
 	})
 	if CodeOf(err) != ErrorActionRequestInvalid {
 		t.Fatalf("stop error: got %q", CodeOf(err))
+	}
+	_, err = client.ArchiveWorktree(context.Background(), contractv1.ArchiveWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request", IdempotencyKey: "key",
+		},
+		WorktreeID: "../foreign",
+	})
+	if CodeOf(err) != ErrorActionRequestInvalid {
+		t.Fatalf("archive error: got %q", CodeOf(err))
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("invalid mutation made %d transport calls", calls.Load())
@@ -136,6 +223,45 @@ func TestClientReturnsStableMutationErrorWithoutPrivateBody(t *testing.T) {
 	if strings.Contains(err.Error(), "Users") || strings.Contains(err.Error(), "sqlite") ||
 		strings.Contains(err.Error(), "bearer-secret") {
 		t.Fatalf("mutation error leaked response detail: %v", err)
+	}
+	contractError, ok := ContractErrorOf(err)
+	if !ok || strings.Contains(contractError.Message, "Users") || strings.Contains(contractError.Message, "bearer-secret") {
+		t.Fatalf("preserved mutation error leaked response detail: %+v", contractError)
+	}
+}
+
+func TestClientPreservesSafeDaemonMutationContractError(t *testing.T) {
+	now := time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC)
+	token := testToken()
+	snapshot := validSnapshot(now)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		secureJSONHeaders(response)
+		if request.URL.Path == "/handshake" {
+			writeTestHandshake(t, response, snapshot)
+			return
+		}
+		response.WriteHeader(http.StatusConflict)
+		writeTestJSON(t, response, map[string]any{
+			"schemaVersion": contractv1.SchemaVersion,
+			"error": map[string]any{
+				"code": "WORKSPACE_DIRTY", "message": "The worktree has local changes.",
+				"retryable": false, "resourceKind": "worktree", "resourceId": "worktree_01",
+				"nextAction": "commit_or_stash_changes",
+			},
+		})
+	}))
+	defer server.Close()
+	client := NewClient(connectionForServer(t, server.URL, token, snapshot, now), ClientOptions{})
+	_, err := client.ArchiveWorktree(context.Background(), contractv1.ArchiveWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request", IdempotencyKey: "key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	contractError, ok := ContractErrorOf(err)
+	if !ok || contractError.Code != "WORKSPACE_DIRTY" || contractError.Retryable ||
+		contractError.ResourceID != "worktree_01" || contractError.NextAction != "commit_or_stash_changes" {
+		t.Fatalf("preserved contract error: %+v ok=%t err=%v", contractError, ok, err)
 	}
 }
 

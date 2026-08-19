@@ -1,6 +1,13 @@
 package apiclient
 
-import "errors"
+import (
+	"errors"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+)
 
 type ErrorCode string
 
@@ -25,8 +32,67 @@ const (
 )
 
 type CodedError struct {
-	Code ErrorCode
-	err  error
+	Code     ErrorCode
+	Contract *contractv1.ContractError
+	err      error
+}
+
+func newContractError(contractError contractv1.ContractError, err error) error {
+	copy := sanitizeContractError(contractError)
+	return &CodedError{Code: ErrorCode(contractError.Code), Contract: &copy, err: err}
+}
+
+func sanitizeContractError(contractError contractv1.ContractError) contractv1.ContractError {
+	if !safeAgentText(contractError.Message, 2048) || sensitiveAgentText(contractError.Message) {
+		contractError.Message = "Switchyard rejected the requested operation."
+	}
+	for field, maximum := range map[*string]int{
+		&contractError.ResourceKind: 256, &contractError.ResourceID: 256,
+		&contractError.CurrentState: 256, &contractError.RequestedState: 256,
+		&contractError.Phase: 256, &contractError.Step: 512,
+		&contractError.NextAction: 256,
+	} {
+		if *field != "" && !safeAgentText(*field, maximum) {
+			*field = ""
+		}
+	}
+	if contractError.Diagnostic != "" &&
+		(!safeAgentText(contractError.Diagnostic, 2048) || sensitiveAgentText(contractError.Diagnostic)) {
+		contractError.Diagnostic = ""
+	}
+	if contractError.LogReference != "" &&
+		(!safeAgentText(contractError.LogReference, 1024) || strings.HasPrefix(contractError.LogReference, "/") ||
+			strings.Contains(contractError.LogReference, "..") || strings.Contains(contractError.LogReference, "\\")) {
+		contractError.LogReference = ""
+	}
+	if contractError.ExitCode != nil && (*contractError.ExitCode < -1 || *contractError.ExitCode > 255) {
+		contractError.ExitCode = nil
+	}
+	return contractError
+}
+
+func safeAgentText(value string, maximumBytes int) bool {
+	if value == "" || len(value) > maximumBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) && character != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+func sensitiveAgentText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"/users/", "authorization:", "bearer ", "bearer-", "password=", "token=", "secret=", "api_key=", "api-key=",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func newCodedError(code ErrorCode, err error) error {
@@ -47,4 +113,12 @@ func CodeOf(err error) ErrorCode {
 		return coded.Code
 	}
 	return ErrorUnknown
+}
+
+func ContractErrorOf(err error) (contractv1.ContractError, bool) {
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Contract == nil {
+		return contractv1.ContractError{}, false
+	}
+	return *coded.Contract, true
 }

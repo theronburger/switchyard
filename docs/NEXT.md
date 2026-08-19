@@ -11,10 +11,14 @@
 - The CLI and MCP expose idempotent start/stop plus stable status/doctor contracts. The SwiftUI app exposes lifecycle actions and can inspect or repair Codex and Claude MCP registrations without holding daemon credentials.
 - The two-worktree Marketplace golden run passed end to end, including app quit, daemon restart, stop-one, and stop-all ownership proofs.
 - The Marketplace `.switchyard.yaml` is local-only and excluded by the shared Git `info/exclude`; `scripts/start-changed.sh` remains untouched.
+- The complete 18-service Marketplace runtime catalog is startable. Shared services within one environment use the same environment-owned ElasticMQ broker, while every worktree retains distinct ports and mutable infrastructure; fixed Slack and Donation Batch endpoints are remapped only inside their owned processes.
+- Worktree inventory reports committed and uncommitted line counts per direct service root, keeps shared-package changes explicit, opens exact worktrees in Zed, and drives configurable menu-bar indicators from the atomic daemon snapshot.
+- Jira ticket keys and links are visible from branch names. Worktree detail loads bounded summary/status/assignee/priority/update metadata on demand through the app-owned `jira-claude-relay` client; failures stay local to that card and never affect daemon readiness.
+- Repository/worktree Git state is reconciled every 30 seconds with explicit per-repository freshness. Every environment start persists its exact source revision and dirty state, and operation receipts identify the run that must appear before replacement is complete.
 
 ## Next build sequence
 
-1. Add periodic repository/worktree/container/disk inventory and surface dangling or unusually expensive resources as actionable, deduplicated alerts.
+1. Add periodic container/disk inventory and surface dangling or unusually expensive resources as actionable, deduplicated alerts.
 2. Add bounded per-service log tails, search, and reveal-in-Finder from the app without leaking log contents into status or MCP by default.
 3. Add Marketplace GitHub/PR/CI provenance so an environment explains its branch, review state, union ancestry, and failing checks.
 4. Finish the richer menu-bar and command-center presentation: notification policy, attention routing, environment history, resource trends, and one-click URLs.

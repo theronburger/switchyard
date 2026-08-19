@@ -3,6 +3,9 @@ import SwitchyardKit
 
 struct SettingsView: View {
     @Bindable var model: AppModel
+    @AppStorage(MenuBarPreferenceKey.showAttention) private var showAttention = true
+    @AppStorage(MenuBarPreferenceKey.showProcesses) private var showProcesses = false
+    @AppStorage(MenuBarPreferenceKey.showMemory) private var showMemory = false
 
     var body: some View {
         Form {
@@ -34,6 +37,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("Menu bar indicators") {
+                Toggle("Attention count", isOn: $showAttention)
+                Toggle("Owned process count", isOn: $showProcesses)
+                Toggle("Environment memory", isOn: $showMemory)
+                Text("The Switchyard mark connects when an environment is running. Optional runtime indicators update from the same atomic daemon snapshot as the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.switch)
             Section("About") {
                 LabeledContent("Contract schema", value: "v\(contractSchemaVersion)")
                 if let daemon = model.snapshot?.daemon {

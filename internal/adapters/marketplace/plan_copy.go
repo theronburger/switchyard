@@ -10,6 +10,7 @@ func cloneServiceDefinition(definition ServiceDefinition) ServiceDefinition {
 	cloned.Readiness = cloneProbes(definition.Readiness)
 	cloned.Health = cloneProbes(definition.Health)
 	cloned.Infrastructure = cloneInfrastructure(definition.Infrastructure)
+	cloned.Queues = append([]QueueDefinition(nil), definition.Queues...)
 	cloned.ServerlessOverlay = cloneServerlessOverlay(definition.ServerlessOverlay)
 	return cloned
 }
@@ -49,6 +50,7 @@ func cloneServerlessOverlay(overlay *ServerlessOverlay) *ServerlessOverlay {
 		return nil
 	}
 	cloned := *overlay
+	cloned.Plugins = append([]string(nil), overlay.Plugins...)
 	cloned.Overrides = append([]ServerlessOverride(nil), overlay.Overrides...)
 	for index := range cloned.Overrides {
 		cloned.Overrides[index].ConfigurationPath = append(

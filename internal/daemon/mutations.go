@@ -27,6 +27,18 @@ func (actionError *ActionError) Error() string {
 }
 
 func (handler *apiHandler) mutation(response http.ResponseWriter, request *http.Request) bool {
+	if request.URL.Path == "/v1/worktrees" {
+		handler.createWorktree(response, request)
+		return true
+	}
+	if worktreeID, matches := adoptWorktreePath(request.URL.Path); matches {
+		handler.adoptWorktree(response, request, worktreeID)
+		return true
+	}
+	if worktreeID, matches := archiveWorktreePath(request.URL.Path); matches {
+		handler.archiveWorktree(response, request, worktreeID)
+		return true
+	}
 	if request.URL.Path == "/v1/environments" {
 		handler.startEnvironment(response, request)
 		return true
@@ -37,6 +49,73 @@ func (handler *apiHandler) mutation(response http.ResponseWriter, request *http.
 	}
 	handler.stopEnvironment(response, request, environmentID)
 	return true
+}
+
+func (handler *apiHandler) adoptWorktree(
+	response http.ResponseWriter,
+	request *http.Request,
+	worktreeID string,
+) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+		return
+	}
+	var mutation contractv1.AdoptWorktreeRequest
+	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil ||
+		mutation.WorktreeID != worktreeID {
+		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree adoption request is invalid", false)
+		return
+	}
+	if handler.config.WorkspaceActions == nil {
+		writeError(response, http.StatusServiceUnavailable, "ACTIONS_UNAVAILABLE", "Workspace actions are unavailable", true)
+		return
+	}
+	receipt, err := handler.config.WorkspaceActions.AdoptWorktree(request.Context(), mutation)
+	handler.writeMutationResult(response, receipt, err)
+}
+
+func (handler *apiHandler) createWorktree(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+		return
+	}
+	var mutation contractv1.CreateWorktreeRequest
+	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
+		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree creation request is invalid", false)
+		return
+	}
+	if handler.config.WorkspaceActions == nil {
+		writeError(response, http.StatusServiceUnavailable, "ACTIONS_UNAVAILABLE", "Workspace actions are unavailable", true)
+		return
+	}
+	receipt, err := handler.config.WorkspaceActions.CreateWorktree(request.Context(), mutation)
+	handler.writeMutationResult(response, receipt, err)
+}
+
+func (handler *apiHandler) archiveWorktree(
+	response http.ResponseWriter,
+	request *http.Request,
+	worktreeID string,
+) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+		return
+	}
+	var mutation contractv1.ArchiveWorktreeRequest
+	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil ||
+		mutation.WorktreeID != worktreeID {
+		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree archive request is invalid", false)
+		return
+	}
+	if handler.config.WorkspaceActions == nil {
+		writeError(response, http.StatusServiceUnavailable, "ACTIONS_UNAVAILABLE", "Workspace actions are unavailable", true)
+		return
+	}
+	receipt, err := handler.config.WorkspaceActions.ArchiveWorktree(request.Context(), mutation)
+	handler.writeMutationResult(response, receipt, err)
 }
 
 func (handler *apiHandler) startEnvironment(response http.ResponseWriter, request *http.Request) {
@@ -89,13 +168,7 @@ func (handler *apiHandler) writeMutationResult(
 	if err != nil {
 		var actionError *ActionError
 		if errors.As(err, &actionError) && validActionError(actionError) {
-			writeError(
-				response,
-				actionError.Status,
-				actionError.Contract.Code,
-				actionError.Contract.Message,
-				actionError.Contract.Retryable,
-			)
+			writeContractError(response, actionError.Status, actionError.Contract)
 			return
 		}
 		writeError(response, http.StatusInternalServerError, "ACTION_FAILED", "The environment action could not be accepted", true)
@@ -136,6 +209,27 @@ func stopEnvironmentPath(path string) (string, bool) {
 		return "", false
 	}
 	return parts[2], true
+}
+
+func archiveWorktreePath(path string) (string, bool) {
+	return worktreeActionPath(path, "archive")
+}
+
+func adoptWorktreePath(path string) (string, bool) {
+	return worktreeActionPath(path, "adopt")
+}
+
+func worktreeActionPath(path string, action string) (string, bool) {
+	const prefix = "/v1/worktrees/"
+	suffix := "/" + action
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	worktreeID := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	if worktreeID == "" || strings.Contains(worktreeID, "/") || !safePathIdentifier(worktreeID) {
+		return "", false
+	}
+	return worktreeID, true
 }
 
 func safePathIdentifier(value string) bool {

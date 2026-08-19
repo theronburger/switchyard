@@ -2,17 +2,20 @@ import Foundation
 
 public struct LaunchAgentPaths: Sendable, Equatable {
     public let installedBinaryURL: URL
+    public let commandLinkURL: URL?
     public let launchAgentURL: URL
     public let standardOutputURL: URL
     public let standardErrorURL: URL
 
     public init(
         installedBinaryURL: URL,
+        commandLinkURL: URL? = nil,
         launchAgentURL: URL,
         standardOutputURL: URL,
         standardErrorURL: URL
     ) {
         self.installedBinaryURL = installedBinaryURL
+        self.commandLinkURL = commandLinkURL
         self.launchAgentURL = launchAgentURL
         self.standardOutputURL = standardOutputURL
         self.standardErrorURL = standardErrorURL
@@ -27,6 +30,7 @@ public struct LaunchAgentPaths: Sendable, Equatable {
         let logsDirectory = switchyardDirectory.appending(path: "logs")
         return LaunchAgentPaths(
             installedBinaryURL: switchyardDirectory.appending(path: "bin/switchyard"),
+            commandLinkURL: home.appending(path: ".local/bin/sy"),
             launchAgentURL: home.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
             standardOutputURL: logsDirectory.appending(path: "daemon.stdout.log"),
             standardErrorURL: logsDirectory.appending(path: "daemon.stderr.log")

@@ -114,6 +114,7 @@ func planService(
 		Readiness:         cloneProbes(definition.Readiness),
 		Health:            cloneProbes(definition.Health),
 		Infrastructure:    cloneInfrastructure(definition.Infrastructure),
+		Queues:            append([]QueueDefinition(nil), definition.Queues...),
 		ServerlessOverlay: cloneServerlessOverlay(definition.ServerlessOverlay),
 	}, nil
 }
@@ -132,6 +133,8 @@ func formatEnvironmentValue(format EnvironmentValueFormat, port int) (string, er
 		return strconv.Itoa(port), nil
 	case EnvironmentValueHTTPURL:
 		return "http://127.0.0.1:" + strconv.Itoa(port), nil
+	case EnvironmentValueBrowserHTTPURL:
+		return "http://localhost:" + strconv.Itoa(port), nil
 	default:
 		return "", fmt.Errorf("environment value format %q is unknown", format)
 	}

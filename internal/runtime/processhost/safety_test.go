@@ -109,12 +109,47 @@ func (inspector fixedInspector) ListGroup(context.Context, int) ([]ProcessSnapsh
 	return append([]ProcessSnapshot(nil), inspector.group...), nil
 }
 
+type changingInspector struct {
+	groups [][]ProcessSnapshot
+	index  int
+}
+
+func (inspector *changingInspector) Inspect(_ context.Context, pid int) (ProcessSnapshot, error) {
+	group := inspector.groups[min(inspector.index, len(inspector.groups)-1)]
+	for _, snapshot := range group {
+		if snapshot.Identity.PID == pid {
+			return snapshot, nil
+		}
+	}
+	return ProcessSnapshot{}, ErrProcessNotFound
+}
+
+func (inspector *changingInspector) ListGroup(context.Context, int) ([]ProcessSnapshot, error) {
+	group := inspector.groups[min(inspector.index, len(inspector.groups)-1)]
+	if inspector.index < len(inspector.groups)-1 {
+		inspector.index++
+	}
+	return append([]ProcessSnapshot(nil), group...), nil
+}
+
 type recordingSignaler struct {
 	signals []syscall.Signal
 }
 
 func (signaler *recordingSignaler) SignalGroup(_ int, signal syscall.Signal) error {
 	signaler.signals = append(signaler.signals, signal)
+	return nil
+}
+
+type clearingSignaler struct {
+	inspector *changingInspector
+	signals   []syscall.Signal
+}
+
+func (signaler *clearingSignaler) SignalGroup(_ int, signal syscall.Signal) error {
+	signaler.signals = append(signaler.signals, signal)
+	signaler.inspector.groups = [][]ProcessSnapshot{{}}
+	signaler.inspector.index = 0
 	return nil
 }
 
@@ -175,6 +210,157 @@ func TestStopRefusesReusedPersistedMemberWithoutSignalling(t *testing.T) {
 	}
 	if len(signaler.signals) != 0 {
 		t.Fatalf("signalled reused member: %v", signaler.signals)
+	}
+}
+
+func TestReconcileRequalifiesDescendantFingerprintDrift(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	ownershipPath, ownership := writeSafetyOwnership(t, startedAt)
+	child := ProcessIdentity{
+		PID: ownership.Leader.PID + 1, ParentPID: ownership.Leader.PID,
+		ProcessGroupID: ownership.ProcessGroupID, StartedAt: startedAt.Add(time.Millisecond),
+		CommandFingerprint: "child-before",
+	}
+	ownership.Members = append(ownership.Members, child)
+	if err := saveOwnership(ownershipPath, ownership); err != nil {
+		t.Fatal(err)
+	}
+	changedChild := child
+	changedChild.CommandFingerprint = "child-after"
+	host := New(Config{Inspector: fixedInspector{group: []ProcessSnapshot{
+		{Identity: ownership.Leader, Status: "running"},
+		{Identity: changedChild, Status: "running"},
+	}}})
+
+	observation, err := host.Reconcile(context.Background(), ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observation.OwnershipVerified || observation.MemberCount != 2 {
+		t.Fatalf("observation: %+v", observation)
+	}
+	refreshed, err := LoadOwnership(ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed.Members) != 2 || refreshed.Members[1].CommandFingerprint != "child-after" {
+		t.Fatalf("refreshed members: %+v", refreshed.Members)
+	}
+}
+
+func TestStopRequalifiesStableDescendantFingerprintDrift(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	ownershipPath, ownership := writeSafetyOwnership(t, startedAt)
+	child := ProcessIdentity{
+		PID: ownership.Leader.PID + 1, ParentPID: ownership.Leader.PID,
+		ProcessGroupID: ownership.ProcessGroupID, StartedAt: startedAt.Add(time.Millisecond),
+		CommandFingerprint: "child-before",
+	}
+	ownership.Members = append(ownership.Members, child)
+	if err := saveOwnership(ownershipPath, ownership); err != nil {
+		t.Fatal(err)
+	}
+	changedChild := child
+	changedChild.CommandFingerprint = "child-after"
+	group := []ProcessSnapshot{
+		{Identity: ownership.Leader, Status: "running"},
+		{Identity: changedChild, Status: "running"},
+	}
+	inspector := &changingInspector{groups: [][]ProcessSnapshot{group, group}}
+	signaler := &clearingSignaler{inspector: inspector}
+	host := New(Config{
+		Inspector: inspector, Signaler: signaler,
+		GracePeriod: time.Millisecond, KillWait: time.Millisecond, PollInterval: time.Millisecond,
+	})
+
+	observation, err := host.Stop(context.Background(), ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.State != "stopped" || len(signaler.signals) != 1 || signaler.signals[0] != syscall.SIGTERM {
+		t.Fatalf("observation=%+v signals=%v", observation, signaler.signals)
+	}
+}
+
+func TestStopRefusesUnanchoredDescendantFingerprintDrift(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	ownershipPath, ownership := writeSafetyOwnership(t, startedAt)
+	child := ProcessIdentity{
+		PID: ownership.Leader.PID + 1, ParentPID: ownership.Leader.PID,
+		ProcessGroupID: ownership.ProcessGroupID, StartedAt: startedAt.Add(time.Millisecond),
+		CommandFingerprint: "child-before",
+	}
+	ownership.Members = append(ownership.Members, child)
+	if err := saveOwnership(ownershipPath, ownership); err != nil {
+		t.Fatal(err)
+	}
+	changedChild := child
+	changedChild.ParentPID = 1
+	changedChild.CommandFingerprint = "child-after"
+	signaler := &recordingSignaler{}
+	host := New(Config{
+		Inspector: fixedInspector{group: []ProcessSnapshot{{Identity: changedChild, Status: "running"}}},
+		Signaler:  signaler,
+	})
+
+	_, err := host.Stop(context.Background(), ownershipPath)
+	if !errors.Is(err, ErrOwnershipMismatch) {
+		t.Fatalf("stop error: got %v, want %v", err, ErrOwnershipMismatch)
+	}
+	if len(signaler.signals) != 0 {
+		t.Fatalf("signalled unanchored drift: %v", signaler.signals)
+	}
+}
+
+func TestStopRefusesLeaderFingerprintDriftWithoutSignalling(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	ownershipPath, ownership := writeSafetyOwnership(t, startedAt)
+	changedLeader := ownership.Leader
+	changedLeader.CommandFingerprint = "leader-after"
+	signaler := &recordingSignaler{}
+	host := New(Config{
+		Inspector: fixedInspector{group: []ProcessSnapshot{{Identity: changedLeader, Status: "running"}}},
+		Signaler:  signaler,
+	})
+
+	_, err := host.Stop(context.Background(), ownershipPath)
+	if !errors.Is(err, ErrOwnershipMismatch) {
+		t.Fatalf("stop error: got %v, want %v", err, ErrOwnershipMismatch)
+	}
+	if len(signaler.signals) != 0 {
+		t.Fatalf("signalled changed leader: %v", signaler.signals)
+	}
+}
+
+func TestStopRefusesFingerprintDriftBetweenVerificationPasses(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	ownershipPath, ownership := writeSafetyOwnership(t, startedAt)
+	child := ProcessIdentity{
+		PID: ownership.Leader.PID + 1, ParentPID: ownership.Leader.PID,
+		ProcessGroupID: ownership.ProcessGroupID, StartedAt: startedAt.Add(time.Millisecond),
+		CommandFingerprint: "child-before",
+	}
+	ownership.Members = append(ownership.Members, child)
+	if err := saveOwnership(ownershipPath, ownership); err != nil {
+		t.Fatal(err)
+	}
+	firstChild := child
+	firstChild.CommandFingerprint = "child-first-pass"
+	secondChild := child
+	secondChild.CommandFingerprint = "child-second-pass"
+	inspector := &changingInspector{groups: [][]ProcessSnapshot{
+		{{Identity: ownership.Leader, Status: "running"}, {Identity: firstChild, Status: "running"}},
+		{{Identity: ownership.Leader, Status: "running"}, {Identity: secondChild, Status: "running"}},
+	}}
+	signaler := &recordingSignaler{}
+	host := New(Config{Inspector: inspector, Signaler: signaler})
+
+	_, err := host.Stop(context.Background(), ownershipPath)
+	if !errors.Is(err, ErrUnstableGroup) {
+		t.Fatalf("stop error: got %v, want %v", err, ErrUnstableGroup)
+	}
+	if len(signaler.signals) != 0 {
+		t.Fatalf("signalled unstable group: %v", signaler.signals)
 	}
 }
 

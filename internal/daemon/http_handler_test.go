@@ -20,6 +20,15 @@ type staticStatusSource struct {
 	err      error
 }
 
+type staticDiagnosticsSource struct {
+	diagnostics contractv1.OperationDiagnostics
+	err         error
+}
+
+func (source staticDiagnosticsSource) ReadOperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error) {
+	return source.diagnostics, source.err
+}
+
 func (source staticStatusSource) ReadSnapshot(context.Context) (contractv1.StatusSnapshot, error) {
 	return source.snapshot, source.err
 }
@@ -126,6 +135,55 @@ func TestStatusHidesStorageFailure(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "database") || strings.Contains(response.Body.String(), "path") {
 		t.Fatalf("storage failure leaked details: %s", response.Body.String())
+	}
+}
+
+func TestOperationDiagnosticsReturnsOnlyExplicitBoundedRead(t *testing.T) {
+	diagnostics := contractv1.OperationDiagnostics{
+		SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_01",
+		EnvironmentID: "env_01", LogReference: "run_01/preparations/service/command-0",
+		Excerpts: []contractv1.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: true, Redacted: true}},
+	}
+	handler, err := NewHTTPHandler(HandlerConfig{
+		Token: testToken, DaemonInstanceID: "daemon_01", DaemonVersion: "0.1.0-dev", StartedAt: time.Now(),
+		StatusSource: staticStatusSource{snapshot: validHTTPStatus()}, OperationDiagnostics: staticDiagnosticsSource{diagnostics: diagnostics},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := authenticatedRequest(http.MethodGet, "/v1/operations/operation_01/diagnostics?maxBytes=2048")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", response.Code, response.Body.String())
+	}
+	var got contractv1.OperationDiagnostics
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil || got.OperationID != diagnostics.OperationID || len(got.Excerpts) != 1 {
+		t.Fatalf("diagnostics: %+v err=%v", got, err)
+	}
+
+	request = authenticatedRequest(http.MethodGet, "/v1/operations/operation_01/diagnostics?maxBytes=33")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid size status: %d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestOperationDiagnosticsMapsUnavailableWithoutLeakingDetails(t *testing.T) {
+	handler, err := NewHTTPHandler(HandlerConfig{
+		Token: testToken, DaemonInstanceID: "daemon_01", DaemonVersion: "0.1.0-dev", StartedAt: time.Now(),
+		StatusSource:         staticStatusSource{snapshot: validHTTPStatus()},
+		OperationDiagnostics: staticDiagnosticsSource{err: ErrOperationDiagnosticsUnavailable},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := authenticatedRequest(http.MethodGet, "/v1/operations/operation_01/diagnostics")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || strings.Contains(response.Body.String(), "/Users/") {
+		t.Fatalf("unavailable response: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

@@ -9,7 +9,7 @@ Work only under `app/**`. Do not edit Go code, shared contracts, root manifests,
 The Go binary now has real modes:
 
 - `switchyard daemon`
-- `switchyard status [--json]`
+- `switchyard status [worktree-id|branch|path] [--all] [--json]` (current-worktree scope by default; explicit inventory with `--all`)
 - `switchyard doctor [--json]`
 - `switchyard mcp`
 

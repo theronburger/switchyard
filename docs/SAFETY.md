@@ -7,6 +7,7 @@ Switchyard manages processes, worktrees, ports, and Docker resources. Safety is 
 - Start every managed service in a distinct owned process group.
 - Persist PID, process start time, environment ID, run ID, command fingerprint, and log paths.
 - Persist process-group membership and revalidate every member immediately before signalling; PID and group identifiers can both be reused.
+- A non-leader whose live argv fingerprint changes may be requalified only when PID, process-group ID, and start time still match and its current parent chain reaches an exactly verified owned member. Persist the refreshed fingerprint. Leader drift, detached children, or instability across the two pre-signal scans remain report-only.
 - Never kill by executable name, fuzzy command match, port alone, or ancestry guess.
 - Unknown matching processes are report-only until explicitly adopted.
 - Reconciliation after restart must defend against PID reuse.

@@ -82,7 +82,7 @@ func RenderServerlessProjection(
 				override.PortRequirement,
 			)
 		}
-		value, err := renderOverlayValue(override.Format, port)
+		value, err := renderOverlayValue(override.Format, override.URLPath, port)
 		if err != nil {
 			return OwnedServerlessProjection{}, fmt.Errorf(
 				"render serverless projection: configuration path %s: %w",
@@ -107,6 +107,20 @@ func RenderServerlessProjection(
 	payload.WriteString("const configuration = require(")
 	payload.WriteString(strconv.Quote("./" + overlay.SourceConfig))
 	payload.WriteString(")\n\n")
+	plugins := append([]string(nil), overlay.Plugins...)
+	sort.Strings(plugins)
+	if len(plugins) > 0 {
+		payload.WriteString("configuration[\"plugins\"] ??= []\n")
+		for _, plugin := range plugins {
+			quoted := strconv.Quote(plugin)
+			payload.WriteString("if (!configuration[\"plugins\"].includes(")
+			payload.WriteString(quoted)
+			payload.WriteString(")) configuration[\"plugins\"].push(")
+			payload.WriteString(quoted)
+			payload.WriteString(")\n")
+		}
+		payload.WriteByte('\n')
+	}
 	for _, line := range initializerLines {
 		payload.WriteString(line)
 		payload.WriteByte('\n')
@@ -181,7 +195,7 @@ func configurationAccess(configurationPath []string) string {
 	return access.String()
 }
 
-func renderOverlayValue(format OverlayValueFormat, assignment PortAssignment) (string, error) {
+func renderOverlayValue(format OverlayValueFormat, urlPath string, assignment PortAssignment) (string, error) {
 	switch format {
 	case OverlayValueIntegerPort:
 		return strconv.Itoa(assignment.Port), nil
@@ -189,7 +203,12 @@ func renderOverlayValue(format OverlayValueFormat, assignment PortAssignment) (s
 		if !isLoopbackHost(assignment.Host) {
 			return "", fmt.Errorf("HTTP URL host must be loopback")
 		}
-		return strconv.Quote("http://" + net.JoinHostPort(assignment.Host, strconv.Itoa(assignment.Port))), nil
+		return strconv.Quote("http://" + net.JoinHostPort(assignment.Host, strconv.Itoa(assignment.Port)) + urlPath), nil
+	case OverlayValueLoopback:
+		if !isLoopbackHost(assignment.Host) {
+			return "", fmt.Errorf("host must be loopback")
+		}
+		return strconv.Quote(assignment.Host), nil
 	default:
 		return "", fmt.Errorf("unsupported overlay value format %q", format)
 	}

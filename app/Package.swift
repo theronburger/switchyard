@@ -14,11 +14,20 @@ let package = Package(
         .target(name: "SwitchyardKit"),
         .executableTarget(
             name: "SwitchyardApp",
-            dependencies: ["SwitchyardKit"]
+            dependencies: ["SwitchyardKit"],
+            resources: [.copy("Resources/SwitchyardTile.png")]
         ),
         .executableTarget(
             name: "SwitchyardContractCheck",
             dependencies: ["SwitchyardKit"]
+        ),
+        .testTarget(
+            name: "SwitchyardTests",
+            dependencies: ["SwitchyardApp", "SwitchyardKit"],
+            path: "Tests/SwitchyardTests",
+            swiftSettings: [
+                .enableExperimentalFeature("SwiftTesting"),
+            ]
         ),
     ]
 )

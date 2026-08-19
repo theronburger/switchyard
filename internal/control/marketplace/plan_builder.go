@@ -20,7 +20,8 @@ import (
 
 const (
 	marketplaceAdapterID            = "marketplace"
-	marketplaceServerlessProjection = "marketplace.serverless.nonprofit-service.v1"
+	marketplaceServerlessProjection = "marketplace.runtime-projections.v2"
+	marketplaceEnvironmentShim      = ".switchyard.env.cjs"
 	readinessIDPrefix               = "marketplace.readiness."
 	readinessIDSuffix               = ".v1"
 	marketplacePreparationTimeout   = 10 * time.Minute
@@ -32,20 +33,34 @@ const (
 var (
 	ErrMarketplacePlanInvalid = errors.New("Marketplace execution plan is invalid")
 	elasticMQQueueNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
-	elasticMQQueueNames       = []string{
-		"local-nonprofit-service-chapter-request-queue",
-		"local-nonprofit-service-chapter-request-dlq",
-		"local-nonprofit-service-chapter-request-finalize-queue",
-		"local-nonprofit-service-chapter-request-finalize-dlq",
-		"local-nonprofit-service-organizer-verification-queue",
-		"local-nonprofit-service-organizer-verification-dlq",
-		"local-nonprofit-service-process-requests",
-		"local-nonprofit-service-process-requests-dlq",
-		"local-nonprofit-service-chapter-request",
-		"local-nonprofit-service-chapter-request-finalize",
-		"local-nonprofit-service-organizer-verification",
-	}
+	elasticMQQueueNames       = nonprofitQueueNames()
 )
+
+func nonprofitQueueNames() []string {
+	definition, found := marketplaceadapter.DefaultCatalog().Definition("nonprofit-service")
+	if !found {
+		return nil
+	}
+	names := make([]string, 0, len(definition.Queues))
+	for _, queue := range definition.Queues {
+		names = append(names, queue.Name)
+	}
+	return names
+}
+
+func validElasticMQQueueNames(queueNames []string) bool {
+	if len(queueNames) != len(elasticMQQueueNames) {
+		return false
+	}
+	queues := make([]marketplaceadapter.QueueDefinition, 0, len(queueNames))
+	for _, name := range queueNames {
+		queues = append(queues, marketplaceadapter.QueueDefinition{
+			Name: name, FIFO: strings.HasSuffix(name, ".fifo"),
+			ContentBasedDeduplication: strings.HasSuffix(name, ".fifo"),
+		})
+	}
+	return validElasticMQQueues(queues)
+}
 
 type ExecutionCatalog interface {
 	PlanEnvironment([]string, map[string]map[string]int) ([]marketplaceadapter.ServicePlan, error)
@@ -74,6 +89,14 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 		!registryIDPattern.MatchString(request.RunID) || len(request.Intent.ServiceIDs) == 0 {
 		return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 	}
+	targetID := request.Intent.TargetID
+	if targetID == "" {
+		targetID = marketplaceadapter.DefaultRuntimeTargetID()
+	}
+	targetEnvironment, knownTarget := marketplaceadapter.RuntimeTargetEnvironment(targetID)
+	if !knownTarget {
+		return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
+	}
 	serviceIDs := append([]string(nil), request.Intent.ServiceIDs...)
 	sort.Strings(serviceIDs)
 	definitions, err := builder.definitions(serviceIDs)
@@ -93,7 +116,9 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 		return servicePlans[left].ID < servicePlans[right].ID
 	})
 
-	plan := environment.ExecutionPlan{}
+	plan := environment.ExecutionPlan{
+		Projection: &environment.ProjectionRequest{ID: marketplaceServerlessProjection},
+	}
 	seenServices := make(map[string]struct{}, len(servicePlans))
 	for _, servicePlan := range servicePlans {
 		if _, duplicate := seenServices[servicePlan.ID]; duplicate {
@@ -102,6 +127,10 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 		seenServices[servicePlan.ID] = struct{}{}
 		definition, found := definitions[servicePlan.ID]
 		if !found {
+			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
+		}
+		servicePlan.Environment, err = mergePlannedEnvironment(servicePlan.Environment, targetEnvironment)
+		if err != nil {
 			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 		}
 		preparations, err := buildPreparations(registration, request.RunID, servicePlan)
@@ -114,24 +143,43 @@ func (builder PlanBuilder) Build(request environment.PlanningRequest) (environme
 			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 		}
 		plan.Services = append(plan.Services, launch)
-		goals, err := buildInfrastructureGoals(registration, request.RunID, servicePlan)
-		if err != nil {
-			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
-		}
-		plan.Infrastructure = append(plan.Infrastructure, goals...)
 		initializations, err := buildInitializations(registration, request.RunID, servicePlan)
 		if err != nil {
 			return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 		}
 		plan.Initializations = append(plan.Initializations, initializations...)
-		if servicePlan.ServerlessOverlay != nil {
-			if plan.Projection != nil || servicePlan.ID != "nonprofit-service" {
-				return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
-			}
-			plan.Projection = &environment.ProjectionRequest{ID: marketplaceServerlessProjection}
-		}
+	}
+	plan.Infrastructure, err = buildInfrastructureGoals(registration, request.RunID, servicePlans)
+	if err != nil {
+		return environment.ExecutionPlan{}, ErrMarketplacePlanInvalid
 	}
 	return plan, nil
+}
+
+func mergePlannedEnvironment(
+	base []marketplaceadapter.EnvironmentVariable,
+	additional []marketplaceadapter.EnvironmentVariable,
+) ([]marketplaceadapter.EnvironmentVariable, error) {
+	values := make(map[string]string, len(base)+len(additional))
+	for _, variable := range append(append([]marketplaceadapter.EnvironmentVariable{}, base...), additional...) {
+		if variable.Name == "" || strings.ContainsRune(variable.Name, 0) || strings.ContainsRune(variable.Value, 0) {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		if current, exists := values[variable.Name]; exists && current != variable.Value {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		values[variable.Name] = variable.Value
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	merged := make([]marketplaceadapter.EnvironmentVariable, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, marketplaceadapter.EnvironmentVariable{Name: name, Value: values[name]})
+	}
+	return merged, nil
 }
 
 func buildInitializations(
@@ -139,19 +187,10 @@ func buildInitializations(
 	runID string,
 	plan marketplaceadapter.ServicePlan,
 ) ([]environment.PreparationSpec, error) {
-	if plan.ID != "nonprofit-service" {
+	if len(plan.Queues) == 0 && !hasInfrastructure(plan, "elasticmq") {
 		return nil, nil
 	}
-	elasticMQFound := false
-	for _, infrastructure := range plan.Infrastructure {
-		if infrastructure.ID == "elasticmq" && infrastructure.Kind == "container" &&
-			infrastructure.Dedicated && infrastructure.Scope == marketplaceadapter.EnvironmentInfrastructureScope {
-			if elasticMQFound {
-				return nil, ErrMarketplacePlanInvalid
-			}
-			elasticMQFound = true
-		}
-	}
+	elasticMQFound := hasInfrastructure(plan, "elasticmq")
 	var restPort marketplaceadapter.PortAssignment
 	restPortFound := false
 	for _, assignment := range plan.Ports {
@@ -165,7 +204,7 @@ func buildInitializations(
 		restPort = assignment
 		restPortFound = true
 	}
-	if !elasticMQFound || !restPortFound || !validElasticMQQueueNames(elasticMQQueueNames) {
+	if !elasticMQFound || !restPortFound || !validElasticMQQueues(plan.Queues) {
 		return nil, ErrMarketplacePlanInvalid
 	}
 	planned, err := plannedEnvironment(registration, nil)
@@ -184,7 +223,11 @@ func buildInitializations(
 		"elasticmq",
 	)
 	initializations := []environment.PreparationSpec{{
-		ID:          plan.ID + ".initialize.elasticmq.readiness",
+		ID:        plan.ID + ".initialize.elasticmq.readiness",
+		ServiceID: plan.ID,
+		LogReference: filepath.ToSlash(filepath.Join(
+			runID, "initializations", plan.ID, "elasticmq", "readiness",
+		)),
 		Executable:  marketplaceCurlExecutable,
 		Arguments:   elasticMQReadinessArguments(endpoint),
 		Environment: append([]string(nil), planned...),
@@ -195,11 +238,15 @@ func buildInitializations(
 		),
 		Timeout: elasticMQReadinessTimeout,
 	}}
-	for index, queueName := range elasticMQQueueNames {
+	for index, queue := range plan.Queues {
 		initializations = append(initializations, environment.PreparationSpec{
-			ID:          plan.ID + ".initialize.elasticmq.queue." + strconv.Itoa(index),
+			ID:        plan.ID + ".initialize.elasticmq.queue." + strconv.Itoa(index),
+			ServiceID: plan.ID,
+			LogReference: filepath.ToSlash(filepath.Join(
+				runID, "initializations", plan.ID, "elasticmq", "queue-"+strconv.Itoa(index),
+			)),
 			Executable:  marketplaceCurlExecutable,
-			Arguments:   elasticMQCreateQueueArguments(endpoint, queueName),
+			Arguments:   elasticMQCreateQueueDefinitionArguments(endpoint, queue),
 			Environment: append([]string(nil), planned...),
 			Directory:   registration.WorktreeRoot,
 			RunDirectory: filepath.Join(
@@ -230,33 +277,59 @@ func elasticMQReadinessArguments(endpoint string) []string {
 }
 
 func elasticMQCreateQueueArguments(endpoint, queueName string) []string {
-	return []string{
+	return elasticMQCreateQueueDefinitionArguments(endpoint, marketplaceadapter.QueueDefinition{Name: queueName})
+}
+
+func elasticMQCreateQueueDefinitionArguments(endpoint string, queue marketplaceadapter.QueueDefinition) []string {
+	arguments := []string{
 		"--fail", "--silent", "--show-error",
 		"--connect-timeout", "1",
 		"--max-time", "5",
 		"--request", "POST",
 		"--data", "Action=CreateQueue",
-		"--data", "QueueName=" + queueName,
+		"--data", "QueueName=" + queue.Name,
 		"--data", "Version=2012-11-05",
-		"--url", endpoint,
 	}
+	if queue.FIFO {
+		arguments = append(arguments,
+			"--data", "Attribute.1.Name=FifoQueue",
+			"--data", "Attribute.1.Value=true",
+			"--data", "Attribute.2.Name=ContentBasedDeduplication",
+			"--data", "Attribute.2.Value="+strconv.FormatBool(queue.ContentBasedDeduplication),
+		)
+	}
+	return append(arguments, "--url", endpoint)
 }
 
-func validElasticMQQueueNames(queueNames []string) bool {
-	if len(queueNames) != 11 {
-		return false
-	}
-	seen := make(map[string]struct{}, len(queueNames))
-	for _, queueName := range queueNames {
-		if !elasticMQQueueNamePattern.MatchString(queueName) {
+func validElasticMQQueues(queues []marketplaceadapter.QueueDefinition) bool {
+	seen := make(map[string]struct{}, len(queues))
+	for _, queue := range queues {
+		baseName := strings.TrimSuffix(queue.Name, ".fifo")
+		if !elasticMQQueueNamePattern.MatchString(baseName) || queue.FIFO != strings.HasSuffix(queue.Name, ".fifo") ||
+			(!queue.FIFO && queue.ContentBasedDeduplication) {
 			return false
 		}
-		if _, duplicate := seen[queueName]; duplicate {
+		if _, duplicate := seen[queue.Name]; duplicate {
 			return false
 		}
-		seen[queueName] = struct{}{}
+		seen[queue.Name] = struct{}{}
 	}
 	return true
+}
+
+func hasInfrastructure(plan marketplaceadapter.ServicePlan, infrastructureID string) bool {
+	found := false
+	for _, infrastructure := range plan.Infrastructure {
+		if infrastructure.ID != infrastructureID {
+			continue
+		}
+		if found || infrastructure.Kind != "container" || !infrastructure.Dedicated ||
+			infrastructure.Scope != marketplaceadapter.EnvironmentInfrastructureScope {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func buildPreparations(
@@ -284,11 +357,13 @@ func buildPreparations(
 		}
 		commandID := "command-" + strconv.Itoa(index)
 		preparations = append(preparations, environment.PreparationSpec{
-			ID:          plan.ID + ".prepare." + strconv.Itoa(index),
-			Executable:  registration.NodeExecutable,
-			Arguments:   arguments,
-			Environment: append([]string(nil), environmentVariables...),
-			Directory:   filepath.Join(registration.WorktreeRoot, command.WorkingDirectory),
+			ID:           plan.ID + ".prepare." + strconv.Itoa(index),
+			ServiceID:    plan.ID,
+			LogReference: filepath.ToSlash(filepath.Join(runID, "preparations", plan.ID, commandID)),
+			Executable:   registration.NodeExecutable,
+			Arguments:    arguments,
+			Environment:  append([]string(nil), environmentVariables...),
+			Directory:    filepath.Join(registration.WorktreeRoot, command.WorkingDirectory),
 			RunDirectory: filepath.Join(
 				registration.RunRoot,
 				"environments",
@@ -387,6 +462,15 @@ func buildServiceLaunch(
 	if err != nil {
 		return environment.ServiceLaunch{}, err
 	}
+	preloads := []string{filepath.Join(registration.WorktreeRoot, marketplaceEnvironmentShim)}
+	if endpointShimDirectory := endpointShimDirectory(plan.ID); endpointShimDirectory != "" {
+		shimPath := filepath.Join(registration.WorktreeRoot, endpointShimDirectory, ".switchyard.endpoints.cjs")
+		preloads = append(preloads, shimPath)
+	}
+	environmentVariables, err = appendNodePreloads(environmentVariables, preloads...)
+	if err != nil {
+		return environment.ServiceLaunch{}, err
+	}
 
 	infrastructurePorts := make(map[string]struct{})
 	for _, infrastructure := range plan.Infrastructure {
@@ -440,6 +524,17 @@ func buildServiceLaunch(
 	}, nil
 }
 
+func endpointShimDirectory(serviceID string) string {
+	switch serviceID {
+	case "donation-batch-service":
+		return filepath.Join("services", "donation-batch-service")
+	case "slack-service":
+		return filepath.Join("services", "slack-service")
+	default:
+		return ""
+	}
+}
+
 func plannedEnvironment(
 	registration EnvironmentRegistration,
 	variables []marketplaceadapter.EnvironmentVariable,
@@ -464,57 +559,123 @@ func plannedEnvironment(
 	return planned, nil
 }
 
+func appendNodePreloads(environmentVariables []string, paths ...string) ([]string, error) {
+	if len(paths) == 0 {
+		return append([]string(nil), environmentVariables...), nil
+	}
+	result := append([]string(nil), environmentVariables...)
+	optionsIndex := -1
+	options := ""
+	for index, variable := range result {
+		name, value, found := strings.Cut(variable, "=")
+		if !found || name == "" {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		if name != "NODE_OPTIONS" {
+			continue
+		}
+		if optionsIndex != -1 || strings.ContainsAny(value, "\x00\r\n") {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		optionsIndex = index
+		options = strings.TrimSpace(value)
+	}
+	for _, preloadPath := range paths {
+		if !filepath.IsAbs(preloadPath) || filepath.Clean(preloadPath) != preloadPath ||
+			strings.ContainsAny(preloadPath, "\x00\r\n") {
+			return nil, ErrMarketplacePlanInvalid
+		}
+		option := "--require=" + preloadPath
+		if strings.ContainsAny(preloadPath, " \t\"") {
+			option = "--require=" + strconv.Quote(preloadPath)
+		}
+		if options != "" {
+			options += " "
+		}
+		options += option
+	}
+	entry := "NODE_OPTIONS=" + options
+	if optionsIndex == -1 {
+		result = append(result, entry)
+	} else {
+		result[optionsIndex] = entry
+	}
+	return result, nil
+}
+
 func buildInfrastructureGoals(
 	registration EnvironmentRegistration,
 	runID string,
-	servicePlan marketplaceadapter.ServicePlan,
+	servicePlans []marketplaceadapter.ServicePlan,
 ) ([]containerhost.Goal, error) {
-	assignments := make(map[string]marketplaceadapter.PortAssignment, len(servicePlan.Ports))
-	for _, assignment := range servicePlan.Ports {
-		if _, duplicate := assignments[assignment.RequirementID]; duplicate {
-			return nil, ErrMarketplacePlanInvalid
-		}
-		assignments[assignment.RequirementID] = assignment
+	type groupedInfrastructure struct {
+		requirement marketplaceadapter.InfrastructureRequirement
+		bindings    []containerhost.PortBinding
 	}
-	goals := make([]containerhost.Goal, 0, len(servicePlan.Infrastructure))
-	for _, infrastructure := range servicePlan.Infrastructure {
-		if infrastructure.Kind != "container" || !infrastructure.Dedicated ||
-			infrastructure.Scope != marketplaceadapter.EnvironmentInfrastructureScope {
-			return nil, ErrMarketplacePlanInvalid
+	grouped := make(map[string]groupedInfrastructure)
+	for _, servicePlan := range servicePlans {
+		assignments := make(map[string]marketplaceadapter.PortAssignment, len(servicePlan.Ports))
+		for _, assignment := range servicePlan.Ports {
+			if _, duplicate := assignments[assignment.RequirementID]; duplicate {
+				return nil, ErrMarketplacePlanInvalid
+			}
+			assignments[assignment.RequirementID] = assignment
 		}
+		for _, infrastructure := range servicePlan.Infrastructure {
+			if infrastructure.Kind != "container" || !infrastructure.Dedicated ||
+				infrastructure.Scope != marketplaceadapter.EnvironmentInfrastructureScope {
+				return nil, ErrMarketplacePlanInvalid
+			}
+			current, found := grouped[infrastructure.ID]
+			if found && (current.requirement.Image != infrastructure.Image || current.requirement.Kind != infrastructure.Kind) {
+				return nil, ErrMarketplacePlanInvalid
+			}
+			if !found {
+				current.requirement = infrastructure
+			}
+			seenPortRequirements := make(map[string]struct{}, len(infrastructure.Ports))
+			for _, infrastructurePort := range infrastructure.Ports {
+				assignment, found := assignments[infrastructurePort.PortRequirement]
+				if !found || assignment.Host != containerhost.LoopbackHostIPv4 ||
+					infrastructurePort.ContainerPort < 1 || infrastructurePort.ContainerPort > 65535 {
+					return nil, ErrMarketplacePlanInvalid
+				}
+				if _, duplicate := seenPortRequirements[infrastructurePort.PortRequirement]; duplicate {
+					return nil, ErrMarketplacePlanInvalid
+				}
+				seenPortRequirements[infrastructurePort.PortRequirement] = struct{}{}
+				current.bindings = append(current.bindings, containerhost.PortBinding{
+					Host:          containerhost.LoopbackHostIPv4,
+					HostPort:      assignment.Port,
+					ContainerPort: infrastructurePort.ContainerPort,
+					Protocol:      containerhost.PortProtocolTCP,
+				})
+			}
+			grouped[infrastructure.ID] = current
+		}
+	}
+	ids := make([]string, 0, len(grouped))
+	for id := range grouped {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	goals := make([]containerhost.Goal, 0, len(ids))
+	for _, infrastructureID := range ids {
+		infrastructure := grouped[infrastructureID]
 		identity := containerhost.Identity{
 			EnvironmentID: registration.EnvironmentID,
-			ServiceID:     servicePlan.ID + "." + infrastructure.ID,
+			ServiceID:     "shared." + infrastructureID,
 			RunID:         runID,
 			InstanceID:    registration.DaemonInstanceID,
 		}
 		if identity.Validate() != nil {
 			return nil, ErrMarketplacePlanInvalid
 		}
-		portBindings := make([]containerhost.PortBinding, 0, len(infrastructure.Ports))
-		seenPortRequirements := make(map[string]struct{}, len(infrastructure.Ports))
-		for _, infrastructurePort := range infrastructure.Ports {
-			assignment, found := assignments[infrastructurePort.PortRequirement]
-			if !found || assignment.Host != containerhost.LoopbackHostIPv4 ||
-				infrastructurePort.ContainerPort < 1 || infrastructurePort.ContainerPort > 65535 {
-				return nil, ErrMarketplacePlanInvalid
-			}
-			if _, duplicate := seenPortRequirements[infrastructurePort.PortRequirement]; duplicate {
-				return nil, ErrMarketplacePlanInvalid
-			}
-			seenPortRequirements[infrastructurePort.PortRequirement] = struct{}{}
-			portBindings = append(portBindings, containerhost.PortBinding{
-				Host:          containerhost.LoopbackHostIPv4,
-				HostPort:      assignment.Port,
-				ContainerPort: infrastructurePort.ContainerPort,
-				Protocol:      containerhost.PortProtocolTCP,
-			})
-		}
 		goals = append(goals, containerhost.Goal{
 			Kind:         containerhost.ResourceContainer,
-			Name:         infrastructureName(registration.EnvironmentID, runID, infrastructure.ID),
-			Image:        infrastructure.Image,
-			PortBindings: portBindings,
+			Name:         infrastructureName(registration.EnvironmentID, runID, infrastructureID),
+			Image:        infrastructure.requirement.Image,
+			PortBindings: infrastructure.bindings,
 			Identity:     identity,
 			DesiredState: containerhost.DesiredRunning,
 		})

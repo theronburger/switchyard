@@ -234,6 +234,32 @@ actor StubEnvironmentActions: EnvironmentActionSubmitting {
     }
 }
 
+actor StubWorkspaceActions: WorkspaceActionSubmitting {
+    let receipt: MutationReceipt
+    private(set) var creates: [CreateWorktreeRequest] = []
+    private(set) var adopts: [AdoptWorktreeRequest] = []
+    private(set) var archives: [ArchiveWorktreeRequest] = []
+
+    init(receipt: MutationReceipt) {
+        self.receipt = receipt
+    }
+
+    func createWorktree(_ request: CreateWorktreeRequest) async throws -> MutationReceipt {
+        creates.append(request)
+        return receipt
+    }
+
+    func archiveWorktree(_ request: ArchiveWorktreeRequest) async throws -> MutationReceipt {
+        archives.append(request)
+        return receipt
+    }
+
+    func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt {
+        adopts.append(request)
+        return receipt
+    }
+}
+
 actor StubAgentConnections: AgentConnectionManaging {
     private var report: AgentConnectionReport
     private(set) var inspections = 0
@@ -283,6 +309,7 @@ func httpResponse(for request: URLRequest, status: Int) -> HTTPURLResponse {
 func testLaunchAgentPaths(in directory: URL) -> LaunchAgentPaths {
     LaunchAgentPaths(
         installedBinaryURL: directory.appending(path: "Application Support/Switchyard/bin/switchyard"),
+        commandLinkURL: directory.appending(path: ".local/bin/sy"),
         launchAgentURL: directory.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
         standardOutputURL: directory.appending(path: "Application Support/Switchyard/logs/stdout.log"),
         standardErrorURL: directory.appending(path: "Application Support/Switchyard/logs/stderr.log")
@@ -368,6 +395,8 @@ runner.check("mutation fixtures decode across the Swift boundary") {
     )
     try expect(start.schemaVersion == contractSchemaVersion, "start request schema changed")
     try expect(start.worktreeId.hasPrefix("worktree_"), "start worktree id did not decode")
+    try expect(start.targetId == "testing", "start target did not decode")
+    try expect(start.confirmedTargetId == nil, "safe fixture unexpectedly requires confirmation")
     try expect(start.serviceIds == ["organizer", "nonprofit-service"], "start service selection changed")
 
     let stop = try decoder.decode(
@@ -381,6 +410,7 @@ runner.check("mutation fixtures decode across the Swift boundary") {
         from: Data(contentsOf: fixtures.appending(path: "mutation-receipt.json"))
     )
     try expect(receipt.operationId.hasPrefix("operation_"), "operation receipt did not decode")
+    try expect(receipt.runId == "run_01J5EZ6XDJQ3RT09H42TJFWCNR", "receipt run did not decode")
     try expect(receipt.environmentId == "environment_daad7f2bc132", "receipt environment changed")
 }
 
@@ -389,12 +419,16 @@ runner.check("Swift mutation requests encode canonical non-null service arrays")
         requestId: "request_test",
         idempotencyKey: "start:test",
         worktreeId: "worktree_test",
+        targetId: "demo",
+        confirmedTargetId: "demo",
         serviceIds: ["organizer"]
     )
     let encoded = try JSONEncoder().encode(request)
     let value = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     try expect(value?["schemaVersion"] as? Int == contractSchemaVersion, "encoded schema changed")
     try expect(value?["serviceIds"] as? [String] == ["organizer"], "services did not encode as an array")
+    try expect(value?["targetId"] as? String == "demo", "target did not encode")
+    try expect(value?["confirmedTargetId"] as? String == "demo", "target confirmation did not encode")
     try expect(value?["expectedEnvironmentRevision"] == nil, "nil revision did not stay omitted")
 }
 
@@ -406,13 +440,32 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(snapshot.repositories.count == 1, "expected one repository")
     let repository = snapshot.repositories[0]
     try expect(repository.adapter == "marketplace", "repository adapter did not decode")
+    try expect(repository.observation?.stale == false, "repository observation freshness did not decode")
+    try expect(repository.runtime?.defaultTargetId == "testing", "repository runtime default did not decode")
+    try expect(repository.runtime?.targets.count == 4, "repository targets did not decode")
+    try expect(
+        repository.runtime?.targets.filter(\.warnOnStart).map(\.id) == ["demo", "production"],
+        "warn-on-start target policy did not decode"
+    )
+    try expect(repository.runtime?.services.count == 18, "repository service catalog did not decode")
     try expect(repository.worktrees.count == 1, "expected one worktree")
-    try expect(repository.worktrees[0].git.isClean, "canonical worktree should be clean")
+    try expect(!repository.worktrees[0].git.isClean, "canonical worktree should report fixture changes")
+    try expect(repository.worktrees[0].git.hasTrackedChanges, "canonical tracked-change state did not decode")
+    guard let pullRequestObservation = repository.worktrees[0].pullRequest,
+          let pullRequest = pullRequestObservation.pullRequest else {
+        throw CheckError("canonical pull request observation is missing")
+    }
+    try expect(pullRequestObservation.status == .found, "pull request availability did not decode")
+    try expect(pullRequest.number == 9_556, "pull request number did not decode")
+    try expect(pullRequest.checks.state == .pending, "pull request check state did not decode")
+    try expect(pullRequest.checks.items.count == 4, "pull request checks did not decode")
+    try expect(pullRequest.reviewDecision == .reviewRequired, "pull request review state did not decode")
 
     guard let environment = snapshot.environments.first else {
         throw CheckError("canonical environment is missing")
     }
     try expect(environment.displayName == "DEMO-830", "canonical environment is missing")
+    try expect(environment.targetId == "testing", "environment target did not decode")
     try expect(environment.revision == 17, "environment revision did not decode")
     try expect(environment.health == .degraded, "canonical environment health did not decode")
     try expect(environment.desiredState == .running, "desired state did not decode")
@@ -424,6 +477,11 @@ runner.check("canonical fixture decodes with expected fields") {
     }
     try expect(organizer.run?.cpuPercent == 8.2, "organizer run cpu did not decode")
     try expect(organizer.run?.processCount == 7, "organizer run process count did not decode")
+    try expect(
+        organizer.run?.sourceRevision == "0123456789abcdef0123456789abcdef01234567",
+        "organizer source revision did not decode"
+    )
+    try expect(organizer.run?.sourceHasTrackedChanges == true, "organizer source dirty state did not decode")
 
     guard let nonprofit = environment.services.first(where: { $0.id == "nonprofit-service" }) else {
         throw CheckError("nonprofit service is missing")
@@ -440,7 +498,16 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(environment.sortedURLs.first?.service == "nonprofit-service", "URL ordering is not deterministic")
     try expect(environment.resources.memoryBytes == 1_400_000_000, "aggregate memory did not decode")
 
+    guard let worktreeChanges = snapshot.repositories.first?.worktrees.first?.changes else {
+        throw CheckError("worktree line changes are missing")
+    }
+    try expect(worktreeChanges.committed.additions == 2_031, "committed additions did not decode")
+    try expect(worktreeChanges.uncommitted.deletions == 3, "uncommitted deletions did not decode")
+    try expect(worktreeChanges.service("organizer")?.committed.files == 11, "service attribution did not decode")
+    try expect(worktreeChanges.sharedCommitted.additions == 30, "shared changes did not decode")
+
     try expect(snapshot.operations.first?.state == .succeeded, "operation state did not decode")
+    try expect(snapshot.operations.first?.runId == organizer.run?.id, "operation run identity did not decode")
     try expect(snapshot.alerts.first?.code == "SERVICE_EXITED", "alert code did not decode")
     try expect(snapshot.alerts.first?.severity == .error, "alert severity did not decode")
 }
@@ -479,6 +546,42 @@ runner.check("unknown enum values decode forward-compatibly") {
     try decodesToUnknown(OperationState.self)
     try decodesToUnknown(AlertSeverity.self)
     try decodesToUnknown(AlertStatus.self)
+}
+
+runner.check("failed ownership recovery states remain explicit and actionable") {
+    guard var value = try JSONSerialization.jsonObject(with: fixtureData) as? [String: Any] else {
+        throw CheckError("canonical fixture is not a JSON object")
+    }
+    var environments = value["environments"] as? [[String: Any]] ?? []
+    var environment = environments[0]
+    environment["desiredState"] = "stopped"
+    environment["observedState"] = "failed"
+    environment["health"] = "degraded"
+    var services = environment["services"] as? [[String: Any]] ?? []
+    services[0]["desiredState"] = "stopped"
+    services[0]["observedState"] = "unverifiable"
+    services[0]["health"] = "degraded"
+    services[0]["observationCode"] = "PROCESS_OWNERSHIP_UNVERIFIED"
+    environment["services"] = services
+    environments[0] = environment
+    value["environments"] = environments
+    let data = try JSONSerialization.data(withJSONObject: value)
+    let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: data)
+    guard let recovered = snapshot.environments.first else {
+        throw CheckError("recovery environment is missing")
+    }
+    try expect(recovered.desiredState == .stopped, "recovery desired state collapsed")
+    try expect(recovered.observedState == .failed, "recovery observed state collapsed")
+    try expect(recovered.health == .degraded, "recovery health collapsed")
+    try expect(recovered.services[0].observedState == .unverifiable, "unverifiable service collapsed")
+    try expect(recovered.services[0].observationCode == "PROCESS_OWNERSHIP_UNVERIFIED", "observation code missing")
+    try expect(recovered.hasUnverifiableServices, "unverifiable service was not derived")
+    try expect(recovered.allowsStopRequest && recovered.allowsRebuildRequest, "recovery actions were unavailable")
+
+    let decoder = ContractDecoder()
+    try expect(try decoder.decode(DesiredState.self, from: Data("\"failed\"".utf8)) == .failed, "legacy desired failure collapsed")
+    try expect(try decoder.decode(ObservedState.self, from: Data("\"degraded\"".utf8)) == .degraded, "legacy observed degradation collapsed")
+    try expect(try decoder.decode(ObservedState.self, from: Data("\"orphaned\"".utf8)) == .orphaned, "orphaned state collapsed")
 }
 
 runner.check("additive fields are ignored") {
@@ -838,6 +941,7 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
     try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sourceURL.path)
     let paths = LaunchAgentPaths(
         installedBinaryURL: directory.appending(path: "Application Support/Switchyard/bin/switchyard"),
+        commandLinkURL: directory.appending(path: ".local/bin/sy"),
         launchAgentURL: directory.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
         standardOutputURL: directory.appending(path: "Application Support/Switchyard/logs/stdout.log"),
         standardErrorURL: directory.appending(path: "Application Support/Switchyard/logs/stderr.log")
@@ -877,6 +981,10 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
 
     try await manager.install()
     try expect(fileManager.isExecutableFile(atPath: paths.installedBinaryURL.path), "installed daemon is not executable")
+    try expect(
+        try fileManager.destinationOfSymbolicLink(atPath: paths.commandLinkURL!.path) == paths.installedBinaryURL.path,
+        "sy does not target the installed helper"
+    )
     try expect(fileManager.fileExists(atPath: paths.launchAgentURL.path), "LaunchAgent plist was not installed")
     try await manager.repair()
     let launchctlCommands = runner.commands.filter { $0.executableURL == launchctlURL }
@@ -903,6 +1011,8 @@ await runner.checkAsync("unchanged LaunchAgent install does not rewrite owned fi
     let paths = testLaunchAgentPaths(in: directory)
     try writeTestFile(binaryData, to: sourceURL, permissions: 0o700)
     try writeTestFile(binaryData, to: paths.installedBinaryURL, permissions: 0o700)
+    try fileManager.createDirectory(at: paths.commandLinkURL!.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fileManager.createSymbolicLink(atPath: paths.commandLinkURL!.path, withDestinationPath: paths.installedBinaryURL.path)
     let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
     let commands = RecordingExactRunner { command in
         if command.arguments == ["version"] {
@@ -1020,6 +1130,8 @@ await runner.checkAsync("unsafe helper symlink is refused without mutation") {
     try writeTestFile(Data("packaged-daemon".utf8), to: realSourceURL, permissions: 0o700)
     try fileManager.createSymbolicLink(at: symlinkURL, withDestinationURL: realSourceURL)
     try writeTestFile(installedData, to: paths.installedBinaryURL, permissions: 0o700)
+    try fileManager.createDirectory(at: paths.commandLinkURL!.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fileManager.createSymbolicLink(atPath: paths.commandLinkURL!.path, withDestinationPath: paths.installedBinaryURL.path)
     let commands = RecordingExactRunner { _ in ExactCommandResult(exitCode: 0) }
     let manager = LaunchAgentServiceManager(
         binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: symlinkURL)),
@@ -1038,6 +1150,41 @@ await runner.checkAsync("unsafe helper symlink is refused without mutation") {
     }
     try expect(try Data(contentsOf: paths.installedBinaryURL) == installedData, "symlink refusal mutated installed helper")
     try expect(commands.commands.isEmpty, "symlink refusal invoked a command")
+}
+
+await runner.checkAsync("foreign sy command is refused without mutation") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-command-conflict-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let sourceURL = directory.appending(path: "bundle/SwitchyardDaemon")
+    let paths = testLaunchAgentPaths(in: directory)
+    try writeTestFile(Data("packaged-daemon".utf8), to: sourceURL, permissions: 0o700)
+    let foreign = Data("#!/bin/sh\necho foreign\n".utf8)
+    try writeTestFile(foreign, to: paths.commandLinkURL!, permissions: 0o700)
+    let commands = RecordingExactRunner { command in
+        if command.arguments == ["version"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+            )
+        }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: sourceURL)),
+        commandRunner: commands,
+        paths: paths,
+        userID: getuid()
+    )
+    do {
+        try await manager.install()
+        throw CheckError("foreign sy command was replaced")
+    } catch let error as DaemonServiceError {
+        try expect(error == .commandLinkConflict, "unexpected sy conflict error: \(error)")
+    }
+    try expect(try Data(contentsOf: paths.commandLinkURL!) == foreign, "foreign sy command bytes changed")
 }
 
 await runner.checkAsync("outdated plist is replaced without carrying credentials") {
@@ -1422,6 +1569,8 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
         try expect(request.url?.absoluteString.contains(sampleTokenRaw) == false, "token leaked into mutation URL")
         let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
         try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
+        try expect(body?["targetId"] as? String == "production", "target was not encoded")
+        try expect(body?["confirmedTargetId"] as? String == "production", "target confirmation was not encoded")
         try expect(body?["serviceIds"] as? [String] == ["organizer", "nonprofit-service"], "services were not encoded")
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
     }
@@ -1430,6 +1579,8 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
         requestId: requestId,
         idempotencyKey: "start_app_start",
         worktreeId: "worktree_app",
+        targetId: "production",
+        confirmedTargetId: "production",
         serviceIds: ["organizer", "nonprofit-service"]
     ))
     try expect(result.operationId == "operation_app_start", "mutation receipt did not decode")
@@ -1466,6 +1617,96 @@ await runner.checkAsync("daemon client encodes revisioned stops and rejects host
         }
     }
     try expect(sentPaths.values.count == 1, "hostile path reached the transport")
+}
+
+await runner.checkAsync("daemon client submits managed worktree mutations and rejects hostile paths") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let paths = LockedRecorder<String>()
+    let transport = MockTransport { request in
+        paths.append(request.url?.path() ?? "")
+        let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+        guard let requestId = body?["requestId"] as? String else {
+            throw CheckError("workspace request identity missing")
+        }
+        if request.url?.path() == "/v1/worktrees" {
+            try expect(body?["repositoryId"] as? String == "repository_app", "repository was not encoded")
+            try expect(body?["branch"] as? String == "feature/go-service", "branch was not encoded")
+            try expect(body?["startPoint"] as? String == "origin/main", "base was not encoded")
+        } else {
+            try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
+        }
+        let receipt = """
+        {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_workspace",
+         "acceptedAt":"2026-08-17T16:00:00Z"}
+        """
+        return (Data(receipt.utf8), httpResponse(for: request, status: 202))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    _ = try await client.createWorktree(CreateWorktreeRequest(
+        requestId: "request_create",
+        idempotencyKey: "create:key",
+        repositoryId: "repository_app",
+        branch: "feature/go-service",
+        startPoint: "origin/main"
+    ))
+    _ = try await client.adoptWorktree(AdoptWorktreeRequest(
+        requestId: "request_adopt",
+        idempotencyKey: "adopt:key",
+        worktreeId: "worktree_app"
+    ))
+    _ = try await client.archiveWorktree(ArchiveWorktreeRequest(
+        requestId: "request_archive",
+        idempotencyKey: "archive:key",
+        worktreeId: "worktree_app"
+    ))
+    do {
+        _ = try await client.archiveWorktree(ArchiveWorktreeRequest(
+            requestId: "request_hostile",
+            idempotencyKey: "archive:hostile",
+            worktreeId: "../foreign"
+        ))
+        throw CheckError("hostile worktree path was accepted")
+    } catch let error as DaemonClientError {
+        guard case .invalidRequest = error else {
+            throw CheckError("unexpected hostile workspace path error: \(error)")
+        }
+    }
+    try expect(
+        paths.values == ["/v1/worktrees", "/v1/worktrees/worktree_app/adopt", "/v1/worktrees/worktree_app/archive"],
+        "workspace paths changed"
+    )
+}
+
+await runner.checkAsync("live workspace actions handshake before mutation") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let paths = LockedRecorder<String>()
+    let requestId = "request_verified_workspace"
+    let handshake = """
+    {"schemaVersion":1,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+    """
+    let receipt = """
+    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_verified_workspace",
+     "acceptedAt":"2026-08-17T16:00:00Z"}
+    """
+    let client = try DaemonClient(
+        descriptor: sampleDescriptor,
+        token: token,
+        transport: MockTransport { request in
+            paths.append(request.url?.path() ?? "")
+            let body = request.url?.path() == "/handshake" ? Data(handshake.utf8) : Data(receipt.utf8)
+            return (body, httpResponse(for: request, status: request.url?.path() == "/handshake" ? 200 : 202))
+        }
+    )
+    let actions = LiveWorkspaceActionClient(
+        connectionFactory: StubConnectionFactory([.success(DaemonConnection(descriptor: sampleDescriptor, client: client))])
+    )
+    _ = try await actions.adoptWorktree(AdoptWorktreeRequest(
+        requestId: requestId,
+        idempotencyKey: "adopt:verified",
+        worktreeId: "worktree_app"
+    ))
+    try expect(paths.values == ["/handshake", "/v1/worktrees/worktree_app/adopt"], "workspace mutation did not verify the daemon first")
 }
 
 await runner.checkAsync("live environment actions handshake before mutation") {
@@ -1931,7 +2172,7 @@ await runner.checkAsync("live app model maps controller status and repair state"
     try expect(await agentConnections.repairedAll == 1, "Repair All did not repair agent hosts")
 }
 
-await runner.checkAsync("live app model exposes accepted start and stop operations immediately") {
+await runner.checkAsync("live app model keeps start and stop transitions scoped until completion") {
     let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: fixtureData)
     let session = DaemonSession(
         instanceId: snapshot.daemon.instanceId,
@@ -1960,26 +2201,164 @@ await runner.checkAsync("live app model exposes accepted start and stop operatio
     await model.refresh()
     await model.startEnvironment(
         worktreeId: snapshot.repositories[0].worktrees[0].id,
+        targetId: "demo",
+        confirmedTargetId: "demo",
         serviceIds: ["organizer", "nonprofit-service"]
     )
     guard case .accepted(let start) = model.environmentActionState else {
         throw CheckError("accepted start receipt was not exposed")
     }
     try expect(start.kind == .start && start.receipt.operationId == receipt.operationId, "start receipt changed")
+    try expect(start.stage == .starting, "accepted start did not remain transitional")
+    try expect(start.worktreeId == snapshot.repositories[0].worktrees[0].id, "start transition leaked worktree identity")
+    try expect(!model.canSubmitEnvironmentAction, "accepted operation incorrectly enabled another mutation")
     let starts = await actions.starts
     try expect(starts.count == 1, "start action was not submitted once")
+    try expect(starts[0].targetId == "demo", "selected target changed")
+    try expect(starts[0].confirmedTargetId == "demo", "selected target confirmation changed")
     try expect(starts[0].serviceIds == ["organizer", "nonprofit-service"], "selected services changed")
 
     guard let environment = snapshot.environments.first else { throw CheckError("fixture environment missing") }
-    await model.stopEnvironment(environment)
-    guard case .accepted(let stop) = model.environmentActionState else {
+    let stopModel = AppModel(
+        liveController: StubLifecycleController(refreshResult: result, repairResult: result),
+        environmentActions: actions,
+        agentConnections: agentConnections,
+        pollingInterval: .seconds(60)
+    )
+    await stopModel.refresh()
+    await stopModel.stopEnvironment(environment)
+    guard case .accepted(let stop) = stopModel.environmentActionState else {
         throw CheckError("accepted stop receipt was not exposed")
     }
     try expect(stop.kind == .stop, "stop receipt kind changed")
+    try expect(stop.stage == .stopping, "accepted stop did not remain transitional")
+    try expect(stopModel.environmentTransition(forWorktreeId: environment.worktreeId) == .stopping, "stop transition was not scoped to its worktree")
+    try expect(model.environmentTransition(forWorktreeId: "foreign_worktree") == nil, "transition leaked to another worktree")
     let stops = await actions.stops
     try expect(stops.count == 1, "stop action was not submitted once")
     try expect(stops[0].0 == environment.id, "stop environment identity changed")
     try expect(stops[0].1.expectedEnvironmentRevision == environment.revision, "stop revision changed")
+}
+
+await runner.checkAsync("live app model rejects an old healthy run as start completion") {
+    let receipt = try ContractDecoder().decode(
+        MutationReceipt.self,
+        from: Data(contentsOf: fixtureURL.deletingLastPathComponent().appending(path: "mutation-receipt.json"))
+    )
+    guard var value = try JSONSerialization.jsonObject(with: fixtureData) as? [String: Any],
+          let expectedRunId = receipt.runId else {
+        throw CheckError("canonical run receipt is unavailable")
+    }
+    let oldRunId = "run_old_healthy"
+    var operations = value["operations"] as? [[String: Any]] ?? []
+    operations[0]["id"] = receipt.operationId
+    operations[0]["runId"] = oldRunId
+    value["operations"] = operations
+    var environments = value["environments"] as? [[String: Any]] ?? []
+    var environment = environments[0]
+    var services = environment["services"] as? [[String: Any]] ?? []
+    for index in services.indices {
+        var run = services[index]["run"] as? [String: Any] ?? [:]
+        run["id"] = oldRunId
+        services[index]["run"] = run
+    }
+    environment["services"] = services
+    environments[0] = environment
+    value["environments"] = environments
+    let snapshot = try ContractDecoder().decode(
+        StatusSnapshot.self,
+        from: JSONSerialization.data(withJSONObject: value)
+    )
+    let session = DaemonSession(
+        instanceId: snapshot.daemon.instanceId,
+        daemonVersion: snapshot.daemon.version,
+        endpoint: sampleDescriptor
+    )
+    let result = DaemonLifecycleResult(
+        state: .ready(session), snapshot: snapshot, doctorReport: DoctorReport(checks: [])
+    )
+    let actions = StubEnvironmentActions(receipt: receipt)
+    let model = AppModel(
+        liveController: StubLifecycleController(refreshResult: result, repairResult: result),
+        environmentActions: actions,
+        pollingInterval: .seconds(60)
+    )
+    await model.refresh()
+    await model.startEnvironment(
+        worktreeId: snapshot.repositories[0].worktrees[0].id,
+        serviceIds: ["organizer", "nonprofit-service"]
+    )
+    for _ in 0..<50 {
+        if case .failed = model.environmentActionState { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    guard case .failed(.start, let message) = model.environmentActionState else {
+        throw CheckError("old run \(oldRunId) was accepted as new run \(expectedRunId)")
+    }
+    try expect(message.contains("did not publish"), "run identity mismatch was not explained")
+}
+
+await runner.checkAsync("live app model submits managed worktree actions with transitional state") {
+    let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: fixtureData)
+    let session = DaemonSession(
+        instanceId: snapshot.daemon.instanceId,
+        daemonVersion: snapshot.daemon.version,
+        endpoint: sampleDescriptor
+    )
+    let result = DaemonLifecycleResult(
+        state: .ready(session),
+        snapshot: snapshot,
+        doctorReport: DoctorReport(checks: [])
+    )
+    let receipt = try ContractDecoder().decode(
+        MutationReceipt.self,
+        from: Data(contentsOf: fixtureURL.deletingLastPathComponent().appending(path: "mutation-receipt.json"))
+    )
+    let actions = StubWorkspaceActions(receipt: receipt)
+    let model = AppModel(
+        liveController: StubLifecycleController(refreshResult: result, repairResult: result),
+        workspaceActions: actions,
+        pollingInterval: .seconds(60)
+    )
+    await model.refresh()
+    await model.createWorktree(repositoryId: "repository_app", branch: "feature/go-service", startPoint: "origin/main")
+    guard case .accepted(.create, let createReceipt) = model.workspaceActionState else {
+        throw CheckError("accepted workspace create was not exposed")
+    }
+    try expect(createReceipt.operationId == receipt.operationId, "workspace receipt changed")
+    try expect(!model.canSubmitWorkspaceAction, "active workspace operation allowed another mutation")
+    let creates = await actions.creates
+    try expect(creates.count == 1 && creates[0].branch == "feature/go-service", "workspace create request changed")
+
+    let adoptedWorktree = snapshot.repositories[0].worktrees[0]
+    let adoptActions = StubWorkspaceActions(receipt: receipt)
+    let adoptModel = AppModel(
+        liveController: StubLifecycleController(refreshResult: result, repairResult: result),
+        workspaceActions: adoptActions,
+        pollingInterval: .seconds(60)
+    )
+    await adoptModel.refresh()
+    await adoptModel.adoptWorktree(adoptedWorktree)
+    guard case .accepted(.adopt, _) = adoptModel.workspaceActionState else {
+        throw CheckError("accepted workspace adoption was not exposed")
+    }
+    let adopts = await adoptActions.adopts
+    try expect(adopts.count == 1 && adopts[0].worktreeId == adoptedWorktree.id, "workspace adoption request changed")
+
+    let archiveActions = StubWorkspaceActions(receipt: receipt)
+    let archiveModel = AppModel(
+        liveController: StubLifecycleController(refreshResult: result, repairResult: result),
+        workspaceActions: archiveActions,
+        pollingInterval: .seconds(60)
+    )
+    await archiveModel.refresh()
+    let archivedWorktree = snapshot.repositories[0].worktrees[0]
+    await archiveModel.archiveWorktree(archivedWorktree)
+    guard case .accepted(.archive, _) = archiveModel.workspaceActionState else {
+        throw CheckError("accepted workspace archive was not exposed")
+    }
+    let archives = await archiveActions.archives
+    try expect(archives.count == 1 && archives[0].worktreeId == archivedWorktree.id, "workspace archive request changed")
 }
 
 await runner.checkAsync("app model renders the canonical fixture") {

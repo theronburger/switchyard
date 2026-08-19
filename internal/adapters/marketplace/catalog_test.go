@@ -2,9 +2,70 @@ package marketplace
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestDefaultCatalogHasCompleteIsolatedMarketplaceFamily(t *testing.T) {
+	want := []string{
+		"api", "app", "auth-service", "company-service", "donation-batch-service", "donation-service",
+		"email-service", "graph-service", "logged-time-service", "nonprofit-service", "notification-service",
+		"opportunity-service", "organizer", "payroll-service", "report-service", "slack-service",
+		"time-off-service", "wallet",
+	}
+	catalog := DefaultCatalog()
+	if got := catalog.ServiceIDs(); !slices.Equal(got, want) {
+		t.Fatalf("catalog services: got %v want %v", got, want)
+	}
+	for _, serviceID := range want {
+		definition, found := catalog.Definition(serviceID)
+		if !found {
+			t.Fatalf("service %q is unavailable", serviceID)
+		}
+		if err := validateServiceDefinition(definition); err != nil {
+			t.Fatalf("service %q is not a complete isolated definition: %v", serviceID, err)
+		}
+		for _, requirement := range definition.PortRequirements {
+			if requirement.BindHost != "127.0.0.1" {
+				t.Fatalf("service %q exposes %q outside literal loopback", serviceID, requirement.ID)
+			}
+		}
+		for _, command := range append(append([]PlannedCommand(nil), definition.PrepareCommands...), definition.RunCommand) {
+			joined := strings.Join(command.Arguments, "\x00")
+			if command.Executable != RepositoryYarnExecutable || strings.Contains(joined, "docker") ||
+				strings.Contains(joined, "start-changed") || strings.Contains(joined, "/bin/sh") {
+				t.Fatalf("service %q has an unsafe or externally-owned command: %#v", serviceID, command)
+			}
+		}
+		if definition.Kind == ServiceKindAPI && serviceID != "api" && definition.ServerlessOverlay == nil {
+			t.Fatalf("Serverless service %q has no owned port projection", serviceID)
+		}
+		if serviceID != "auth-service" && !definition.HasHTTPListener {
+			t.Fatalf("HTTP service %q is not marked as listening", serviceID)
+		}
+	}
+	auth, _ := catalog.Definition("auth-service")
+	if auth.HasHTTPListener || len(auth.PublishedRoutes) != 0 ||
+		!reflect.DeepEqual(auth.Readiness, []Probe{{Kind: ProbeKindTCP, PortRequirement: "lambda"}}) ||
+		!reflect.DeepEqual(auth.Health, []Probe{{Kind: ProbeKindTCP, PortRequirement: "lambda"}}) {
+		t.Fatalf("Auth should expose only its Lambda listener: %#v", auth)
+	}
+
+	wallet, _ := catalog.Definition("wallet")
+	if wallet.WorkspacePackage != "wallet-service" || wallet.ServerlessOverlay.Directory != "services/wallet" ||
+		!slices.Contains(wallet.RunCommand.Arguments, "local-dev") {
+		t.Fatalf("wallet exception was flattened incorrectly: %#v", wallet)
+	}
+	slack, _ := catalog.Definition("slack-service")
+	if len(slack.Infrastructure) != 2 || len(slack.PrepareCommands) != 0 {
+		t.Fatalf("Slack local dependencies are incomplete: %#v", slack)
+	}
+	report, _ := catalog.Definition("report-service")
+	if !slices.Contains(report.ServerlessOverlay.Plugins, "serverless-offline-sqs") || len(report.Queues) != 2 {
+		t.Fatalf("report queue consumer is not locally isolated: %#v", report)
+	}
+}
 
 func TestCatalogPackageExceptions(t *testing.T) {
 	if got, want := ServiceIDForPackage("wallet-service"), "wallet"; got != want {
@@ -67,6 +128,48 @@ func TestOrganizerAndNonprofitPlans(t *testing.T) {
 
 	assertOrganizerPlan(t, plans[0])
 	assertNonprofitPlan(t, plans[1])
+}
+
+func TestBrowserOriginsUseLocalhostWhileBindingsAndAPIRoutesUseLiteralLoopback(t *testing.T) {
+	catalog := DefaultCatalog()
+	organizer, found := catalog.Definition("organizer")
+	if !found {
+		t.Fatal("organizer definition is missing")
+	}
+	nonprofit, found := catalog.Definition("nonprofit-service")
+	if !found {
+		t.Fatal("nonprofit definition is missing")
+	}
+	if organizer.PortRequirements[0].BindHost != "127.0.0.1" ||
+		nonprofit.PortRequirements[0].BindHost != "127.0.0.1" {
+		t.Fatalf("service bindings escaped literal loopback: organizer=%#v nonprofit=%#v",
+			organizer.PortRequirements, nonprofit.PortRequirements)
+	}
+
+	plans, err := catalog.PlanEnvironment(
+		[]string{"organizer", "nonprofit-service"},
+		map[string]map[string]int{
+			"organizer":         {"http": 7002},
+			"nonprofit-service": {"http": 4016, "lambda": 5016, "elasticmq-rest": 9324, "elasticmq-ui": 9325},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, plan := range plans {
+		for _, variable := range plan.Environment {
+			values[variable.Name] = variable.Value
+		}
+	}
+	if got := values["DEED_ORGANIZER_URI"]; got != "http://localhost:7002" {
+		t.Fatalf("browser origin: got %q want %q", got, "http://localhost:7002")
+	}
+	for _, name := range []string{"DEED_NONPROFIT_API_URI", "DEED_NONPROFIT_SERVICE_URI"} {
+		if got := values[name]; got != "http://127.0.0.1:4016" {
+			t.Fatalf("service route %s: got %q want %q", name, got, "http://127.0.0.1:4016")
+		}
+	}
 }
 
 func TestPlanEnvironmentRequiresCompleteKnownPortAssignments(t *testing.T) {
@@ -154,7 +257,9 @@ func assertOrganizerPlan(t *testing.T, plan ServicePlan) {
 	}
 	wantEnvironment := []EnvironmentVariable{
 		{Name: "DEED_NONPROFIT_API_URI", Value: "http://127.0.0.1:4019"},
+		{Name: "DEED_NONPROFIT_SERVICE_URI", Value: "http://127.0.0.1:4019"},
 		{Name: "DEED_ORGANIZER_PORT", Value: "7005"},
+		{Name: "DEED_ORGANIZER_URI", Value: "http://localhost:7005"},
 		{Name: "PORT", Value: "7005"},
 	}
 	if !reflect.DeepEqual(plan.Environment, wantEnvironment) {
@@ -205,6 +310,8 @@ func assertNonprofitPlan(t *testing.T, plan ServicePlan) {
 	wantEnvironment := []EnvironmentVariable{
 		{Name: "DEED_NONPROFIT_API_URI", Value: "http://127.0.0.1:4019"},
 		{Name: "DEED_NONPROFIT_SERVICE_PORT", Value: "4019"},
+		{Name: "DEED_NONPROFIT_SERVICE_URI", Value: "http://127.0.0.1:4019"},
+		{Name: "DEED_ORGANIZER_URI", Value: "http://localhost:7005"},
 	}
 	if !reflect.DeepEqual(plan.Environment, wantEnvironment) {
 		t.Fatalf("nonprofit environment: got %#v, want %#v", plan.Environment, wantEnvironment)
@@ -242,6 +349,11 @@ func assertNonprofitPlan(t *testing.T, plan ServicePlan) {
 		t.Fatalf("unexpected Serverless overlay identity: %#v", overlay)
 	}
 	wantOverrides := []ServerlessOverride{
+		{
+			ConfigurationPath: []string{"custom", "serverless-offline", "host"},
+			PortRequirement:   "http",
+			Format:            OverlayValueLoopback,
+		},
 		{
 			ConfigurationPath: []string{"custom", "serverless-offline", "httpPort"},
 			PortRequirement:   "http",

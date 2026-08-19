@@ -106,6 +106,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		RunID: request.RunID,
 		State: domain.OperationPending, EnvironmentState: currentState, Phase: PhasePending,
 		Intent: cloneIntent(request.Intent),
+		Source: cloneSource(request.Source),
 	}
 	if err := coordinator.journal.Create(ctx, operation); err != nil {
 		return EnvironmentResult{}, err
@@ -120,10 +121,16 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		return EnvironmentResult{}, err
 	}
 
+	targetID := ""
+	if request.Intent != nil {
+		targetID = request.Intent.TargetID
+	}
 	result := EnvironmentResult{
 		EnvironmentID: request.EnvironmentID,
 		RunID:         request.RunID,
+		TargetID:      targetID,
 		State:         domain.EnvironmentStarting,
+		Source:        cloneSource(request.Source),
 		UpdatedAt:     coordinator.now().UTC(),
 	}
 

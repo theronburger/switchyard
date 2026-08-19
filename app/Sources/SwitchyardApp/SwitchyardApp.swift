@@ -33,13 +33,13 @@ struct SwitchyardApp: App {
             CommandCenterView(model: model)
                 .task { model.startPolling() }
         }
-        .defaultSize(width: 1320, height: 820)
+        .defaultSize(width: CommandCenterLayout.defaultWidth, height: CommandCenterLayout.defaultHeight)
         .windowResizability(.contentMinSize)
 
         MenuBarExtra {
             MenuBarSummaryView(model: model)
         } label: {
-            Label("Switchyard", systemImage: "point.3.connected.trianglepath.dotted")
+            MenuBarStatusLabel(model: model)
         }
         .menuBarExtraStyle(.window)
 

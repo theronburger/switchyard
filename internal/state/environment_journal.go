@@ -77,7 +77,9 @@ func (journal *EnvironmentJournal) Create(ctx context.Context, record environmen
 		_ = transaction.Rollback()
 		return fmt.Errorf("read public environment operation: %w", err)
 	}
-	if public.ID != record.ID || public.Kind != string(record.Kind) || public.EnvironmentID != record.EnvironmentID || public.State != string(domain.OperationPending) {
+	if public.ID != record.ID || public.Kind != string(record.Kind) || public.EnvironmentID != record.EnvironmentID ||
+		public.State != string(domain.OperationPending) ||
+		(record.Kind == environmentcontrol.OperationStart && public.RunID != "" && public.RunID != record.RunID) {
 		_ = transaction.Rollback()
 		return ErrEnvironmentOperationMismatch
 	}
@@ -495,7 +497,8 @@ WHERE operation_id = ?`, next.ID).Scan(&version, &environmentID, &runID, &kind, 
 	if err != nil {
 		return ErrEnvironmentOperationMismatch
 	}
-	if public.Kind != string(next.Kind) || public.EnvironmentID != next.EnvironmentID || public.State != string(existing.State) {
+	if public.Kind != string(next.Kind) || public.EnvironmentID != next.EnvironmentID || public.State != string(existing.State) ||
+		(next.Kind == environmentcontrol.OperationStart && public.RunID != "" && public.RunID != next.RunID) {
 		return ErrEnvironmentOperationMismatch
 	}
 	return nil
@@ -526,9 +529,9 @@ func updatePublicEnvironmentOperation(
 	}
 	result, err := transaction.ExecContext(ctx, `
 UPDATE operations
-SET state = ?, environment_revision = ?, updated_at = ?, error_json = ?
+SET state = ?, phase = ?, environment_revision = ?, updated_at = ?, error_json = ?
 WHERE id = ? AND kind = ? AND environment_id = ?`,
-		string(record.State), revision, updatedAt.Format(timeFormat), errorPayload,
+		string(record.State), string(record.Phase), revision, updatedAt.Format(timeFormat), errorPayload,
 		record.ID, string(record.Kind), record.EnvironmentID,
 	)
 	if err != nil {
@@ -543,14 +546,39 @@ WHERE id = ? AND kind = ? AND environment_id = ?`,
 
 func publicOperationError(record environmentcontrol.OperationRecord) (any, error) {
 	var publicError *contractv1.ContractError
+	if record.FailureDetail != nil {
+		failure := record.FailureDetail
+		resourceID := failure.ResourceID
+		if resourceID == "" && failure.ResourceKind == "environment" {
+			resourceID = record.EnvironmentID
+		}
+		publicError = &contractv1.ContractError{
+			Code: failure.Code, Message: failure.Message, Retryable: failure.Retryable,
+			ResourceKind: failure.ResourceKind, ResourceID: resourceID,
+			Phase: string(failure.Phase), Step: failure.Step, Diagnostic: failure.Diagnostic,
+			LogReference: failure.LogReference, NextAction: failure.NextAction, ExitCode: failure.ExitCode,
+		}
+	}
 	switch record.State {
 	case domain.OperationFailed:
-		publicError = &contractv1.ContractError{
-			Code: "ENVIRONMENT_OPERATION_FAILED", Message: "Environment operation failed.", Retryable: true,
+		if publicError != nil {
+			break
+		} else if record.Failure == environmentcontrol.OperationFailureOwnershipUnverified {
+			publicError = &contractv1.ContractError{
+				Code:      "ENVIRONMENT_PROCESS_OWNERSHIP_UNVERIFIED",
+				Message:   "Switchyard could not verify ownership of one or more service processes, so it did not signal them.",
+				Retryable: true,
+			}
+		} else {
+			publicError = &contractv1.ContractError{
+				Code: "ENVIRONMENT_OPERATION_FAILED", Message: "Environment operation failed.", Retryable: true,
+			}
 		}
 	case domain.OperationCancelled:
-		publicError = &contractv1.ContractError{
-			Code: "ENVIRONMENT_OPERATION_CANCELLED", Message: "Environment operation was cancelled.", Retryable: true,
+		if publicError == nil {
+			publicError = &contractv1.ContractError{
+				Code: "ENVIRONMENT_OPERATION_CANCELLED", Message: "Environment operation was cancelled.", Retryable: true,
+			}
 		}
 	}
 	if publicError == nil {

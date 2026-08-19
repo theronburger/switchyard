@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -18,10 +19,24 @@ type LocalManifest struct {
 	SchemaVersion int
 	Adapter       string
 	Display       DisplaySettings
+	Runtime       RuntimeSettings
+	Workspace     WorkspaceSettings
 }
 
 type DisplaySettings struct {
 	Name string
+}
+
+type RuntimeSettings struct {
+	DefaultTarget      string
+	Targets            []string
+	WarnOnStartTargets []string
+	Services           []string
+}
+
+type WorkspaceSettings struct {
+	ManagedRoot string
+	DefaultBase string
 }
 
 func ParseLocalManifest(contents []byte) (LocalManifest, error) {
@@ -35,7 +50,10 @@ func ParseLocalManifest(contents []byte) (LocalManifest, error) {
 	manifest := LocalManifest{}
 	seenTopLevel := make(map[string]struct{})
 	seenDisplay := make(map[string]struct{})
-	inDisplay := false
+	seenRuntime := make(map[string]struct{})
+	seenWorkspace := make(map[string]struct{})
+	section := ""
+	runtimeList := ""
 	for lineIndex, rawLine := range bytes.Split(contents, []byte{'\n'}) {
 		lineNumber := lineIndex + 1
 		line, err := removeYAMLComment(string(bytes.TrimSuffix(rawLine, []byte{'\r'})))
@@ -50,14 +68,37 @@ func ParseLocalManifest(contents []byte) (LocalManifest, error) {
 		}
 
 		indentation := len(line) - len(strings.TrimLeft(line, " "))
-		field, rawValue, found := strings.Cut(strings.TrimSpace(line), ":")
+		trimmed := strings.TrimSpace(line)
+		if indentation == 4 {
+			if section != "runtime" || runtimeList == "" || !strings.HasPrefix(trimmed, "- ") {
+				return LocalManifest{}, fmt.Errorf("line %d: invalid runtime list item", lineNumber)
+			}
+			value, err := parseYAMLScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+			if err != nil || !isRuntimeID(value) {
+				return LocalManifest{}, fmt.Errorf("line %d: invalid runtime identifier", lineNumber)
+			}
+			switch runtimeList {
+			case "targets":
+				manifest.Runtime.Targets = append(manifest.Runtime.Targets, value)
+			case "services":
+				manifest.Runtime.Services = append(manifest.Runtime.Services, value)
+			case "warnOnStart":
+				manifest.Runtime.WarnOnStartTargets = append(manifest.Runtime.WarnOnStartTargets, value)
+			default:
+				return LocalManifest{}, fmt.Errorf("line %d: invalid runtime list", lineNumber)
+			}
+			continue
+		}
+
+		field, rawValue, found := strings.Cut(trimmed, ":")
 		if !found || field == "" {
 			return LocalManifest{}, fmt.Errorf("line %d: expected a mapping field", lineNumber)
 		}
 		rawValue = strings.TrimSpace(rawValue)
 		switch indentation {
 		case 0:
-			inDisplay = false
+			section = ""
+			runtimeList = ""
 			if _, duplicate := seenTopLevel[field]; duplicate {
 				return LocalManifest{}, fmt.Errorf("line %d: duplicate top-level field", lineNumber)
 			}
@@ -82,28 +123,86 @@ func ParseLocalManifest(contents []byte) (LocalManifest, error) {
 				if rawValue != "" {
 					return LocalManifest{}, fmt.Errorf("line %d: display must be a mapping", lineNumber)
 				}
-				inDisplay = true
+				section = "display"
+			case "runtime":
+				if rawValue != "" {
+					return LocalManifest{}, fmt.Errorf("line %d: runtime must be a mapping", lineNumber)
+				}
+				section = "runtime"
+			case "workspace":
+				if rawValue != "" {
+					return LocalManifest{}, fmt.Errorf("line %d: workspace must be a mapping", lineNumber)
+				}
+				section = "workspace"
 			default:
 				return LocalManifest{}, fmt.Errorf("line %d: unknown top-level field", lineNumber)
 			}
 		case 2:
-			if !inDisplay {
-				return LocalManifest{}, fmt.Errorf("line %d: nested field is outside display", lineNumber)
+			runtimeList = ""
+			switch section {
+			case "display":
+				if _, duplicate := seenDisplay[field]; duplicate {
+					return LocalManifest{}, fmt.Errorf("line %d: duplicate display field", lineNumber)
+				}
+				seenDisplay[field] = struct{}{}
+				if field != "name" {
+					return LocalManifest{}, fmt.Errorf("line %d: unknown display field", lineNumber)
+				}
+				value, err := parseYAMLScalar(rawValue)
+				if err != nil {
+					return LocalManifest{}, fmt.Errorf("line %d: invalid display name", lineNumber)
+				}
+				manifest.Display.Name = value
+			case "runtime":
+				if _, duplicate := seenRuntime[field]; duplicate {
+					return LocalManifest{}, fmt.Errorf("line %d: duplicate runtime field", lineNumber)
+				}
+				seenRuntime[field] = struct{}{}
+				switch field {
+				case "defaultTarget":
+					value, err := parseYAMLScalar(rawValue)
+					if err != nil || !isRuntimeID(value) {
+						return LocalManifest{}, fmt.Errorf("line %d: invalid default target", lineNumber)
+					}
+					manifest.Runtime.DefaultTarget = value
+				case "targets", "warnOnStart", "services":
+					if rawValue != "" {
+						return LocalManifest{}, fmt.Errorf("line %d: runtime %s must be a list", lineNumber, field)
+					}
+					runtimeList = field
+					switch field {
+					case "targets":
+						manifest.Runtime.Targets = []string{}
+					case "warnOnStart":
+						manifest.Runtime.WarnOnStartTargets = []string{}
+					case "services":
+						manifest.Runtime.Services = []string{}
+					}
+				default:
+					return LocalManifest{}, fmt.Errorf("line %d: unknown runtime field", lineNumber)
+				}
+			case "workspace":
+				if _, duplicate := seenWorkspace[field]; duplicate {
+					return LocalManifest{}, fmt.Errorf("line %d: duplicate workspace field", lineNumber)
+				}
+				seenWorkspace[field] = struct{}{}
+				value, err := parseYAMLScalar(rawValue)
+				if err != nil {
+					return LocalManifest{}, fmt.Errorf("line %d: invalid workspace field", lineNumber)
+				}
+				switch field {
+				case "managedRoot":
+					manifest.Workspace.ManagedRoot = value
+				case "defaultBase":
+					manifest.Workspace.DefaultBase = value
+				default:
+					return LocalManifest{}, fmt.Errorf("line %d: unknown workspace field", lineNumber)
+				}
+			default:
+				return LocalManifest{}, fmt.Errorf("line %d: nested field is outside a mapping", lineNumber)
 			}
-			if _, duplicate := seenDisplay[field]; duplicate {
-				return LocalManifest{}, fmt.Errorf("line %d: duplicate display field", lineNumber)
-			}
-			seenDisplay[field] = struct{}{}
-			if field != "name" {
-				return LocalManifest{}, fmt.Errorf("line %d: unknown display field", lineNumber)
-			}
-			value, err := parseYAMLScalar(rawValue)
-			if err != nil {
-				return LocalManifest{}, fmt.Errorf("line %d: invalid display name", lineNumber)
-			}
-			manifest.Display.Name = value
 		default:
-			return LocalManifest{}, fmt.Errorf("line %d: indentation must be zero or two spaces", lineNumber)
+			return LocalManifest{}, fmt.Errorf("line %d: indentation must be zero, two, or four spaces", lineNumber)
 		}
 	}
 
@@ -116,7 +215,74 @@ func ParseLocalManifest(contents []byte) (LocalManifest, error) {
 	if manifest.Display.Name != "" && !isDisplayName(manifest.Display.Name) {
 		return LocalManifest{}, fmt.Errorf("local manifest display name is invalid")
 	}
+	if err := validateRuntimeSettings(manifest.Runtime); err != nil {
+		return LocalManifest{}, err
+	}
+	if err := validateWorkspaceSettings(manifest.Workspace); err != nil {
+		return LocalManifest{}, err
+	}
 	return manifest, nil
+}
+
+func validateWorkspaceSettings(settings WorkspaceSettings) error {
+	if settings.ManagedRoot != "" && (!filepath.IsAbs(settings.ManagedRoot) ||
+		filepath.Clean(settings.ManagedRoot) != settings.ManagedRoot || settings.ManagedRoot == string(filepath.Separator)) {
+		return fmt.Errorf("local manifest managed workspace root is invalid")
+	}
+	if settings.DefaultBase != "" && (!isDisplayName(settings.DefaultBase) || len(settings.DefaultBase) > 256) {
+		return fmt.Errorf("local manifest default workspace base is invalid")
+	}
+	return nil
+}
+
+func validateRuntimeSettings(settings RuntimeSettings) error {
+	configured := settings.DefaultTarget != "" || settings.Targets != nil ||
+		settings.WarnOnStartTargets != nil || settings.Services != nil
+	if !configured {
+		return nil
+	}
+	if settings.DefaultTarget == "" || len(settings.Targets) == 0 || len(settings.Targets) > 16 ||
+		len(settings.Services) == 0 || len(settings.Services) > 32 {
+		return fmt.Errorf("local manifest runtime settings are incomplete or unbounded")
+	}
+	targets, err := uniqueRuntimeIDs(settings.Targets)
+	if err != nil {
+		return err
+	}
+	if _, found := targets[settings.DefaultTarget]; !found {
+		return fmt.Errorf("local manifest default target is not listed")
+	}
+	warnTargets, err := uniqueRuntimeIDs(settings.WarnOnStartTargets)
+	if err != nil {
+		return err
+	}
+	for target := range warnTargets {
+		if _, found := targets[target]; !found {
+			return fmt.Errorf("local manifest warn-on-start target is not listed")
+		}
+	}
+	if _, err := uniqueRuntimeIDs(settings.Services); err != nil {
+		return err
+	}
+	return nil
+}
+
+func uniqueRuntimeIDs(values []string) (map[string]struct{}, error) {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !isRuntimeID(value) {
+			return nil, fmt.Errorf("local manifest runtime identifier is invalid")
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return nil, fmt.Errorf("local manifest runtime identifier is duplicated")
+		}
+		seen[value] = struct{}{}
+	}
+	return seen, nil
+}
+
+func isRuntimeID(value string) bool {
+	return isAdapterName(value)
 }
 
 func removeYAMLComment(line string) (string, error) {

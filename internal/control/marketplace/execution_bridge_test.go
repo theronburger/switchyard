@@ -141,6 +141,9 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 	}
 	organizer := serviceLaunch(t, plan, "organizer")
 	nonprofit := serviceLaunch(t, plan, "nonprofit-service")
+	environmentShimOption := "NODE_OPTIONS=--require=" + strconv.Quote(
+		filepath.Join(registration.WorktreeRoot, marketplaceEnvironmentShim),
+	)
 	if organizer.Process.Executable != registration.NodeExecutable ||
 		!reflect.DeepEqual(organizer.Process.Arguments, []string{
 			registration.YarnCJS, "workspace", "organizer", "start",
@@ -175,9 +178,15 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		"HOME=/Users/test",
 		"PATH=/opt/switchyard/node/bin:/opt/homebrew/bin:/usr/bin:/bin",
 		"TMPDIR=/tmp/switchyard",
+		"BUILD_STAGE=workload",
 		"DEED_NONPROFIT_API_URI=http://127.0.0.1:17101",
+		"DEED_NONPROFIT_SERVICE_URI=http://127.0.0.1:17101",
 		"DEED_ORGANIZER_PORT=17401",
+		"DEED_ORGANIZER_URI=http://localhost:17401",
+		"DEPLOYMENT_ENVIRONMENT=testing",
+		"NODE_ENV=testing",
 		"PORT=17401",
+		environmentShimOption,
 	}) {
 		t.Fatalf("organizer assigned environment: %#v", organizer.Process.Environment)
 	}
@@ -185,14 +194,21 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		"HOME=/Users/test",
 		"PATH=/opt/switchyard/node/bin:/opt/homebrew/bin:/usr/bin:/bin",
 		"TMPDIR=/tmp/switchyard",
+		"BUILD_STAGE=workload",
 		"DEED_NONPROFIT_API_URI=http://127.0.0.1:17101",
 		"DEED_NONPROFIT_SERVICE_PORT=17101",
+		"DEED_NONPROFIT_SERVICE_URI=http://127.0.0.1:17101",
+		"DEED_ORGANIZER_URI=http://localhost:17401",
+		"DEPLOYMENT_ENVIRONMENT=testing",
+		"NODE_ENV=testing",
+		environmentShimOption,
 	}) {
 		t.Fatalf("nonprofit assigned environment: %#v", nonprofit.Process.Environment)
 	}
-	if !reflect.DeepEqual(preparations["organizer.prepare.0"].Environment, organizer.Process.Environment) ||
-		!reflect.DeepEqual(preparations["nonprofit-service.prepare.0"].Environment, nonprofit.Process.Environment) {
-		t.Fatalf("preparation environment is not controlled: %#v", plan.Preparations)
+	for _, preparation := range plan.Preparations {
+		if _, found := environmentValue(preparation.Environment, "NODE_OPTIONS"); found {
+			t.Fatalf("preparation referenced a projection that is materialized later: %#v", preparation)
+		}
 	}
 	if !reflect.DeepEqual(nonprofit.PortKeys, []portlease.Key{
 		{EnvironmentID: "env_one", ServiceID: "nonprofit-service", Purpose: "http"},
@@ -206,7 +222,7 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 	goal := plan.Infrastructure[0]
 	if goal.Name == "demo-elasticmq" || !strings.HasPrefix(goal.Name, "switchyard-elasticmq-") ||
 		goal.Identity.EnvironmentID != "env_one" || goal.Identity.RunID != "run_one" ||
-		goal.Identity.ServiceID != "nonprofit-service.elasticmq" ||
+		goal.Identity.ServiceID != "shared.elasticmq" ||
 		goal.Identity.InstanceID != registration.DaemonInstanceID {
 		t.Fatalf("ElasticMQ is not isolated and labelled: %#v", goal)
 	}
@@ -242,6 +258,125 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		!containsArgumentPair(create.Command.Arguments, "--publish", "127.0.0.1:17301:9324/tcp") ||
 		!containsArgumentPair(create.Command.Arguments, "--publish", "127.0.0.1:17302:9325/tcp") {
 		t.Fatalf("exact isolated create command: %#v", create)
+	}
+}
+
+func TestPlanBuilderIsolatesEveryMarketplaceServiceInOneEnvironment(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "marketplace-all")
+	registration := testRegistration("env_all", root)
+	registry := mustRegistry(t, registration)
+	builder, err := NewDefaultPlanBuilder(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := marketplaceadapter.DefaultCatalog()
+	serviceIDs := catalog.ServiceIDs()
+	leases := make([]portlease.Lease, 0)
+	nextPort := 24000
+	for _, serviceID := range serviceIDs {
+		definition, found := catalog.Definition(serviceID)
+		if !found {
+			t.Fatalf("definition %q is missing", serviceID)
+		}
+		for _, requirement := range definition.PortRequirements {
+			leases = append(leases, portlease.Lease{
+				Key:  portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: serviceID, Purpose: requirement.Purpose},
+				Host: "127.0.0.1", Port: nextPort,
+			})
+			nextPort++
+		}
+	}
+	plan, err := builder.Build(environment.PlanningRequest{
+		EnvironmentID: registration.EnvironmentID, RunID: "run_all", AssignedPorts: leases,
+		Intent: environment.PlanIntent{Adapter: marketplaceAdapterID, TargetID: "testing", ServiceIDs: serviceIDs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Services) != len(serviceIDs) || plan.Projection == nil {
+		t.Fatalf("complete plan: services=%d projection=%#v", len(plan.Services), plan.Projection)
+	}
+	goals := make(map[string]containerhost.Goal, len(plan.Infrastructure))
+	for _, goal := range plan.Infrastructure {
+		goals[goal.Identity.ServiceID] = goal
+	}
+	if len(goals) != 2 || len(goals["shared.elasticmq"].PortBindings) != 26 ||
+		len(goals["shared.dynamodb"].PortBindings) != 1 {
+		t.Fatalf("environment-scoped shared infrastructure: %#v", plan.Infrastructure)
+	}
+	if len(plan.Initializations) < 70 {
+		t.Fatalf("queue initialization catalog is unexpectedly incomplete: %d", len(plan.Initializations))
+	}
+	for _, launch := range plan.Services {
+		joinedArguments := strings.Join(launch.Process.Arguments, "\x00")
+		if strings.Contains(joinedArguments, "docker") || strings.Contains(joinedArguments, "start-changed") {
+			t.Fatalf("service %q escaped direct supervision: %#v", launch.ID, launch.Process)
+		}
+		nodeOptions, found := environmentValue(launch.Process.Environment, "NODE_OPTIONS")
+		if !found || !strings.Contains(nodeOptions, "--require="+filepath.Join(root, marketplaceEnvironmentShim)) {
+			t.Fatalf("service %q did not receive the local environment shim: %#v", launch.ID, launch.Process.Environment)
+		}
+		if launch.ID == "slack-service" || launch.ID == "donation-batch-service" {
+			want := "--require=" + filepath.Join(root, endpointShimDirectory(launch.ID), ".switchyard.endpoints.cjs")
+			if !strings.Contains(nodeOptions, want) {
+				t.Fatalf("service %q endpoint shim was not injected: %#v", launch.ID, launch.Process.Environment)
+			}
+		}
+	}
+}
+
+func TestPlanBuilderInjectsExplicitRuntimeTargetEverywhere(t *testing.T) {
+	t.Parallel()
+	registration := testRegistration("env_target", filepath.Join(t.TempDir(), "tree"))
+	builder, err := NewDefaultPlanBuilder(mustRegistry(t, registration))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := builder.Build(environment.PlanningRequest{
+		EnvironmentID: "env_target", RunID: "run_target",
+		Intent: environment.PlanIntent{
+			Adapter: marketplaceAdapterID, TargetID: "production", ServiceIDs: []string{"organizer"},
+		},
+		AssignedPorts: []portlease.Lease{{
+			Key:  portlease.Key{EnvironmentID: "env_target", ServiceID: "organizer", Purpose: "http"},
+			Host: "127.0.0.1", Port: 17401,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Projection == nil || plan.Projection.ID != marketplaceServerlessProjection {
+		t.Fatalf("every local service plan must own its environment projection: %#v", plan.Projection)
+	}
+	for _, values := range [][]string{plan.Services[0].Process.Environment, plan.Preparations[0].Environment} {
+		joined := "\n" + strings.Join(values, "\n") + "\n"
+		for _, expected := range []string{
+			"\nBUILD_STAGE=workload\n", "\nDEPLOYMENT_ENVIRONMENT=production\n", "\nNODE_ENV=production\n",
+		} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("target environment missing from %#v", values)
+			}
+		}
+	}
+}
+
+func TestAppendNodePreloadsPreservesOptionsAndQuotesPaths(t *testing.T) {
+	t.Parallel()
+	got, err := appendNodePreloads(
+		[]string{"HOME=/Users/test", "NODE_OPTIONS=--enable-source-maps"},
+		"/Users/test/tree with spaces/.switchyard.env.cjs",
+		"/Users/test/tree with spaces/service/.switchyard.endpoints.cjs",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, found := environmentValue(got, "NODE_OPTIONS")
+	want := `--enable-source-maps --require="/Users/test/tree with spaces/.switchyard.env.cjs" --require="/Users/test/tree with spaces/service/.switchyard.endpoints.cjs"`
+	if !found || options != want {
+		t.Fatalf("NODE_OPTIONS: got %q, want %q", options, want)
+	}
+	if _, err := appendNodePreloads(nil, "relative/.switchyard.env.cjs"); !errors.Is(err, ErrMarketplacePlanInvalid) {
+		t.Fatalf("relative preload path was accepted: %v", err)
 	}
 }
 
@@ -469,6 +604,7 @@ func TestPlanBuilderRejectsHostileInputsWithoutSecretOutput(t *testing.T) {
 func testRegistration(environmentID, worktreeRoot string) EnvironmentRegistration {
 	return EnvironmentRegistration{
 		EnvironmentID:      environmentID,
+		RepositoryRoot:     worktreeRoot,
 		WorktreeRoot:       worktreeRoot,
 		NodeExecutable:     "/opt/switchyard/node/bin/node",
 		YarnCJS:            filepath.Join(worktreeRoot, ".yarn", "releases", "yarn-3.2.4.cjs"),
@@ -525,4 +661,14 @@ func serviceLaunch(
 	}
 	t.Fatalf("service %q is missing from %#v", serviceID, plan.Services)
 	return environment.ServiceLaunch{}
+}
+
+func environmentValue(environmentVariables []string, name string) (string, bool) {
+	for _, variable := range environmentVariables {
+		variableName, value, found := strings.Cut(variable, "=")
+		if found && variableName == name {
+			return value, true
+		}
+	}
+	return "", false
 }

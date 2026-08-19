@@ -57,6 +57,9 @@ extension ObservedState {
         case .stopping: "Stopping"
         case .exited: "Exited"
         case .failed: "Failed"
+        case .orphaned: "Orphaned"
+        case .degraded: "Degraded"
+        case .unverifiable: "Unverifiable"
         case .unknown: "Unknown"
         }
     }
@@ -66,6 +69,7 @@ extension ObservedState {
         case .running: .green
         case .starting, .stopping: .blue
         case .exited, .failed: .red
+        case .orphaned, .degraded, .unverifiable: .orange
         case .stopped, .unknown: .gray
         }
     }
@@ -76,6 +80,8 @@ extension DesiredState {
         switch self {
         case .running: "Running"
         case .stopped: "Stopped"
+        case .failed: "Failed"
+        case .orphaned: "Orphaned"
         case .unknown: "Unknown"
         }
     }

@@ -41,6 +41,7 @@ const (
 	PhaseRemovingProjection         OperationPhase = "removing-projection"
 	PhaseReleasingPorts             OperationPhase = "releasing-ports"
 	PhaseRollingBack                OperationPhase = "rolling-back"
+	PhasePublishingResult           OperationPhase = "publishing-result"
 	PhaseComplete                   OperationPhase = "complete"
 )
 
@@ -78,6 +79,7 @@ const (
 	ServiceObservationProcessFailed       = "PROCESS_OBSERVATION_FAILED"
 	ServiceObservationOwnershipUnverified = "PROCESS_OWNERSHIP_UNVERIFIED"
 	ServiceObservationHealthFailed        = "HEALTH_OBSERVATION_FAILED"
+	OperationFailureOwnershipUnverified   = "process ownership could not be verified"
 )
 
 type ServiceObservation struct {
@@ -91,12 +93,32 @@ type ServiceObservation struct {
 
 type PreparationSpec struct {
 	ID           string
+	ServiceID    string
+	LogReference string
 	Executable   string
 	Arguments    []string
 	Environment  []string
 	Directory    string
 	RunDirectory string
 	Timeout      time.Duration
+}
+
+type OperationFailure struct {
+	Code         string
+	Message      string
+	Retryable    bool
+	ResourceKind string
+	ResourceID   string
+	Phase        OperationPhase
+	Step         string
+	Diagnostic   string
+	LogReference string
+	NextAction   string
+	ExitCode     *int
+}
+
+type OperationFailureProvider interface {
+	OperationFailure() OperationFailure
 }
 
 type ServiceLaunch struct {
@@ -111,7 +133,18 @@ type ServiceLaunch struct {
 // details; the coordinator persists only this intent and assigned leases.
 type PlanIntent struct {
 	Adapter    string
+	TargetID   string
 	ServiceIDs []string
+}
+
+// SourceSnapshot is the repository state captured immediately before an
+// environment run is accepted. It is immutable provenance for that run, not a
+// live repository observation.
+type SourceSnapshot struct {
+	Revision          string
+	HasTrackedChanges bool
+	HasUntrackedFiles bool
+	ObservedAt        time.Time
 }
 
 type PlanningRequest struct {
@@ -147,6 +180,7 @@ type StartRequest struct {
 	RunID         string
 	Ports         []portlease.Reservation
 	Intent        *PlanIntent
+	Source        *SourceSnapshot
 }
 
 type StopRequest struct {
@@ -157,11 +191,13 @@ type StopRequest struct {
 type EnvironmentResult struct {
 	EnvironmentID  string
 	RunID          string
+	TargetID       string
 	State          domain.EnvironmentState
 	Ports          []portlease.Lease
 	Projection     *ProjectionChange
 	Infrastructure []containerhost.Goal
 	Services       []ServiceResult
+	Source         *SourceSnapshot
 	UpdatedAt      time.Time
 }
 
@@ -186,8 +222,10 @@ type OperationRecord struct {
 	Phase            OperationPhase
 	Rollback         []RollbackEntry
 	Intent           *PlanIntent
+	Source           *SourceSnapshot
 	Target           *EnvironmentResult
 	Failure          string
+	FailureDetail    *OperationFailure
 }
 
 type ReconcileOutcome struct {

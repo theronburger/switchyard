@@ -36,8 +36,9 @@ type PortAssignment struct {
 type EnvironmentValueFormat string
 
 const (
-	EnvironmentValueDecimalPort EnvironmentValueFormat = "decimal-port"
-	EnvironmentValueHTTPURL     EnvironmentValueFormat = "http-url"
+	EnvironmentValueDecimalPort    EnvironmentValueFormat = "decimal-port"
+	EnvironmentValueHTTPURL        EnvironmentValueFormat = "http-url"
+	EnvironmentValueBrowserHTTPURL EnvironmentValueFormat = "browser-http-url"
 )
 
 type EnvironmentBinding struct {
@@ -91,23 +92,32 @@ type InfrastructureRequirement struct {
 	Readiness   []Probe
 }
 
+type QueueDefinition struct {
+	Name                      string
+	FIFO                      bool
+	ContentBasedDeduplication bool
+}
+
 type OverlayValueFormat string
 
 const (
 	OverlayValueIntegerPort OverlayValueFormat = "integer-port"
 	OverlayValueHTTPURL     OverlayValueFormat = "http-url"
+	OverlayValueLoopback    OverlayValueFormat = "loopback-host"
 )
 
 type ServerlessOverride struct {
 	ConfigurationPath []string
 	PortRequirement   string
 	Format            OverlayValueFormat
+	URLPath           string
 }
 
 type ServerlessOverlay struct {
 	Directory    string
 	Filename     string
 	SourceConfig string
+	Plugins      []string
 	Overrides    []ServerlessOverride
 }
 
@@ -116,6 +126,7 @@ type ServiceDefinition struct {
 	DisplayName         string
 	Kind                ServiceKind
 	WorkspacePackage    string
+	HasHTTPListener     bool
 	PortRequirements    []PortRequirement
 	PrepareCommands     []PlannedCommand
 	RunCommand          PlannedCommand
@@ -124,6 +135,7 @@ type ServiceDefinition struct {
 	Readiness           []Probe
 	Health              []Probe
 	Infrastructure      []InfrastructureRequirement
+	Queues              []QueueDefinition
 	ServerlessOverlay   *ServerlessOverlay
 }
 
@@ -139,6 +151,7 @@ type ServicePlan struct {
 	Readiness         []Probe
 	Health            []Probe
 	Infrastructure    []InfrastructureRequirement
+	Queues            []QueueDefinition
 	ServerlessOverlay *ServerlessOverlay
 }
 

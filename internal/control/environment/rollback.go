@@ -14,6 +14,7 @@ func (coordinator *Coordinator) failStart(
 	result EnvironmentResult,
 	cause error,
 ) (EnvironmentResult, error) {
+	failureDetail := safeFailureDetail(cause, operation.Phase)
 	cleanupContext, cancel := context.WithTimeout(context.Background(), coordinator.rollbackTimeout)
 	defer cancel()
 
@@ -61,6 +62,7 @@ func (coordinator *Coordinator) failStart(
 	}
 	operation.Phase = PhaseComplete
 	operation.Failure = safeFailure(cause)
+	operation.FailureDetail = &failureDetail
 	result.State = operation.EnvironmentState
 	result.UpdatedAt = coordinator.now().UTC()
 	if err := coordinator.journal.Publish(cleanupContext, operation, cloneEnvironment(result)); err != nil {
@@ -190,6 +192,8 @@ func (coordinator *Coordinator) publishStopped(
 	stopped := EnvironmentResult{
 		EnvironmentID: previous.EnvironmentID,
 		RunID:         previous.RunID,
+		TargetID:      previous.TargetID,
+		Source:        cloneSource(previous.Source),
 		State:         domain.EnvironmentStopped,
 		UpdatedAt:     coordinator.now().UTC(),
 	}
@@ -204,6 +208,7 @@ func (coordinator *Coordinator) failStop(
 	current EnvironmentResult,
 	cause error,
 ) (EnvironmentResult, error) {
+	failureDetail := safeFailureDetail(cause, operation.Phase)
 	cleanupContext, cancel := context.WithTimeout(context.Background(), coordinator.rollbackTimeout)
 	defer cancel()
 	if operation.EnvironmentState != domain.EnvironmentFailed {
@@ -217,6 +222,7 @@ func (coordinator *Coordinator) failStop(
 	}
 	operation.Phase = PhaseComplete
 	operation.Failure = safeFailure(cause)
+	operation.FailureDetail = &failureDetail
 	current.State = domain.EnvironmentFailed
 	current.UpdatedAt = coordinator.now().UTC()
 	publishError := coordinator.journal.Publish(cleanupContext, operation, cloneEnvironment(current))
@@ -227,6 +233,9 @@ func safeFailure(err error) string {
 	if err == nil {
 		return "environment operation failed"
 	}
+	if errors.Is(err, processhost.ErrOwnershipMismatch) || errors.Is(err, processhost.ErrOrphanUnverified) {
+		return OperationFailureOwnershipUnverified
+	}
 	if errors.Is(err, context.Canceled) {
 		return "environment operation was cancelled"
 	}
@@ -234,4 +243,39 @@ func safeFailure(err error) string {
 		return "environment operation timed out"
 	}
 	return "environment operation failed"
+}
+
+func safeFailureDetail(err error, phase OperationPhase) OperationFailure {
+	if phase == PhaseComplete {
+		phase = PhasePublishingResult
+	}
+	var provider OperationFailureProvider
+	if errors.As(err, &provider) {
+		failure := provider.OperationFailure()
+		failure.Phase = phase
+		return failure
+	}
+	if errors.Is(err, processhost.ErrOwnershipMismatch) || errors.Is(err, processhost.ErrOrphanUnverified) {
+		return OperationFailure{
+			Code:      "ENVIRONMENT_PROCESS_OWNERSHIP_UNVERIFIED",
+			Message:   "Switchyard could not verify ownership of one or more service processes, so it did not signal them.",
+			Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: "repair_process_ownership",
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return OperationFailure{
+			Code: "ENVIRONMENT_OPERATION_CANCELLED", Message: "Environment operation was cancelled.",
+			Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: "retry",
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return OperationFailure{
+			Code: "ENVIRONMENT_OPERATION_TIMED_OUT", Message: "Environment operation timed out.",
+			Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: "inspect_operation_diagnostics",
+		}
+	}
+	return OperationFailure{
+		Code: "ENVIRONMENT_OPERATION_FAILED", Message: "Environment operation failed.",
+		Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: "inspect_operation_diagnostics",
+	}
 }

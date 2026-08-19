@@ -11,10 +11,35 @@ const (
 	localExcludeEndMarker   = "# <<< Switchyard managed local excludes <<<"
 )
 
-var localExcludeBlock = []byte(
+var legacyLocalExcludeBlock = []byte(
 	localExcludeBeginMarker + "\n" +
 		"/.switchyard.yaml\n" +
 		"**/.switchyard.serverless.ts\n" +
+		localExcludeEndMarker + "\n",
+)
+
+var interimLocalExcludeBlock = []byte(
+	localExcludeBeginMarker + "\n" +
+		"/.switchyard.yaml\n" +
+		"**/.switchyard.serverless.ts\n" +
+		"**/.switchyard.dynamodb.cjs\n" +
+		localExcludeEndMarker + "\n",
+)
+
+var endpointLocalExcludeBlock = []byte(
+	localExcludeBeginMarker + "\n" +
+		"/.switchyard.yaml\n" +
+		"**/.switchyard.serverless.ts\n" +
+		"**/.switchyard.endpoints.cjs\n" +
+		localExcludeEndMarker + "\n",
+)
+
+var localExcludeBlock = []byte(
+	localExcludeBeginMarker + "\n" +
+		"/.switchyard.yaml\n" +
+		"/.switchyard.env.cjs\n" +
+		"**/.switchyard.serverless.ts\n" +
+		"**/.switchyard.endpoints.cjs\n" +
 		localExcludeEndMarker + "\n",
 )
 
@@ -44,6 +69,27 @@ func PlanLocalExcludeEdit(currentContents []byte) LocalExcludeEditPlan {
 			Action:                LocalExcludeUnchanged,
 			ExpectedCurrentSHA256: currentHash,
 			ProposedContents:      bytes.Clone(currentContents),
+		}
+	}
+	if beginCount == 1 && endCount == 1 && bytes.Count(currentContents, legacyLocalExcludeBlock) == 1 {
+		return LocalExcludeEditPlan{
+			Action:                LocalExcludeAppend,
+			ExpectedCurrentSHA256: currentHash,
+			ProposedContents:      bytes.Replace(bytes.Clone(currentContents), legacyLocalExcludeBlock, localExcludeBlock, 1),
+		}
+	}
+	if beginCount == 1 && endCount == 1 && bytes.Count(currentContents, interimLocalExcludeBlock) == 1 {
+		return LocalExcludeEditPlan{
+			Action:                LocalExcludeAppend,
+			ExpectedCurrentSHA256: currentHash,
+			ProposedContents:      bytes.Replace(bytes.Clone(currentContents), interimLocalExcludeBlock, localExcludeBlock, 1),
+		}
+	}
+	if beginCount == 1 && endCount == 1 && bytes.Count(currentContents, endpointLocalExcludeBlock) == 1 {
+		return LocalExcludeEditPlan{
+			Action:                LocalExcludeAppend,
+			ExpectedCurrentSHA256: currentHash,
+			ProposedContents:      bytes.Replace(bytes.Clone(currentContents), endpointLocalExcludeBlock, localExcludeBlock, 1),
 		}
 	}
 	if beginCount != 0 || endCount != 0 {

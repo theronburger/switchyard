@@ -129,6 +129,53 @@ func TestConcurrentSnapshotCommitsRemainAtomic(t *testing.T) {
 	}
 }
 
+func TestUpdateSnapshotMutatesLatestRevisionExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	committed, err := store.CommitSnapshot(ctx, validSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, err := store.UpdateSnapshot(ctx, func(snapshot *contractv1.StatusSnapshot) (bool, error) {
+		if snapshot.SnapshotRevision != committed.SnapshotRevision {
+			t.Fatalf("updater saw revision %d, want %d", snapshot.SnapshotRevision, committed.SnapshotRevision)
+		}
+		snapshot.Daemon.State = "observed"
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || updated.SnapshotRevision != committed.SnapshotRevision+1 || updated.Daemon.State != "observed" {
+		t.Fatalf("unexpected update: changed=%v snapshot=%#v", changed, updated)
+	}
+}
+
+func TestUpdateSnapshotNoOpDoesNotAdvanceRevision(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	committed, err := store.CommitSnapshot(ctx, validSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, err := store.UpdateSnapshot(ctx, func(*contractv1.StatusSnapshot) (bool, error) {
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || updated.SnapshotRevision != committed.SnapshotRevision {
+		t.Fatalf("no-op update changed state: changed=%v revision=%d", changed, updated.SnapshotRevision)
+	}
+	stored, err := store.ReadSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SnapshotRevision != committed.SnapshotRevision {
+		t.Fatalf("stored revision advanced: got %d, want %d", stored.SnapshotRevision, committed.SnapshotRevision)
+	}
+}
+
 func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "state.sqlite")
@@ -142,6 +189,7 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	}
 	request := NewOperation{
 		ID:                 "operation_01",
+		RunID:              "run_01",
 		RequestID:          "request_01",
 		IdempotencyKey:     "idempotency_01",
 		RequestFingerprint: fingerprint,
@@ -159,6 +207,9 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	if got, want := createdOperation.State, "pending"; got != want {
 		t.Fatalf("initial operation state: got %q, want %q", got, want)
 	}
+	if createdOperation.RunID != "run_01" {
+		t.Fatalf("created operation run id: got %q", createdOperation.RunID)
+	}
 	assertSnapshotOperation(t, store, 2, createdOperation.ID, "pending")
 
 	retriedOperation, created, err := store.CreateOperation(ctx, request)
@@ -168,7 +219,7 @@ func TestOperationIdempotencyAndPersistence(t *testing.T) {
 	if created {
 		t.Fatal("idempotent retry created another operation")
 	}
-	if retriedOperation.ID != createdOperation.ID {
+	if retriedOperation.ID != createdOperation.ID || retriedOperation.RunID != createdOperation.RunID {
 		t.Fatalf("retried operation: got %q, want %q", retriedOperation.ID, createdOperation.ID)
 	}
 
@@ -258,6 +309,12 @@ func TestOperationExpectedEnvironmentRevisionIsAtomicAndRetrySafe(t *testing.T) 
 	if err != nil || created || retried.ID != operation.ID {
 		t.Fatalf("idempotent retry operation=%+v created=%t err=%v", retried, created, err)
 	}
+	if _, err := store.TransitionOperation(ctx, operation.ID, "running", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionOperation(ctx, operation.ID, "succeeded", nil); err != nil {
+		t.Fatal(err)
+	}
 
 	conflictingFingerprint, err := FingerprintRequest(map[string]any{"environmentId": "environment_01", "expectedRevision": 7, "other": true})
 	if err != nil {
@@ -270,6 +327,49 @@ func TestOperationExpectedEnvironmentRevisionIsAtomicAndRetrySafe(t *testing.T) 
 	})
 	if !errors.Is(err, ErrEnvironmentRevisionConflict) || created {
 		t.Fatalf("revision conflict created=%t err=%v", created, err)
+	}
+}
+
+func TestOperationCreationSerializesEnvironmentMutations(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	if _, err := store.CommitSnapshot(ctx, validSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+
+	fingerprint, err := FingerprintRequest(map[string]string{"environmentId": "environment_01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRequest := NewOperation{
+		ID: "operation_first", RequestID: "request_first", IdempotencyKey: "idempotency_first",
+		RequestFingerprint: fingerprint, Kind: "environment.start", EnvironmentID: "environment_01",
+	}
+	first, created, err := store.CreateOperation(ctx, firstRequest)
+	if err != nil || !created {
+		t.Fatalf("first operation=%+v created=%t err=%v", first, created, err)
+	}
+	retried, created, err := store.CreateOperation(ctx, firstRequest)
+	if err != nil || created || retried.ID != first.ID {
+		t.Fatalf("idempotent retry operation=%+v created=%t err=%v", retried, created, err)
+	}
+
+	secondRequest := NewOperation{
+		ID: "operation_second", RequestID: "request_second", IdempotencyKey: "idempotency_second",
+		RequestFingerprint: fingerprint, Kind: "environment.stop", EnvironmentID: "environment_01",
+	}
+	if _, created, err := store.CreateOperation(ctx, secondRequest); !errors.Is(err, ErrEnvironmentBusy) || created {
+		t.Fatalf("concurrent operation created=%t err=%v", created, err)
+	}
+	if _, err := store.TransitionOperation(ctx, first.ID, "running", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionOperation(ctx, first.ID, "succeeded", nil); err != nil {
+		t.Fatal(err)
+	}
+	second, created, err := store.CreateOperation(ctx, secondRequest)
+	if err != nil || !created {
+		t.Fatalf("post-terminal operation=%+v created=%t err=%v", second, created, err)
 	}
 }
 

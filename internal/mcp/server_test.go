@@ -19,6 +19,49 @@ type stubServerBackend struct {
 	doctor   apiclient.DoctorReport
 	start    func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
 	stop     func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+	create   func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
+	adopt    func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
+	archive  func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+}
+
+type diagnosticServerBackend struct {
+	stubServerBackend
+	diagnostics contractv1.OperationDiagnostics
+	err         error
+}
+
+func (backend diagnosticServerBackend) OperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error) {
+	return backend.diagnostics, backend.err
+}
+
+func (b stubServerBackend) CreateWorktree(
+	ctx context.Context,
+	request contractv1.CreateWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.create == nil {
+		return contractv1.MutationReceipt{}, errors.New("create is not configured")
+	}
+	return b.create(ctx, request)
+}
+
+func (b stubServerBackend) ArchiveWorktree(
+	ctx context.Context,
+	request contractv1.ArchiveWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.archive == nil {
+		return contractv1.MutationReceipt{}, errors.New("archive is not configured")
+	}
+	return b.archive(ctx, request)
+}
+
+func (b stubServerBackend) AdoptWorktree(
+	ctx context.Context,
+	request contractv1.AdoptWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.adopt == nil {
+		return contractv1.MutationReceipt{}, errors.New("adopt is not configured")
+	}
+	return b.adopt(ctx, request)
 }
 
 const modernMetadata = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test-client","version":"1.0.0"}}`
@@ -52,13 +95,13 @@ func (b stubServerBackend) StopEnvironment(
 	return b.stop(ctx, environmentID, request)
 }
 
-func TestServerInitializesListsToolsAndReturnsScopedFooter(t *testing.T) {
+func TestServerInitializesListsToolsAndReturnsExactWorktreeContext(t *testing.T) {
 	snapshot := serverSnapshot()
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_status","arguments":{"environmentId":"env_test"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/marketplace/services/nonprofit"}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -81,23 +124,37 @@ func TestServerInitializesListsToolsAndReturnsScopedFooter(t *testing.T) {
 		} `json:"result"`
 	}
 	decodeResponse(t, responses[1], &listed)
-	if len(listed.Result.Tools) != 4 || listed.Result.Tools[0].Name != "switchyard_status" {
+	if len(listed.Result.Tools) != 10 || listed.Result.Tools[0].Name != "switchyard_context" ||
+		listed.Result.Tools[1].Name != "switchyard_environment_status" ||
+		listed.Result.Tools[2].Name != "switchyard_operation_diagnostics" ||
+		listed.Result.Tools[3].Name != "switchyard_inventory" {
 		t.Fatalf("tools: %+v", listed.Result.Tools)
+	}
+	if bytes.Contains(responses[1], []byte("switchyard_status")) {
+		t.Fatal("tools list retained the ambiguous status tool")
+	}
+	if !bytes.Contains(responses[1], []byte(`"confirmedTargetId"`)) ||
+		!bytes.Contains(responses[1], []byte(`Never infer approval`)) {
+		t.Fatal("start tool does not expose the explicit human-confirmation contract")
 	}
 
 	var called struct {
 		Result struct {
-			StructuredContent statusOutput `json:"structuredContent"`
-			IsError           bool         `json:"isError"`
+			StructuredContent worktreeContextOutput `json:"structuredContent"`
+			IsError           bool                  `json:"isError"`
 		} `json:"result"`
 	}
 	decodeResponse(t, responses[2], &called)
 	if called.Result.IsError {
-		t.Fatal("status tool returned an error")
+		t.Fatal("context tool returned an error")
 	}
-	footer := called.Result.StructuredContent.EnvironmentContext
-	if footer == nil || footer.EnvironmentID != "env_test" || footer.AttentionCount != 1 {
-		t.Fatalf("footer: %+v", footer)
+	contextView := called.Result.StructuredContent.Context
+	if contextView.Worktree.ID != "worktree_test" || len(contextView.Environments) != 1 ||
+		contextView.Environments[0].ID != "env_test" || len(contextView.Alerts) != 1 {
+		t.Fatalf("context: %+v", contextView)
+	}
+	if bytes.Contains(responses[2], []byte("env_foreign")) || bytes.Contains(responses[2], []byte("worktree_foreign")) {
+		t.Fatalf("context leaked global inventory: %s", responses[2])
 	}
 }
 
@@ -106,7 +163,7 @@ func TestServerSupportsStatelessModernDiscoveryListAndCall(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMetadata + `}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{` + modernMetadata + `}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_status","arguments":{"environmentId":"env_test"},` + modernMetadata + `}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/marketplace"},` + modernMetadata + `}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -146,22 +203,21 @@ func TestServerSupportsStatelessModernDiscoveryListAndCall(t *testing.T) {
 		} `json:"result"`
 	}
 	decodeResponse(t, responses[1], &listed)
-	if listed.Result.ResultType != "complete" || len(listed.Result.Tools) != 4 ||
+	if listed.Result.ResultType != "complete" || len(listed.Result.Tools) != 10 ||
 		listed.Result.CacheScope != "public" || listed.Result.Meta[metaServerInfo] == nil {
 		t.Fatalf("modern tools list: %+v", listed.Result)
 	}
 
 	var called struct {
 		Result struct {
-			ResultType        string         `json:"resultType"`
-			StructuredContent statusOutput   `json:"structuredContent"`
-			Meta              map[string]any `json:"_meta"`
+			ResultType        string                `json:"resultType"`
+			StructuredContent worktreeContextOutput `json:"structuredContent"`
+			Meta              map[string]any        `json:"_meta"`
 		} `json:"result"`
 	}
 	decodeResponse(t, responses[2], &called)
-	footer := called.Result.StructuredContent.EnvironmentContext
 	if called.Result.ResultType != "complete" || called.Result.Meta[metaServerInfo] == nil ||
-		footer == nil || footer.EnvironmentID != "env_test" {
+		called.Result.StructuredContent.Context.Worktree.ID != "worktree_test" {
 		t.Fatalf("modern tool call: %+v", called.Result)
 	}
 }
@@ -226,15 +282,58 @@ func TestServerNegotiatesBothLegacyProtocolVersions(t *testing.T) {
 	}
 }
 
-func TestServerGlobalStatusHasNoImplicitFooter(t *testing.T) {
+func TestServerInventoryIsExplicitlyGlobal(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_status","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_inventory","arguments":{}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: serverSnapshot()}, input)
-	if bytes.Contains(responses[1], []byte("environmentContext")) {
-		t.Fatal("global status returned an implicit environment footer")
+	var called struct {
+		Result struct {
+			StructuredContent inventoryOutput `json:"structuredContent"`
+		} `json:"result"`
+	}
+	decodeResponse(t, responses[1], &called)
+	if called.Result.StructuredContent.Inventory.SnapshotRevision != 42 ||
+		len(called.Result.StructuredContent.Inventory.Repositories) != 1 {
+		t.Fatalf("inventory: %+v", called.Result.StructuredContent.Inventory)
+	}
+}
+
+func TestServerEnvironmentStatusReturnsOnlyExactEnvironmentState(t *testing.T) {
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_environment_status","arguments":{"environmentId":"env_test"}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, stubServerBackend{snapshot: serverSnapshot()}, input)
+	var called struct {
+		Result struct {
+			StructuredContent environmentStatusOutput `json:"structuredContent"`
+			IsError           bool                    `json:"isError"`
+		} `json:"result"`
+	}
+	decodeResponse(t, responses[1], &called)
+	if called.Result.IsError || called.Result.StructuredContent.Status.Environment.ID != "env_test" ||
+		called.Result.StructuredContent.Status.Worktree.ID != "worktree_test" {
+		t.Fatalf("environment status: %+v", called.Result)
+	}
+}
+
+func TestServerContextRequiresAnAbsoluteKnownWorkspacePath(t *testing.T) {
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"relative/path"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/missing"}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, stubServerBackend{snapshot: serverSnapshot()}, input)
+	for _, contents := range responses[1:] {
+		if !bytes.Contains(contents, []byte(`"isError":true`)) ||
+			!bytes.Contains(contents, []byte(`"code":"WORKTREE_NOT_FOUND"`)) {
+			t.Fatalf("context refusal: %s", contents)
+		}
 	}
 }
 
@@ -267,12 +366,39 @@ func TestServerReturnsDoctorAsToolErrorWhenUnhealthy(t *testing.T) {
 	}
 }
 
+func TestServerReturnsOperationDiagnosticsOnlyOnExplicitToolCall(t *testing.T) {
+	diagnostics := contractv1.OperationDiagnostics{
+		SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_01",
+		EnvironmentID: "env_test", LogReference: "run_01/preparations/service/command-0",
+		Excerpts: []contractv1.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_operation_diagnostics","arguments":{"operationId":"operation_01","maxBytes":2048}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, diagnosticServerBackend{
+		stubServerBackend: stubServerBackend{snapshot: serverSnapshot()}, diagnostics: diagnostics,
+	}, input)
+	var called struct {
+		Result struct {
+			StructuredContent operationDiagnosticsOutput `json:"structuredContent"`
+			IsError           bool                       `json:"isError"`
+		} `json:"result"`
+	}
+	decodeResponse(t, responses[1], &called)
+	if called.Result.IsError || called.Result.StructuredContent.Diagnostics.OperationID != "operation_01" ||
+		called.Result.StructuredContent.Diagnostics.Excerpts[0].Content != "TS2304" {
+		t.Fatalf("operation diagnostics: %+v", called.Result)
+	}
+}
+
 func TestServerRedactsBackendErrors(t *testing.T) {
 	secret := "secret-bearer-token"
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_status","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_inventory","arguments":{}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{status: errors.New("failed with " + secret)}, input)
 	if bytes.Contains(bytes.Join(responses, nil), []byte(secret)) {
@@ -287,6 +413,7 @@ func TestServerSubmitsThinStartAndReturnsStateFooter(t *testing.T) {
 		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
 			if request.Validate() != nil || request.RequestID != "request_start" ||
 				request.IdempotencyKey != "agent:retry" || request.WorktreeID != "worktree_test" ||
+				request.TargetID != "production" || request.ConfirmedTargetID != "production" ||
 				len(request.ServiceIDs) != 2 {
 				t.Fatalf("start request: %+v", request)
 			}
@@ -299,7 +426,7 @@ func TestServerSubmitsThinStartAndReturnsStateFooter(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","serviceIds":["organizer","nonprofit-service"]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","targetId":"production","confirmedTargetId":"production","serviceIds":["organizer","nonprofit-service"]}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, backend, input)
 	var called struct {
@@ -341,6 +468,54 @@ func TestServerSubmitsStopWithoutWaiting(t *testing.T) {
 	responses := runServer(t, backend, input)
 	if !bytes.Contains(responses[1], []byte(`"operationId":"operation_stop"`)) {
 		t.Fatalf("stop result: %s", responses[1])
+	}
+}
+
+func TestServerSubmitsManagedWorkspaceActions(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
+	backend := stubServerBackend{
+		snapshot: serverSnapshot(),
+		create: func(_ context.Context, request contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.Validate() != nil || request.RepositoryID != "repository_test" ||
+				request.Branch != "feature/go-service" || request.StartPoint != "origin/main" {
+				t.Fatalf("create request: %+v", request)
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_create", AcceptedAt: acceptedAt,
+			}, nil
+		},
+		adopt: func(_ context.Context, request contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.Validate() != nil || request.WorktreeID != "worktree_test" {
+				t.Fatalf("adopt request: %+v", request)
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_adopt", AcceptedAt: acceptedAt,
+			}, nil
+		},
+		archive: func(_ context.Context, request contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.Validate() != nil || request.WorktreeID != "worktree_test" {
+				t.Fatalf("archive request: %+v", request)
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_archive", AcceptedAt: acceptedAt,
+			}, nil
+		},
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_create_worktree","arguments":{"requestId":"request_create","idempotencyKey":"agent:create","repositoryId":"repository_test","branch":"feature/go-service","startPoint":"origin/main"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_adopt_worktree","arguments":{"requestId":"request_adopt","idempotencyKey":"agent:adopt","worktreeId":"worktree_test"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"switchyard_archive_worktree","arguments":{"requestId":"request_archive","idempotencyKey":"agent:archive","worktreeId":"worktree_test"}}}`,
+	}, "\n") + "\n"
+	responses := runServer(t, backend, input)
+	if !bytes.Contains(responses[1], []byte(`"operationId":"operation_create"`)) ||
+		!bytes.Contains(responses[2], []byte(`"operationId":"operation_adopt"`)) ||
+		!bytes.Contains(responses[3], []byte(`"operationId":"operation_archive"`)) {
+		t.Fatalf("workspace results: %s / %s / %s", responses[1], responses[2], responses[3])
 	}
 }
 
@@ -426,6 +601,44 @@ func decodeResponse(t *testing.T, contents []byte, destination any) {
 	}
 }
 
+func TestActionToolErrorPreservesSafeContractDetails(t *testing.T) {
+	exitCode := 2
+	contractError := contractv1.ContractError{
+		Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.",
+		Retryable: false, ResourceKind: "service", ResourceID: "nonprofit-service",
+		Phase: "preparing-services", Step: "nonprofit-service.prepare.0",
+		Diagnostic:   "src/example.ts:4:2: TS2304: Cannot find name 'Missing'.",
+		LogReference: "run_test/preparations/nonprofit-service/command-0",
+		NextAction:   "fix_service_build", ExitCode: &exitCode,
+	}
+	result := actionToolError(&apiclient.CodedError{
+		Code: apiclient.ErrorCode(contractError.Code), Contract: &contractError,
+	})
+	output, ok := result.StructuredContent.(toolErrorOutput)
+	if !ok || !result.IsError || result.Content[0].Text != contractError.Message ||
+		output.Error.Diagnostic != contractError.Diagnostic || output.Error.ExitCode == nil ||
+		*output.Error.ExitCode != exitCode || output.Error.NextAction != "fix_service_build" {
+		t.Fatalf("MCP contract error: result=%+v output=%+v", result, output)
+	}
+}
+
+func TestRepositoryObservationSummaryMakesStalenessExplicit(t *testing.T) {
+	observedAt := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	attemptedAt := observedAt.Add(time.Minute)
+	summary := repositoryObservationSummary(&contractv1.RepositoryObservation{
+		ObservedAt: &observedAt, LastAttemptAt: attemptedAt, Stale: true,
+		ErrorCode: "REPOSITORY_WORKTREES_UNAVAILABLE",
+	})
+	for _, wanted := range []string{
+		"Repository data is stale", observedAt.Format(time.RFC3339),
+		attemptedAt.Format(time.RFC3339), "REPOSITORY_WORKTREES_UNAVAILABLE",
+	} {
+		if !strings.Contains(summary, wanted) {
+			t.Fatalf("stale observation summary %q does not contain %q", summary, wanted)
+		}
+	}
+}
+
 func serverSnapshot() contractv1.StatusSnapshot {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	return contractv1.StatusSnapshot{
@@ -438,25 +651,31 @@ func serverSnapshot() contractv1.StatusSnapshot {
 			State:      "ready",
 			StartedAt:  now.Add(-time.Hour),
 		},
-		Environments: []contractv1.Environment{{
-			ID:                "env_test",
-			Revision:          17,
-			DesiredState:      "running",
-			ObservedState:     "running",
-			Health:            "degraded",
-			URLs:              map[string]string{"organizer": "http://127.0.0.1:7005"},
-			AttentionAlertIDs: []string{"alert_test"},
+		Repositories: []contractv1.Repository{{
+			ID: "repository_test", DisplayName: "marketplace", RootPath: "/Developer/marketplace",
+			Adapter: "marketplace", Remote: "example/marketplace",
+			Worktrees: []contractv1.Worktree{
+				{ID: "worktree_test", Path: "/Developer/marketplace", Branch: "feature/test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				{ID: "worktree_foreign", Path: "/Developer/marketplace-worktrees/foreign", Branch: "feature/foreign", HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+			},
 		}},
-		Alerts: []contractv1.Alert{{
-			ID:            "alert_test",
-			EnvironmentID: "env_test",
-			Severity:      "error",
-			Code:          "SERVICE_EXITED",
-			Summary:       "Service exited.",
-			Status:        "active",
-			FirstSeenAt:   now,
-			LastSeenAt:    now,
-			Occurrences:   1,
-		}},
+		Environments: []contractv1.Environment{
+			{
+				ID: "env_test", RepositoryID: "repository_test", WorktreeID: "worktree_test", Revision: 17,
+				DesiredState: "running", ObservedState: "running", Health: "degraded",
+				Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{},
+				URLs: map[string]string{"organizer": "http://127.0.0.1:7005"}, AttentionAlertIDs: []string{"alert_test"},
+			},
+			{
+				ID: "env_foreign", RepositoryID: "repository_test", WorktreeID: "worktree_foreign", Revision: 3,
+				DesiredState: "stopped", ObservedState: "stopped", Health: "unknown",
+				Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{},
+				URLs: map[string]string{}, AttentionAlertIDs: []string{"alert_foreign"},
+			},
+		},
+		Alerts: []contractv1.Alert{
+			{ID: "alert_test", EnvironmentID: "env_test", Severity: "error", Code: "SERVICE_EXITED", Summary: "Service exited.", Status: "active", FirstSeenAt: now, LastSeenAt: now, Occurrences: 1},
+			{ID: "alert_foreign", EnvironmentID: "env_foreign", Severity: "warning", Code: "FOREIGN", Summary: "Foreign alert.", Status: "active", FirstSeenAt: now, LastSeenAt: now, Occurrences: 1},
+		},
 	}
 }
