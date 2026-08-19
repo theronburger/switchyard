@@ -1,6 +1,8 @@
 import Foundation
 
-public let requiredDaemonVersion = "0.1.0-dev"
+public let requiredDaemonVersion = Bundle.main.object(
+    forInfoDictionaryKey: "CFBundleShortVersionString"
+) as? String ?? "0.1.0-dev"
 
 public struct DaemonBinary: Sendable, Equatable {
     public let sourceURL: URL

@@ -312,7 +312,7 @@ func writeTestHandshake(t *testing.T, response http.ResponseWriter, snapshot con
 
 func decodeTestRequest(t *testing.T, request *http.Request, destination any) {
 	t.Helper()
-	defer request.Body.Close()
+	defer func() { _ = request.Body.Close() }()
 	if err := json.NewDecoder(request.Body).Decode(destination); err != nil {
 		t.Fatal(err)
 	}

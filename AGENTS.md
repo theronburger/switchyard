@@ -7,7 +7,7 @@ Read these files before implementation, in order:
 3. `docs/ARCHITECTURE.md`
 4. the task-specific document under `docs/`
 
-The parent `/Users/example/Developer/AGENTS.md` principles also apply.
+The parent `../AGENTS.md` principles also apply when this checkout lives in the development workspace.
 
 ## Invariants
 

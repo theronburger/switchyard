@@ -220,7 +220,7 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		t.Fatalf("infrastructure goals: %#v", plan.Infrastructure)
 	}
 	goal := plan.Infrastructure[0]
-	if goal.Name == "demo-elasticmq" || !strings.HasPrefix(goal.Name, "switchyard-elasticmq-") ||
+	if goal.Name == "foreign-elasticmq" || !strings.HasPrefix(goal.Name, "switchyard-elasticmq-") ||
 		goal.Identity.EnvironmentID != "env_one" || goal.Identity.RunID != "run_one" ||
 		goal.Identity.ServiceID != "shared.elasticmq" ||
 		goal.Identity.InstanceID != registration.DaemonInstanceID {
@@ -234,7 +234,7 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 	}
 	containerPlan, err := (containerhost.Planner{DockerBinary: "/opt/homebrew/bin/docker"}).Build(
 		containerhost.Inventory{Resources: []containerhost.Resource{{
-			Kind: containerhost.ResourceContainer, ID: "foreign-id", Name: "demo-elasticmq",
+			Kind: containerhost.ResourceContainer, ID: "foreign-id", Name: "foreign-elasticmq",
 			Image: "softwaremill/elasticmq", State: "running", Running: true,
 			Labels: map[string]string{"team": "marketplace"},
 		}}},
@@ -247,8 +247,8 @@ func TestPlanBuilderUsesAssignedPortsExactArgvAndIsolatedIdentity(t *testing.T) 
 		t.Fatalf("isolated infrastructure plan: %#v", containerPlan)
 	}
 	for _, action := range containerPlan.Actions {
-		if action.ResourceName == "demo-elasticmq" {
-			t.Fatalf("foreign demo-elasticmq was targeted: %#v", action)
+		if action.ResourceName == "foreign-elasticmq" {
+			t.Fatalf("foreign foreign-elasticmq was targeted: %#v", action)
 		}
 	}
 	create := containerPlan.Actions[0]

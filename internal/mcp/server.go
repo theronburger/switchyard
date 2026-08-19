@@ -922,9 +922,7 @@ func (s Server) mutationResult(
 		)
 	}
 	return callToolResult{
-		Content: []textContent{{Type: "text", Text: fmt.Sprintf(
-			"%s", message,
-		)}},
+		Content:           []textContent{{Type: "text", Text: message}},
 		StructuredContent: output,
 	}
 }

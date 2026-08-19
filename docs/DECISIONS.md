@@ -4,9 +4,9 @@ Accepted decisions are durable until deliberately amended here. Open decisions a
 
 ## Accepted
 
-### D-001: Personal private project
+### D-001: Personal public project
 
-Switchyard lives in Theron's personal GitHub namespace as a private repository. It is unrelated to Example and Example except that it locally operates the Marketplace checkout the user already controls.
+Switchyard lives publicly in Theron's personal GitHub namespace. It is a personal project that locally operates a Marketplace checkout the user already controls.
 
 ### D-002: Marketplace-first, repository-open core
 
@@ -58,11 +58,11 @@ Use the personal `claude-personal` profile with explicit `--model fable`. The al
 
 ### D-013: Switchyard is the final name
 
-The private personal repository is `theronburger/switchyard` and the app identity is Switchyard.
+The public personal repository is `theronburger/switchyard` and the app identity is Switchyard.
 
 ### D-014: Launchd owns daemon lifetime
 
-The app owns installation, approval, upgrade, and repair UX. A user LaunchAgent keeps the daemon alive independently of the app. CLI and MCP may ask launchd to kick an already-installed daemon but do not launch the GUI or implement runtime ownership.
+The app owns installation, approval, upgrade, and repair UX. A user LaunchAgent keeps the daemon alive independently of the app and declares the main app bundle through `AssociatedBundleIdentifiers` so macOS can attribute the Background Item. A generated-plist change reloads only Switchyard's job with bootout/bootstrap; a helper-only update uses the scoped kickstart path. CLI and MCP may ask launchd to kick an already-installed daemon but do not launch the GUI or implement runtime ownership.
 
 ### D-015: Authenticated loopback HTTP is the v1 transport
 
@@ -78,7 +78,7 @@ Core IDs are opaque. Adapter names such as ticket or branch names are display fi
 
 ### D-017: Initial integration scope
 
-The app configures and validates both Codex and Claude MCP connections through inspectable read-modify-write plans. The first milestone discovers and adopts existing worktrees. Worktree create/remove and union materialization follow the runtime-control milestone.
+The app configures and validates both Codex and Claude MCP connections through each host's exact CLI, with owner-controlled inspection and guarded rollback around failed mutations. The first milestone discovers and adopts existing worktrees. Worktree create/remove and union materialization follow the runtime-control milestone.
 
 ### D-018: Mutable infrastructure is isolated
 
@@ -102,8 +102,10 @@ An atomic snapshot timestamp does not imply that every external subsection was f
 
 Every accepted environment start captures the exact Git revision and working-tree dirty state before persistence. The operation, receipt, and resulting service runs share one immutable run ID; service runs also carry that source snapshot. Clients declare a start complete only when the exact operation succeeds and the environment publishes the accepted run ID.
 
+### D-023: Self-signed universal distribution
+
+The first public release uses a universal Homebrew Cask and signed Sparkle updates. The stable self-signed publisher identity is `Theron Burger Apps Release`; Switchyard has a distinct Ed25519 Sparkle key. Because no Apple Developer identity exists, the frontend alone carries the library-validation exception needed to load Sparkle, and the explicit installation flow removes quarantine only from `/Applications/Switchyard.app` after Homebrew installation. Release assets include checksums, a CycloneDX SBOM, and GitHub provenance attestations.
+
 ## Open
 
-### O-003: App identity and installation
-
-Choose `~/Applications` versus `/Applications`, Developer ID signing/notarization, and the final packaging flow. The bundle identifier is `com.theronburger.switchyard`.
+There are no open release-blocking identity or installation decisions. The bundle identifier is `com.theronburger.switchyard`.

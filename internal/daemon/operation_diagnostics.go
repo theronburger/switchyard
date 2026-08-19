@@ -108,7 +108,7 @@ func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv1.Oper
 	if err != nil {
 		return contractv1.OperationLogExcerpt{}, false
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	stat, statOK := infoSyscall(info)
 	if err != nil || !info.Mode().IsRegular() || !statOK || stat.Nlink != 1 || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {

@@ -115,6 +115,7 @@ public final class AppModel {
     @ObservationIgnored private var environmentActionMonitor: Task<Void, Never>?
     @ObservationIgnored private var workspaceActionMonitor: Task<Void, Never>?
     @ObservationIgnored private var isRefreshing = false
+    @ObservationIgnored private var routedInitialConnectionSetup = false
 
     public var dataSourceDescription: String {
         fixtureProvider?.sourceDescription ?? "live daemon"
@@ -169,7 +170,7 @@ public final class AppModel {
 
     public var canRepairAllConnections: Bool {
         guard repairingAgentHosts.isEmpty, lifecycleState != .repairing else { return false }
-        return lifecycleState.canRepair || agentConnectionReport?.statuses.contains(where: { $0.state.canRepair }) == true
+        return lifecycleState.canRepair || agentConnectionReport?.statuses.contains(where: \.canRepair) == true
     }
 
     public init(
@@ -254,6 +255,12 @@ public final class AppModel {
         if agentConnectionReport == nil, let agentConnections {
             agentConnectionReport = await agentConnections.inspect()
         }
+        if !routedInitialConnectionSetup {
+            routedInitialConnectionSetup = true
+            if lifecycleState.canRepair || agentConnectionReport?.statuses.contains(where: \.canRepair) == true {
+                selection = .connectionDoctor
+            }
+        }
         clearMissingSelection()
     }
 
@@ -267,7 +274,9 @@ public final class AppModel {
             }
             if let agentConnections {
                 repairingAgentHosts = Set(AgentHost.allCases)
-                agentConnectionReport = await agentConnections.repairAll()
+                agentConnectionReport = await Task.detached {
+                    await agentConnections.repairAll()
+                }.value
                 repairingAgentHosts.removeAll()
             }
         } else {
@@ -286,10 +295,12 @@ public final class AppModel {
 
     public func repairAgentConnection(_ host: AgentHost) async {
         guard !repairingAgentHosts.contains(host),
-              agentConnectionReport?.status(for: host)?.state.canRepair == true,
+              agentConnectionReport?.status(for: host)?.canRepair == true,
               let agentConnections else { return }
         repairingAgentHosts.insert(host)
-        agentConnectionReport = await agentConnections.repair(host)
+        agentConnectionReport = await Task.detached {
+            await agentConnections.repair(host)
+        }.value
         repairingAgentHosts.remove(host)
     }
 

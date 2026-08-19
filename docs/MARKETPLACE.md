@@ -6,20 +6,20 @@ Marketplace is the first and initially only repository adapter. Optimize deeply 
 
 Initial defaults:
 
-- primary checkout: `/Users/example/Developer/marketplace`
-- linked worktrees root: `/Users/example/Developer/marketplace-worktrees`
+- primary checkout: `~/Developer/marketplace`
+- linked worktrees root: `~/Developer/marketplace-worktrees`
 - base branch: `origin/main`
-- remote: `example/marketplace`
+- remote: the user's existing Marketplace origin
 
 These are personal defaults, not hard-coded core assumptions.
 
 ## Existing prototype
 
-`marketplace/scripts/start-changed.sh` is executable documentation for the desired behavior:
+The existing repository start script is executable documentation for the desired behavior:
 
 - Turbo dry-run graph for affected services;
 - manual service/frontend overrides;
-- `DEED_*_PORT` lookup from `.env`;
+- repository port-default lookup from `.env`;
 - local URI overrides and remote development fallbacks;
 - generated `.env.development.local` projection;
 - ElasticMQ queue discovery from Compose and Serverless resources;
@@ -27,19 +27,6 @@ These are personal defaults, not hard-coded core assumptions.
 - tmux presentation and shell-trap cleanup.
 
 Switchyard may study or reproduce this logic independently. It must not edit, replace, wrap, or require the script. Colleagues remain unaffected.
-
-## Current local evidence
-
-At discovery time:
-
-- ten Marketplace worktrees occupied roughly 15.8 GB;
-- one worktree occupied 5.2 GB, primarily `node_modules`, `app`, and `organizer` artifacts;
-- organizer plus nonprofit-service appeared as roughly thirteen wrapper/runtime processes and about 2.4 GB aggregate RSS;
-- Docker occupied roughly 466 MB with one ElasticMQ container;
-- Colima was the active Docker runtime;
-- a host `/tmp` bind mount failed because the Colima VM did not share that path.
-
-These are observations, not fixed budgets. The app should roll process descendants into logical services and treat disk size as performance/reclaimability telemetry rather than an alarm by default.
 
 ## Local manifest
 
@@ -51,7 +38,7 @@ adapter: marketplace
 display:
   name: marketplace
 workspace:
-  managedRoot: /Users/example/Developer/marketplace-worktrees
+  managedRoot: ~/Developer/marketplace-worktrees
   defaultBase: origin/main
 runtime:
   defaultTarget: testing
@@ -66,25 +53,10 @@ runtime:
   services:
     - api
     - app
-    - auth-service
-    - company-service
-    - donation-batch-service
-    - donation-service
-    - email-service
-    - graph-service
-    - logged-time-service
-    - organizer
-    - nonprofit-service
-    - notification-service
-    - opportunity-service
-    - payroll-service
-    - report-service
-    - slack-service
-    - time-off-service
-    - wallet
+    - example-worker
 ```
 
-The local manifest lists the complete Marketplace runtime family. Every listed service has a validated direct launch, leased loopback ports, readiness and health probes, routing aliases, and an owned teardown path. Discovery still derives availability from the executable catalog rather than assuming that a manifest entry is safe.
+The example is intentionally synthetic. A real local manifest lists the user's selected Marketplace runtime services. Every available service has a validated direct launch, leased loopback ports, readiness and health probes, routing aliases, and an owned teardown path. Discovery still derives availability from the executable catalog rather than assuming that a manifest entry is safe.
 
 `workspace` is repository-neutral. It selects only where Switchyard-created worktrees live and the default Git base. Toolchain and hydration behavior comes from the selected adapter: Marketplace contributes `.nvmrc`, Yarn, and immutable install semantics; a future Go adapter can contribute Go/toolchain/module steps without adding Node concepts to the coordinator or manifest schema.
 
@@ -97,7 +69,7 @@ Unavailable services expose their isolation reason in the app. The info popover 
 The file is never committed. The app adds `/.switchyard.yaml` to the repository's shared local exclude at:
 
 ```text
-/Users/example/Developer/marketplace/.git/info/exclude
+~/Developer/marketplace/.git/info/exclude
 ```
 
 Linked worktrees resolve the same common exclude file. Never touch Marketplace's public `.gitignore` for Switchyard.
@@ -117,7 +89,7 @@ The adapter should use stable mechanisms already present in Marketplace:
 - `git merge-base` against the configured base;
 - `turbo run ... --dry-run=json` for affected packages;
 - `turbo ls` for known workspaces;
-- root `.env` for default `DEED_*_PORT` values;
+- root `.env` for allowlisted repository port defaults;
 - package scripts and existing Serverless commands;
 - Docker Compose and Serverless resources for local infrastructure declarations.
 

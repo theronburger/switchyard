@@ -75,7 +75,7 @@ LIMIT ?`, int64(after), limit+1)
 	if err != nil {
 		return events.Page{}, fmt.Errorf("read events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	page := events.Page{Events: make([]events.Event, 0, limit), NextCursor: after}
 	for rows.Next() {

@@ -139,7 +139,7 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		stderr = io.Discard
 	}
 	if a.Backend == nil {
-		fmt.Fprintln(stderr, "Switchyard client is not configured.")
+		_, _ = fmt.Fprintln(stderr, "Switchyard client is not configured.")
 		return ExitFailure
 	}
 
@@ -465,22 +465,22 @@ func writeReceipt(writer io.Writer, receipt contractv1.MutationReceipt, jsonOutp
 		return encodeJSON(writer, receipt)
 	}
 	if receipt.EnvironmentID == "" {
-		fmt.Fprintf(writer, "Accepted operation %s.\n", receipt.OperationID)
+		_, _ = fmt.Fprintf(writer, "Accepted operation %s.\n", receipt.OperationID)
 	} else {
-		fmt.Fprintf(writer, "Accepted operation %s for environment %s.\n", receipt.OperationID, receipt.EnvironmentID)
+		_, _ = fmt.Fprintf(writer, "Accepted operation %s for environment %s.\n", receipt.OperationID, receipt.EnvironmentID)
 	}
 	return ExitSuccess
 }
 
 func writeUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage:")
-	fmt.Fprintln(writer, "  switchyard status [worktree-id|branch|path] [--all] [--json]")
-	fmt.Fprintln(writer, "  switchyard doctor [--json]")
-	fmt.Fprintln(writer, "  switchyard start <worktree-id> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--json]")
-	fmt.Fprintln(writer, "  switchyard stop <environment-id> [--expected-revision N] [--idempotency-key KEY] [--json]")
-	fmt.Fprintln(writer, "  switchyard create-worktree <repository-id> <branch> [--base REF] [--idempotency-key KEY] [--json]")
-	fmt.Fprintln(writer, "  switchyard adopt-worktree <worktree-id> [--idempotency-key KEY] [--json]")
-	fmt.Fprintln(writer, "  switchyard archive-worktree <worktree-id> [--idempotency-key KEY] [--json]")
+	_, _ = fmt.Fprintln(writer, "usage:")
+	_, _ = fmt.Fprintln(writer, "  switchyard status [worktree-id|branch|path] [--all] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard doctor [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard start <worktree-id> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard stop <environment-id> [--expected-revision N] [--idempotency-key KEY] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard create-worktree <repository-id> <branch> [--base REF] [--idempotency-key KEY] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard adopt-worktree <worktree-id> [--idempotency-key KEY] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard archive-worktree <worktree-id> [--idempotency-key KEY] [--json]")
 }
 
 func writeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
@@ -503,12 +503,12 @@ func writeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
 			Error:         details,
 		})
 	} else {
-		fmt.Fprintf(stderr, "Switchyard request failed (%s): %s\n", details.Code, details.Message)
+		_, _ = fmt.Fprintf(stderr, "Switchyard request failed (%s): %s\n", details.Code, details.Message)
 		if details.Diagnostic != "" {
-			fmt.Fprintf(stderr, "Diagnostic: %s\n", details.Diagnostic)
+			_, _ = fmt.Fprintf(stderr, "Diagnostic: %s\n", details.Diagnostic)
 		}
 		if details.NextAction != "" {
-			fmt.Fprintf(stderr, "Next action: %s\n", details.NextAction)
+			_, _ = fmt.Fprintf(stderr, "Next action: %s\n", details.NextAction)
 		}
 	}
 	return ExitFailure
@@ -525,18 +525,18 @@ func encodeJSON(writer io.Writer, value any) int {
 
 func writeInventoryText(writer io.Writer, snapshot contractv1.StatusSnapshot, fallbackPath string) {
 	if fallbackPath != "" {
-		fmt.Fprintf(writer, "No known worktree contains %s; showing all environments.\n", fallbackPath)
+		_, _ = fmt.Fprintf(writer, "No known worktree contains %s; showing all environments.\n", fallbackPath)
 	}
-	fmt.Fprintf(writer, "Switchyard inventory revision %d\n", snapshot.SnapshotRevision)
-	fmt.Fprintf(writer, "Daemon: %s (%s)\n", snapshot.Daemon.State, snapshot.Daemon.Version)
-	fmt.Fprintf(writer, "Environments: %d\n", len(snapshot.Environments))
+	_, _ = fmt.Fprintf(writer, "Switchyard inventory revision %d\n", snapshot.SnapshotRevision)
+	_, _ = fmt.Fprintf(writer, "Daemon: %s (%s)\n", snapshot.Daemon.State, snapshot.Daemon.Version)
+	_, _ = fmt.Fprintf(writer, "Environments: %d\n", len(snapshot.Environments))
 
 	environments := append([]contractv1.Environment(nil), snapshot.Environments...)
 	sort.Slice(environments, func(left, right int) bool {
 		return environments[left].DisplayName < environments[right].DisplayName
 	})
 	for _, environment := range environments {
-		fmt.Fprintf(
+		_, _ = fmt.Fprintf(
 			writer,
 			"- %s: %s, %s, attention %d\n",
 			environment.DisplayName,
@@ -551,62 +551,62 @@ func writeWorktreeStatusText(writer io.Writer, status statusview.WorktreeContext
 	if name == "" {
 		name = filepath.Base(status.Worktree.Path)
 	}
-	fmt.Fprintln(writer, name)
-	fmt.Fprintf(writer, "Path: %s\n", status.Worktree.Path)
-	fmt.Fprintf(writer, "Repository: %s (%s)\n", status.Repository.DisplayName, status.Repository.Adapter)
+	_, _ = fmt.Fprintln(writer, name)
+	_, _ = fmt.Fprintf(writer, "Path: %s\n", status.Worktree.Path)
+	_, _ = fmt.Fprintf(writer, "Repository: %s (%s)\n", status.Repository.DisplayName, status.Repository.Adapter)
 	ownership := "discovered"
 	workspaceState := "not prepared"
 	if status.Worktree.Workspace != nil {
 		ownership = status.Worktree.Workspace.Ownership
 		workspaceState = status.Worktree.Workspace.State
 	}
-	fmt.Fprintf(writer, "Workspace: %s, %s\n", ownership, workspaceState)
-	fmt.Fprintf(writer, "Git: %s at %s\n", gitSummary(status.Worktree.Git), shortRevision(status.Worktree.HeadRevision))
+	_, _ = fmt.Fprintf(writer, "Workspace: %s, %s\n", ownership, workspaceState)
+	_, _ = fmt.Fprintf(writer, "Git: %s at %s\n", gitSummary(status.Worktree.Git), shortRevision(status.Worktree.HeadRevision))
 	if status.Worktree.Changes != nil {
-		fmt.Fprintf(writer, "Changes: branch +%d -%d; working tree +%d -%d\n",
+		_, _ = fmt.Fprintf(writer, "Changes: branch +%d -%d; working tree +%d -%d\n",
 			status.Worktree.Changes.Committed.Additions, status.Worktree.Changes.Committed.Deletions,
 			status.Worktree.Changes.Uncommitted.Additions, status.Worktree.Changes.Uncommitted.Deletions)
 	}
 	if status.Worktree.PullRequest != nil && status.Worktree.PullRequest.Status == "found" &&
 		status.Worktree.PullRequest.PullRequest != nil {
 		pullRequest := status.Worktree.PullRequest.PullRequest
-		fmt.Fprintf(writer, "Pull request: #%d %s, CI %s, review %s\n",
+		_, _ = fmt.Fprintf(writer, "Pull request: #%d %s, CI %s, review %s\n",
 			pullRequest.Number, pullRequest.State, pullRequest.Checks.State, pullRequest.ReviewDecision)
 	}
 	if len(status.Environments) == 0 {
-		fmt.Fprintln(writer, "Environment: not created")
+		_, _ = fmt.Fprintln(writer, "Environment: not created")
 	} else {
 		for _, environment := range status.Environments {
-			fmt.Fprintf(writer, "Environment: %s, %s, %s (target %s, revision %d)\n",
+			_, _ = fmt.Fprintf(writer, "Environment: %s, %s, %s (target %s, revision %d)\n",
 				environment.ID, environment.ObservedState, environment.Health, environment.TargetID, environment.Revision)
 			for _, service := range environment.Services {
 				url := environment.URLs[service.ID]
 				if url != "" {
-					fmt.Fprintf(writer, "  - %s: %s, %s, %s\n", service.DisplayName, service.ObservedState, service.Health, url)
+					_, _ = fmt.Fprintf(writer, "  - %s: %s, %s, %s\n", service.DisplayName, service.ObservedState, service.Health, url)
 				} else {
-					fmt.Fprintf(writer, "  - %s: %s, %s\n", service.DisplayName, service.ObservedState, service.Health)
+					_, _ = fmt.Fprintf(writer, "  - %s: %s, %s\n", service.DisplayName, service.ObservedState, service.Health)
 				}
 			}
 		}
 	}
 	if len(status.Operations) > 0 {
-		fmt.Fprintln(writer, "Recent operations:")
+		_, _ = fmt.Fprintln(writer, "Recent operations:")
 		limit := min(len(status.Operations), 5)
 		for _, operation := range status.Operations[:limit] {
 			phase := ""
 			if operation.Phase != "" {
 				phase = ", " + operation.Phase
 			}
-			fmt.Fprintf(writer, "  - %s: %s%s (%s)\n", operation.Kind, operation.State, phase, operation.UpdatedAt.Format(time.RFC3339))
+			_, _ = fmt.Fprintf(writer, "  - %s: %s%s (%s)\n", operation.Kind, operation.State, phase, operation.UpdatedAt.Format(time.RFC3339))
 			if operation.Error != nil {
-				fmt.Fprintf(writer, "    %s: %s\n", operation.Error.Code, operation.Error.Message)
+				_, _ = fmt.Fprintf(writer, "    %s: %s\n", operation.Error.Code, operation.Error.Message)
 				if operation.Error.Diagnostic != "" {
-					fmt.Fprintf(writer, "    Diagnostic: %s\n", operation.Error.Diagnostic)
+					_, _ = fmt.Fprintf(writer, "    Diagnostic: %s\n", operation.Error.Diagnostic)
 				}
 			}
 		}
 		if len(status.Operations) > limit {
-			fmt.Fprintf(writer, "  - … %d older operation(s)\n", len(status.Operations)-limit)
+			_, _ = fmt.Fprintf(writer, "  - … %d older operation(s)\n", len(status.Operations)-limit)
 		}
 	}
 	activeAlerts := 0
@@ -615,8 +615,8 @@ func writeWorktreeStatusText(writer io.Writer, status statusview.WorktreeContext
 			activeAlerts++
 		}
 	}
-	fmt.Fprintf(writer, "Attention: %d active\n", activeAlerts)
-	fmt.Fprintf(writer, "Switchyard: %s, snapshot %d\n", status.Daemon.State, status.SnapshotRevision)
+	_, _ = fmt.Fprintf(writer, "Attention: %d active\n", activeAlerts)
+	_, _ = fmt.Fprintf(writer, "Switchyard: %s, snapshot %d\n", status.Daemon.State, status.SnapshotRevision)
 }
 
 func writeStatusSelectionFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
@@ -635,7 +635,7 @@ func writeStatusSelectionFailure(stdout, stderr io.Writer, jsonOutput bool, err 
 			Error:         errorOutputDetails{Code: code, Message: message},
 		})
 	} else {
-		fmt.Fprintln(stderr, message)
+		_, _ = fmt.Fprintln(stderr, message)
 	}
 	return ExitFailure
 }
@@ -680,9 +680,9 @@ func writeDoctorText(writer io.Writer, report apiclient.DoctorReport) {
 			symbol = "✗"
 		}
 		if check.ErrorCode != "" {
-			fmt.Fprintf(writer, "%s %s: %s (%s)\n", symbol, check.ID, check.Summary, check.ErrorCode)
+			_, _ = fmt.Fprintf(writer, "%s %s: %s (%s)\n", symbol, check.ID, check.Summary, check.ErrorCode)
 		} else {
-			fmt.Fprintf(writer, "%s %s: %s\n", symbol, check.ID, check.Summary)
+			_, _ = fmt.Fprintf(writer, "%s %s: %s\n", symbol, check.ID, check.Summary)
 		}
 	}
 }

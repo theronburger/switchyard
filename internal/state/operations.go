@@ -258,7 +258,7 @@ WHERE operation_state IN ('pending', 'running')`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	owned := make(map[string]struct{})
 	for rows.Next() {
 		var operationID string
@@ -366,7 +366,7 @@ func listOperations(ctx context.Context, queryer operationQueryer) ([]contractv1
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	operations := make([]contractv1.Operation, 0)
 	for rows.Next() {

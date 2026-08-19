@@ -36,7 +36,7 @@ const (
 	maximumLocalConfigBytes  = 1024 * 1024
 )
 
-var errMarketplaceNodeUnavailable = errors.New("Marketplace Node runtime is unavailable")
+var errMarketplaceNodeUnavailable = errors.New("Marketplace Node runtime is unavailable") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 
 type environmentRuntime struct {
 	actions          *daemon.EnvironmentActionService
@@ -733,7 +733,7 @@ func resolveNodeExecutable(worktreeRoot string) (string, error) {
 	requested := strings.TrimPrefix(strings.TrimSpace(string(contents)), "v")
 	requestedParts, ok := numericVersionParts(requested)
 	if !ok {
-		return "", errors.New("Marketplace .nvmrc is invalid")
+		return "", errors.New("Marketplace .nvmrc is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -791,7 +791,7 @@ func installMarketplaceNode(
 	}
 	requested := strings.TrimPrefix(strings.TrimSpace(string(contents)), "v")
 	if _, ok := numericVersionParts(requested); !ok {
-		return "", errors.New("Marketplace .nvmrc is invalid")
+		return "", errors.New("Marketplace .nvmrc is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	preparation, err := marketplaceNodeInstallPreparation(
 		paths, worktreeRoot, homeDirectory, temporaryDirectory, nvmScript, requested,
@@ -856,7 +856,7 @@ func marketplaceNodeVersions(worktreeRoot string, nodeExecutable string) (string
 	}
 	requested := strings.TrimPrefix(strings.TrimSpace(string(contents)), "v")
 	if _, ok := numericVersionParts(requested); !ok {
-		return "", "", errors.New("Marketplace .nvmrc is invalid")
+		return "", "", errors.New("Marketplace .nvmrc is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	resolved := strings.TrimPrefix(filepath.Base(filepath.Dir(filepath.Dir(nodeExecutable))), "v")
 	if _, ok := numericVersionParts(resolved); !ok {
@@ -878,7 +878,7 @@ func resolveYarnCJS(worktreeRoot string) (string, error) {
 			continue
 		}
 		if yarnPath != "" {
-			return "", errors.New("Marketplace Yarn path is ambiguous")
+			return "", errors.New("Marketplace Yarn path is ambiguous") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 		}
 		yarnPath = strings.TrimSpace(strings.TrimPrefix(line, "yarnPath:"))
 		yarnPath = strings.Trim(yarnPath, "\"'")
@@ -886,12 +886,12 @@ func resolveYarnCJS(worktreeRoot string) (string, error) {
 	if scanner.Err() != nil || yarnPath == "" || filepath.IsAbs(yarnPath) ||
 		filepath.Clean(yarnPath) != yarnPath || strings.HasPrefix(yarnPath, "..") ||
 		filepath.Ext(yarnPath) != ".cjs" {
-		return "", errors.New("Marketplace Yarn path is invalid")
+		return "", errors.New("Marketplace Yarn path is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	path := filepath.Join(worktreeRoot, yarnPath)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("Marketplace Yarn runtime is unavailable")
+		return "", errors.New("Marketplace Yarn runtime is unavailable") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	return path, nil
 }
@@ -908,7 +908,7 @@ func readMarketplacePortDefaults(worktreeRoot string) (map[string]int, error) {
 		}
 		parsed, err := marketplaceadapter.DefaultCatalog().ParsePortDefaults(contents)
 		if err != nil {
-			return nil, errors.New("Marketplace local port defaults are invalid")
+			return nil, errors.New("Marketplace local port defaults are invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 		}
 		for _, portDefault := range parsed {
 			defaults[portDefault.EnvironmentVariable] = portDefault.Port

@@ -392,7 +392,7 @@ LIMIT ?`, afterEnvironmentID, limit+1)
 	if err != nil {
 		return CurrentEnvironmentPage{}, fmt.Errorf("list current environment results: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	page := CurrentEnvironmentPage{
 		Results:           make([]environmentcontrol.EnvironmentResult, 0, limit),
 		NextEnvironmentID: afterEnvironmentID,
@@ -433,7 +433,7 @@ ORDER BY created_at ASC, operation_id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("read incomplete environment operations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	records := make([]environmentcontrol.OperationRecord, 0)
 	for rows.Next() {
 		var version int

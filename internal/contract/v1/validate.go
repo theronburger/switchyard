@@ -549,7 +549,7 @@ func (request StartEnvironmentRequest) Validate() error {
 	if request.TargetID != "" && request.ConfirmedTargetID != "" && request.TargetID != request.ConfirmedTargetID {
 		return fmt.Errorf("confirmed target id does not match target id")
 	}
-	if request.ServiceIDs == nil || len(request.ServiceIDs) == 0 ||
+	if len(request.ServiceIDs) == 0 ||
 		len(request.ServiceIDs) > maximumRequestedServices {
 		return fmt.Errorf("service ids must be a non-empty bounded JSON array")
 	}

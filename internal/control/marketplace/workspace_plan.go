@@ -188,7 +188,7 @@ func hashBoundedRegularFile(path string, maximumBytes int64) ([sha256.Size]byte,
 	if err != nil {
 		return empty, ErrMarketplaceWorkspaceInvalid
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	digest := sha256.New()
 	written, err := io.CopyN(digest, file, maximumBytes+1)
 	if err != nil && !errors.Is(err, io.EOF) || written != info.Size() {

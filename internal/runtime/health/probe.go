@@ -185,7 +185,7 @@ func (prober *Prober) checkHTTP(ctx context.Context, spec ProbeSpec) (int, error
 	if err != nil {
 		return 0, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	return response.StatusCode, nil
 }
 

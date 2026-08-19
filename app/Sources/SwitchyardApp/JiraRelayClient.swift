@@ -44,7 +44,11 @@ struct JiraIssueSummary: Decodable, Equatable, Sendable {
               !summary.isEmpty, summary.count <= 2_000,
               !status.isEmpty, status.count <= 500,
               url.scheme == "https",
-              url.host == "example.atlassian.net",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil,
+              url.host?.hasSuffix(".atlassian.net") == true,
+              url.host != ".atlassian.net",
               url.path == "/browse/\(key)",
               url.query == nil,
               url.fragment == nil else {

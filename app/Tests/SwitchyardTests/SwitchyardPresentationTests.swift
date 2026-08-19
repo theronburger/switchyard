@@ -105,16 +105,15 @@ struct SwitchyardPresentationTests {
 
     @Test
     func `Jira reference is derived from Marketplace branch without inventing metadata`() throws {
-        let reference = try #require(JiraIssueReference.detect(in: "feature/DEMO-830/chapter-import"))
-        #expect(reference.key == "DEMO-830")
-        #expect(reference.url.absoluteString == "https://example.atlassian.net/browse/DEMO-830")
+        let reference = try #require(JiraIssueReference.detect(in: "feature/PROJ-830/example-change"))
+        #expect(reference.key == "PROJ-830")
         #expect(JiraIssueReference.detect(in: "maintenance/no-ticket") == nil)
-        #expect(JiraIssueReference.normalizedKey(" demo-915 ") == "DEMO-915")
-        #expect(JiraIssueReference.normalizedKey("DEMO-nope") == nil)
+        #expect(JiraIssueReference.normalizedKey(" proj-915 ") == "PROJ-915")
+        #expect(JiraIssueReference.normalizedKey("PROJ-nope") == nil)
         let overridden = try #require(
-            JiraIssueReference.resolve(branch: "feature/DEMO-830/chapter-import", override: "DEMO-826")
+            JiraIssueReference.resolve(branch: "feature/PROJ-830/example-change", override: "PROJ-826")
         )
-        #expect(overridden.key == "DEMO-826")
+        #expect(overridden.key == "PROJ-826")
         #expect(JiraIssueReference.overrideStorageKey(worktreeId: "worktree_1").contains("worktree_1"))
     }
 
@@ -141,17 +140,17 @@ struct SwitchyardPresentationTests {
                 "SWITCHYARD_NODE_BINARY": node.path,
             ]
         )
-        let command = try resolver.command(issueKey: "DEMO-830")
+        let command = try resolver.command(issueKey: "PROJ-830")
         #expect(command.executableURL == node)
-        #expect(command.arguments == [script.path, "DEMO-830"])
+        #expect(command.arguments == [script.path, "PROJ-830"])
 
-        let data = Data(#"{"schemaVersion":1,"key":"DEMO-830","summary":"Bulk actions: chapter imports in the Back Office","status":"In Development","assignee":"Theron Burger","priority":"Medium","updated":"2026-08-12T13:21:31.616Z","url":"https://example.atlassian.net/browse/DEMO-830"}"#.utf8)
+        let data = Data(#"{"schemaVersion":1,"key":"PROJ-830","summary":"Example issue using fictional data","status":"In Development","assignee":"Example User","priority":"Medium","updated":"2026-08-12T13:21:31.616Z","url":"https://example.atlassian.net/browse/PROJ-830"}"#.utf8)
         let summary = try JSONDecoder().decode(JiraIssueSummary.self, from: data)
-        try summary.validate(expectedKey: "DEMO-830")
-        #expect(summary.summary == "Bulk actions: chapter imports in the Back Office")
-        #expect(summary.assignee == "Theron Burger")
+        try summary.validate(expectedKey: "PROJ-830")
+        #expect(summary.summary == "Example issue using fictional data")
+        #expect(summary.assignee == "Example User")
         #expect(throws: JiraRelayClientError.invalidResponse) {
-            try summary.validate(expectedKey: "DEMO-831")
+            try summary.validate(expectedKey: "PROJ-831")
         }
     }
 
@@ -274,7 +273,8 @@ struct SwitchyardPresentationTests {
                 try render(
                     AnyView(CommandCenterView(model: model)),
                     size: CGSize(width: 1_180, height: 760),
-                    appearance: appearance)
+                    appearance: appearance,
+                    roundedWindow: appearance == .light)
             ))
             renders.append((
                 "overview-compact-\(appearance.name)",
@@ -369,7 +369,7 @@ struct SwitchyardPresentationTests {
         renders.append((
             "settings-dark",
             try render(
-                AnyView(SettingsView(model: model)),
+                AnyView(SettingsView(model: model, updates: AppUpdateController())),
                 size: CGSize(width: 500, height: 680),
                 appearance: .dark)
         ))
@@ -503,7 +503,8 @@ struct SwitchyardPresentationTests {
     private func render(
         _ view: AnyView,
         size: CGSize,
-        appearance: RenderAppearance
+        appearance: RenderAppearance,
+        roundedWindow: Bool = false
     ) throws -> Data {
         let root = AnyView(
             view
@@ -516,7 +517,7 @@ struct SwitchyardPresentationTests {
         hosting.frame = CGRect(origin: .zero, size: size)
         hosting.layoutSubtreeIfNeeded()
 
-        return try pngData(for: hosting, size: size)
+        return try pngData(for: hosting, size: size, roundedWindow: roundedWindow)
     }
 
     private func renderFitting(
@@ -540,7 +541,11 @@ struct SwitchyardPresentationTests {
         return try pngData(for: hosting, size: size)
     }
 
-    private func pngData(for hosting: NSHostingView<AnyView>, size: CGSize) throws -> Data {
+    private func pngData(
+        for hosting: NSHostingView<AnyView>,
+        size: CGSize,
+        roundedWindow: Bool = false
+    ) throws -> Data {
 
         let scale: CGFloat = 2
         let representation = try #require(NSBitmapImageRep(
@@ -557,12 +562,23 @@ struct SwitchyardPresentationTests {
         ))
         representation.size = size
         let context = try #require(NSGraphicsContext(bitmapImageRep: representation))
+        context.cgContext.clear(CGRect(origin: .zero, size: size))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        if roundedWindow {
+            NSBezierPath(
+                roundedRect: CGRect(origin: .zero, size: size),
+                xRadius: 13,
+                yRadius: 13
+            ).addClip()
+        }
         hosting.displayIgnoringOpacity(hosting.bounds, in: context)
+        NSGraphicsContext.restoreGraphicsState()
         return try #require(representation.representation(using: .png, properties: [:]))
     }
 }
 
-private enum RenderAppearance: CaseIterable {
+private enum RenderAppearance: CaseIterable, Equatable {
     case light
     case dark
 

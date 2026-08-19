@@ -504,7 +504,7 @@ private struct CreateWorktreeSheet: View {
                         Text(repository.displayName).tag(repository.id)
                     }
                 }
-                TextField("Branch", text: $branch, prompt: Text("feature/DEMO-000-description"))
+                TextField("Branch", text: $branch, prompt: Text("feature/PROJ-000-description"))
                     .textFieldStyle(.roundedBorder)
                 TextField("Base (optional)", text: $startPoint, prompt: Text("origin/main"))
                     .textFieldStyle(.roundedBorder)

@@ -32,7 +32,7 @@ func TestEndpointShimRewritesOnlyTheDeclaredFixedEndpoint(t *testing.T) {
 		_, _ = writer.Write([]byte("switchyard-endpoint-ok"))
 	})}
 	go func() { _ = server.Serve(listener) }()
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	port := listener.Addr().(*net.TCPAddr).Port
 	projection, err := renderEndpointShim("env_node", "service/.switchyard.endpoints.cjs", []endpointRewrite{
 		{FromHost: "0.0.0.0", FromPort: 9324, ToHost: "127.0.0.1", ToPort: port},

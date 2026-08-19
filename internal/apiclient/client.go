@@ -129,7 +129,7 @@ func (c *Client) getJSON(ctx context.Context, path string, maximumBytes int64, d
 	if err != nil {
 		return newCodedError(ErrorDaemonUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	switch response.StatusCode {
 	case http.StatusOK:

@@ -5,11 +5,10 @@ import SwitchyardKit
 
 struct JiraIssueReference: Equatable {
     let key: String
-    let url: URL
 
     static func detect(in branch: String?) -> JiraIssueReference? {
         guard let branch,
-              let expression = try? NSRegularExpression(pattern: #"(?i)\bDEMO-[0-9]+\b"#),
+              let expression = try? NSRegularExpression(pattern: #"(?i)\b[A-Z][A-Z0-9]+-[0-9]+\b"#),
               let match = expression.firstMatch(
                 in: branch,
                 range: NSRange(branch.startIndex..<branch.endIndex, in: branch)
@@ -27,7 +26,7 @@ struct JiraIssueReference: Equatable {
 
     static func normalizedKey(_ candidate: String) -> String? {
         let key = candidate.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard key.range(of: #"^DEMO-[0-9]+$"#, options: .regularExpression) != nil else { return nil }
+        guard key.range(of: #"^[A-Z][A-Z0-9]+-[1-9][0-9]*$"#, options: .regularExpression) != nil else { return nil }
         return key
     }
 
@@ -36,9 +35,8 @@ struct JiraIssueReference: Equatable {
     }
 
     private static func make(key candidate: String) -> JiraIssueReference? {
-        guard let key = normalizedKey(candidate),
-              let url = URL(string: "https://example.atlassian.net/browse/\(key)") else { return nil }
-        return JiraIssueReference(key: key, url: url)
+        guard let key = normalizedKey(candidate) else { return nil }
+        return JiraIssueReference(key: key)
     }
 }
 
@@ -70,10 +68,16 @@ struct JiraIssueView: View {
                     Text("Jira")
                         .font(.headline)
                     if let issue {
-                        Link(issue.key, destination: issue.url)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .tint(.secondary)
+                        if let loadedSummary {
+                            Link(issue.key, destination: loadedSummary.url)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .tint(.secondary)
+                        } else {
+                            Text(issue.key)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
                     } else {
                         Text("No ticket detected")
                             .font(.caption)
@@ -90,8 +94,8 @@ struct JiraIssueView: View {
                     Label("Override ticket", systemImage: "pencil")
                 }
                 .controlSize(.small)
-                if let issue {
-                    Link(destination: issue.url) {
+                if let loadedSummary {
+                    Link(destination: loadedSummary.url) {
                         Label("Open ticket", systemImage: "arrow.up.right.square")
                     }
                 }
@@ -123,10 +127,15 @@ struct JiraIssueView: View {
         JiraIssueReference.resolve(branch: worktree.branch, override: ticketOverride)
     }
 
+    private var loadedSummary: JiraIssueSummary? {
+        guard case .loaded(let summary) = state else { return nil }
+        return summary
+    }
+
     private var overrideEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                TextField("DEMO-830", text: $overrideDraft)
+                TextField("PROJ-830", text: $overrideDraft)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 180)
                     .onSubmit(saveOverride)
@@ -165,7 +174,7 @@ struct JiraIssueView: View {
             return
         }
         guard let normalized = JiraIssueReference.normalizedKey(trimmed) else {
-            overrideValidationMessage = "Enter a ticket like DEMO-830."
+            overrideValidationMessage = "Enter a ticket like PROJ-830."
             return
         }
         ticketOverride = normalized
@@ -267,14 +276,13 @@ struct JiraIssueBadge: View {
 
     var body: some View {
         if let issue = JiraIssueReference.resolve(branch: worktree.branch, override: ticketOverride) {
-            Link(issue.key, destination: issue.url)
+            Text(issue.key)
                 .font(.caption2.monospaced().weight(.semibold))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .background(.quaternary, in: Capsule())
                 .foregroundStyle(.secondary)
-                .tint(.secondary)
-                .help("Open \(issue.key) in Jira")
+                .help("Jira ticket \(issue.key)")
         }
     }
 }
@@ -297,17 +305,21 @@ struct JiraIssueCompactStatus: View {
     var body: some View {
         if let issue {
             HStack(spacing: 5) {
-                Link(issue.key, destination: issue.url)
-                    .font(.caption2.monospaced().weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .tint(.secondary)
                 if case .loaded(let summary) = state {
+                    Link(issue.key, destination: summary.url)
+                        .font(.caption2.monospaced().weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .tint(.secondary)
                     Text(summary.status)
                         .font(.system(size: 9, weight: .semibold))
                         .lineLimit(1)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .background(.quaternary, in: Capsule())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(issue.key)
+                        .font(.caption2.monospaced().weight(.medium))
                         .foregroundStyle(.secondary)
                 }
             }

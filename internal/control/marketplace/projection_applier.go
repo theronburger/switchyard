@@ -638,13 +638,13 @@ func openSafeProjectionRoot(rootPath, relativePath string) (*os.Root, error) {
 	current := ""
 	for _, segment := range strings.Split(directory, string(filepath.Separator)) {
 		if segment == "" || segment == "." || segment == ".." {
-			root.Close()
+			_ = root.Close()
 			return nil, ErrProjectionUnsafe
 		}
 		current = filepath.Join(current, segment)
 		info, err := root.Lstat(current)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			root.Close()
+			_ = root.Close()
 			return nil, ErrProjectionUnsafe
 		}
 	}
@@ -659,7 +659,7 @@ func readProjection(root *os.Root, relativePath string) (projectionSnapshot, err
 	if err != nil {
 		return projectionSnapshot{}, ErrProjectionUnsafe
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	before, err := file.Stat()
 	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm() != 0o600 ||
 		before.Size() < 0 || before.Size() > maximumProjectionBytes {
@@ -797,7 +797,7 @@ func syncProjectionDirectory(root *os.Root, relativePath string) error {
 	if err != nil {
 		return ErrProjectionUnsafe
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	if err := directory.Sync(); err != nil {
 		return ErrProjectionUnsafe
 	}

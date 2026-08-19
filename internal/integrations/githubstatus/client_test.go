@@ -62,7 +62,7 @@ func TestPullRequestReturnsFullMetadataAndChecks(t *testing.T) {
 		{result: Result{Stdout: []byte(`{
 			"number":8,"title":"Make imports deterministic","url":"https://github.com/example/marketplace/pull/8",
 			"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED",
-			"reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","headRefName":"DEMO-830/imports",
+			"reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","headRefName":"PROJ-830/imports",
 			"headRefOid":"0123456789abcdef0123456789abcdef01234567",
 			"createdAt":"2026-08-02T10:00:00Z","updatedAt":"2026-08-04T10:00:00Z",
 			"closedAt":null,"mergedAt":null
@@ -73,7 +73,7 @@ func TestPullRequestReturnsFullMetadataAndChecks(t *testing.T) {
 		]`)}},
 	}}
 	client, _ := NewCLI("/gh", runner, "github.com")
-	pullRequest, found, err := client.PullRequest(context.Background(), "example/marketplace", "DEMO-830/imports")
+	pullRequest, found, err := client.PullRequest(context.Background(), "example/marketplace", "PROJ-830/imports")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestPullRequestReturnsFullMetadataAndChecks(t *testing.T) {
 		t.Fatalf("unexpected checks: %#v", pullRequest.Checks)
 	}
 	if got := runner.invocations[0].Arguments; !reflect.DeepEqual(got, []string{
-		"pr", "list", "--repo", "example/marketplace", "--head", "DEMO-830/imports",
+		"pr", "list", "--repo", "example/marketplace", "--head", "PROJ-830/imports",
 		"--state", "all", "--limit", "10", "--json", "number,state,createdAt,updatedAt",
 	}) {
 		t.Fatalf("list arguments: %#v", got)
@@ -122,7 +122,7 @@ func TestPullRequestPreservesMetadataWhenChecksAreUnavailable(t *testing.T) {
 		{result: Result{Stdout: []byte(`{
 			"number":9,"title":"Merged work","url":"https://github.com/example/marketplace/pull/9",
 			"state":"MERGED","isDraft":false,"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN",
-			"reviewDecision":"APPROVED","baseRefName":"main","headRefName":"DEMO-9",
+			"reviewDecision":"APPROVED","baseRefName":"main","headRefName":"PROJ-9",
 			"headRefOid":"0123456789abcdef0123456789abcdef01234567",
 			"createdAt":"2026-08-01T10:00:00Z","updatedAt":"2026-08-05T10:00:00Z",
 			"closedAt":"2026-08-05T10:00:00Z","mergedAt":"2026-08-05T10:00:00Z"
@@ -130,7 +130,7 @@ func TestPullRequestPreservesMetadataWhenChecksAreUnavailable(t *testing.T) {
 		{result: Result{ExitCode: 1}},
 	}}
 	client, _ := NewCLI("/gh", runner, "github.com")
-	pullRequest, found, err := client.PullRequest(context.Background(), "example/marketplace", "DEMO-9")
+	pullRequest, found, err := client.PullRequest(context.Background(), "example/marketplace", "PROJ-9")
 	if err != nil || !found {
 		t.Fatalf("found=%v error=%v", found, err)
 	}
@@ -148,7 +148,7 @@ func TestPullRequestRejectsHostileMetadata(t *testing.T) {
 		{result: Result{Stdout: []byte(`{
 			"number":8,"title":"A pull request","url":"https://lookalike.example/example/marketplace/pull/8",
 			"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
-			"reviewDecision":"APPROVED","baseRefName":"main","headRefName":"DEMO-8",
+			"reviewDecision":"APPROVED","baseRefName":"main","headRefName":"PROJ-8",
 			"headRefOid":"0123456789abcdef0123456789abcdef01234567",
 			"createdAt":"2026-08-01T10:00:00Z","updatedAt":"2026-08-04T10:00:00Z",
 			"closedAt":null,"mergedAt":null
@@ -156,7 +156,7 @@ func TestPullRequestRejectsHostileMetadata(t *testing.T) {
 		{result: Result{Stdout: []byte(`[]`)}},
 	}}
 	client, _ := NewCLI("/gh", runner, "github.com")
-	_, _, err := client.PullRequest(context.Background(), "example/marketplace", "DEMO-8")
+	_, _, err := client.PullRequest(context.Background(), "example/marketplace", "PROJ-8")
 	if !errors.Is(err, ErrResponseInvalid) {
 		t.Fatalf("error: got %v, want %v", err, ErrResponseInvalid)
 	}

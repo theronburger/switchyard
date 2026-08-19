@@ -22,7 +22,7 @@ func TestStatusFixture(t *testing.T) {
 	if err := snapshot.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := snapshot.Environments[0].DisplayName, "DEMO-830"; got != want {
+	if got, want := snapshot.Environments[0].DisplayName, "Demo environment"; got != want {
 		t.Fatalf("display name: got %q, want %q", got, want)
 	}
 	if observation := snapshot.Repositories[0].Observation; observation == nil || observation.Stale || observation.ObservedAt == nil {

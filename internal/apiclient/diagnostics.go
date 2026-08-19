@@ -41,7 +41,7 @@ func (c *Client) OperationDiagnostics(
 	if err != nil {
 		return contractv1.OperationDiagnostics{}, newCodedError(ErrorDaemonUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if !secureResponseHeaders(response) {
 		return contractv1.OperationDiagnostics{}, newCodedError(
 			ErrorDaemonResponseInvalid, fmt.Errorf("daemon response is missing required security headers"),

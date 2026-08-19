@@ -117,7 +117,7 @@ func (c *Client) postMutation(
 	if err != nil {
 		return contractv1.MutationReceipt{}, newCodedError(ErrorDaemonUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if !secureResponseHeaders(response) {
 		return contractv1.MutationReceipt{}, newCodedError(
 			ErrorDaemonResponseInvalid,

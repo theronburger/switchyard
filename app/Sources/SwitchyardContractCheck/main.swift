@@ -456,7 +456,7 @@ runner.check("canonical fixture decodes with expected fields") {
         throw CheckError("canonical pull request observation is missing")
     }
     try expect(pullRequestObservation.status == .found, "pull request availability did not decode")
-    try expect(pullRequest.number == 9_556, "pull request number did not decode")
+    try expect(pullRequest.number == 42, "pull request number did not decode")
     try expect(pullRequest.checks.state == .pending, "pull request check state did not decode")
     try expect(pullRequest.checks.items.count == 4, "pull request checks did not decode")
     try expect(pullRequest.reviewDecision == .reviewRequired, "pull request review state did not decode")
@@ -464,7 +464,7 @@ runner.check("canonical fixture decodes with expected fields") {
     guard let environment = snapshot.environments.first else {
         throw CheckError("canonical environment is missing")
     }
-    try expect(environment.displayName == "DEMO-830", "canonical environment is missing")
+    try expect(environment.displayName == "Demo environment", "canonical environment is missing")
     try expect(environment.targetId == "testing", "environment target did not decode")
     try expect(environment.revision == 17, "environment revision did not decode")
     try expect(environment.health == .degraded, "canonical environment health did not decode")
@@ -665,7 +665,7 @@ let sampleDescriptor = EndpointDescriptor(
     pid: 4242,
     createdAt: Date(timeIntervalSince1970: 1_784_000_000)
 )
-let sampleTokenRaw = "fixture-value-not-a-secret"
+let sampleTokenRaw = "MDEyMzQ1Njc4OWFiY2RlZjAx" + "MjM0NTY3ODlhYmNkZWY" // gitleaks:allow -- deterministic test-only value
 
 runner.check("endpoint descriptor validates invariants") {
     try sampleDescriptor.validate()
@@ -975,6 +975,10 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
         dictionary["ProgramArguments"] as? [String] == [paths.installedBinaryURL.path, "daemon"],
         "LaunchAgent arguments are not exact"
     )
+    try expect(
+        dictionary["AssociatedBundleIdentifiers"] as? [String] == ["com.theronburger.switchyard"],
+        "LaunchAgent is not attributed to the main app bundle"
+    )
     try expect(dictionary["EnvironmentVariables"] == nil, "LaunchAgent must not carry environment secrets")
     let plistText = String(decoding: plan.propertyList, as: UTF8.self).lowercased()
     try expect(!plistText.contains("token") && !plistText.contains("authorization"), "LaunchAgent plist contains credentials")
@@ -997,6 +1001,58 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
             ["kickstart", "-k", "gui/501/com.theronburger.switchyard.daemon"],
         ],
         "launchctl argv changed: \(launchctlCommands)"
+    )
+}
+
+await runner.checkAsync("changed LaunchAgent plist reloads only the owned service") {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory.appending(path: "switchyard-plist-update-check-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let binaryData = Data("same-packaged-daemon".utf8)
+    let sourceURL = directory.appending(path: "bundle/SwitchyardDaemon")
+    let paths = testLaunchAgentPaths(in: directory)
+    try writeTestFile(binaryData, to: sourceURL, permissions: 0o700)
+    try writeTestFile(binaryData, to: paths.installedBinaryURL, permissions: 0o700)
+    try writeTestFile(Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>".utf8), to: paths.launchAgentURL, permissions: 0o600)
+    let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+    let commands = RecordingExactRunner { command in
+        if command.arguments == ["version"] {
+            return ExactCommandResult(
+                exitCode: 0,
+                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+            )
+        }
+        return ExactCommandResult(exitCode: 0)
+    }
+    let manager = LaunchAgentServiceManager(
+        binaryProvider: StubBinaryProvider(binary: DaemonBinary(sourceURL: sourceURL)),
+        commandRunner: commands,
+        paths: paths,
+        launchctlURL: launchctlURL,
+        userID: 501
+    )
+
+    try await manager.install()
+
+    let installedPlist = try Data(contentsOf: paths.launchAgentURL)
+    let decoded = try PropertyListSerialization.propertyList(from: installedPlist, options: [], format: nil)
+    guard let dictionary = decoded as? [String: Any] else {
+        throw CheckError("installed LaunchAgent plist is not a dictionary")
+    }
+    try expect(
+        dictionary["AssociatedBundleIdentifiers"] as? [String] == ["com.theronburger.switchyard"],
+        "installed LaunchAgent lacks app attribution"
+    )
+    let launchctlCommands = commands.commands.filter { $0.executableURL == launchctlURL }
+    try expect(
+        launchctlCommands.map(\.arguments) == [
+            ["print", "gui/501/com.theronburger.switchyard.daemon"],
+            ["bootout", "gui/501/com.theronburger.switchyard.daemon"],
+            ["bootstrap", "gui/501", paths.launchAgentURL.path],
+        ],
+        "plist update did not reload only the owned service: \(launchctlCommands)"
     )
 }
 

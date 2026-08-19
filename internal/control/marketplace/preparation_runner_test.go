@@ -160,7 +160,7 @@ func TestElasticMQReadinessRetriesEmptyReplyAtAssignedEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	endpoint := "http://" + listener.Addr().String()
 	action := make(chan string, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -253,13 +253,13 @@ func TestPreparationHelperProcess(t *testing.T) {
 	}
 	switch mode {
 	case "exact":
-		fmt.Fprint(os.Stdout, strings.Join(append(arguments, os.Getenv("PLANNED_VALUE")), "|"))
-		fmt.Fprint(os.Stdout, strings.Repeat("x", 4096))
+		_, _ = fmt.Fprint(os.Stdout, strings.Join(append(arguments, os.Getenv("PLANNED_VALUE")), "|"))
+		_, _ = fmt.Fprint(os.Stdout, strings.Repeat("x", 4096))
 	case "failure":
 		fmt.Fprintln(os.Stderr, strings.Join(arguments, "|"))
 		os.Exit(23)
 	case "typescript-failure":
-		fmt.Fprintln(os.Stdout, "nonprofit-service:build:no-dependencies: src/utils/importFoundation.ts(43,43): error TS2304: Cannot find name 'ManagedImportIndexDefinition'.")
+		_, _ = fmt.Fprintln(os.Stdout, "nonprofit-service:build:no-dependencies: src/utils/importFoundation.ts(43,43): error TS2304: Cannot find name 'ManagedImportIndexDefinition'.")
 		os.Exit(2)
 	case "parent":
 		child := exec.Command(os.Args[0], "-test.run=TestPreparationHelperProcess")

@@ -84,13 +84,13 @@
           },
           "pullRequest": {
             "status": "found",
-            "account": "example",
+            "account": "demo-user",
             "observedAt": "2026-08-14T09:59:45Z",
             "lastAttemptAt": "2026-08-14T09:59:45Z",
             "stale": false,
             "pullRequest": {
               "number": 42,
-              "title": "Demo imports use synthetic fixture data",
+              "title": "Demo: isolate local service routes",
               "url": "https://github.com/example/marketplace/pull/42",
               "state": "open",
               "draft": false,

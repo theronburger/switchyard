@@ -48,7 +48,7 @@ func (journal *WorkspaceJournal) Begin(ctx context.Context, record workspacecont
 	if err != nil {
 		return fmt.Errorf("begin workspace operation creation: %w", err)
 	}
-	defer transaction.Rollback()
+	defer func() { _ = transaction.Rollback() }()
 	var existing int
 	if err := transaction.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM workspace_operation_records
@@ -86,7 +86,7 @@ func (journal *WorkspaceJournal) Update(ctx context.Context, record workspacecon
 	if err != nil {
 		return fmt.Errorf("begin workspace operation update: %w", err)
 	}
-	defer transaction.Rollback()
+	defer func() { _ = transaction.Rollback() }()
 	current, err := readWorkspaceRecord(ctx, transaction, record.OperationID, record.WorktreeID)
 	if err != nil {
 		return err
@@ -137,7 +137,7 @@ func (journal *WorkspaceJournal) Publish(
 	if err != nil {
 		return fmt.Errorf("begin workspace publication: %w", err)
 	}
-	defer transaction.Rollback()
+	defer func() { _ = transaction.Rollback() }()
 	currentRecord, err := readWorkspaceRecord(ctx, transaction, record.OperationID, record.WorktreeID)
 	if err != nil {
 		return err
@@ -250,7 +250,7 @@ ORDER BY created_at, operation_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list incomplete workspace operations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	records := make([]workspacecontrol.OperationRecord, 0)
 	for rows.Next() {
 		var version int
@@ -287,7 +287,7 @@ ORDER BY worktree_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list current workspace results: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	results := make([]workspacecontrol.Result, 0)
 	for rows.Next() {
 		var worktreeID string

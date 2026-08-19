@@ -21,7 +21,7 @@ import (
 	"github.com/theronburger/switchyard/internal/state"
 )
 
-const version = "0.1.0-dev"
+var version = "0.1.0-dev"
 
 const applicationSupportOverride = "SWITCHYARD_APPLICATION_SUPPORT"
 
@@ -134,7 +134,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	instanceID, err := newInstanceID()
 	if err != nil {

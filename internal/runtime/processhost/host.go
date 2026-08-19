@@ -91,12 +91,12 @@ func (host *Host) Start(ctx context.Context, spec LaunchSpec) (Ownership, error)
 	if err != nil {
 		return Ownership{}, err
 	}
-	defer stdout.Close()
+	defer func() { _ = stdout.Close() }()
 	stderr, err := openAppendOnlyLog(stderrPath)
 	if err != nil {
 		return Ownership{}, err
 	}
-	defer stderr.Close()
+	defer func() { _ = stderr.Close() }()
 
 	command := exec.Command(spec.Executable, spec.Arguments...)
 	command.Dir = spec.Directory

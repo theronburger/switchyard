@@ -56,7 +56,7 @@ Plans expire when relevant state changes. The UI must make destructive scope leg
 - Repository-provided commands discovered from configuration require an inspectable plan before first execution.
 - Do not mutate tracked Marketplace files.
 - Do not write public ignore rules for a personal tool.
-- Changes to Codex or Claude MCP configuration are planned, diffed, backed up, and applied with structure-preserving read-modify-write logic.
+- Codex and Claude MCP mutations go through each host's exact CLI. Switchyard bounds and validates owner-controlled configuration before repair, serializes mutations, and uses compare-and-swap restoration that never overwrites a concurrent change.
 
 ## Privacy
 

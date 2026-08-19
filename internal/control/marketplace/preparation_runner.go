@@ -91,7 +91,7 @@ func (runner OSPreparationRunner) Run(ctx context.Context, preparation environme
 	if err != nil {
 		return ErrPreparationInvalid
 	}
-	defer stdout.Close()
+	defer func() { _ = stdout.Close() }()
 	stderrPath := filepath.Join(preparation.RunDirectory, PreparationStderrLog)
 	stderr, err := openPreparationLog(
 		stderrPath,
@@ -100,7 +100,7 @@ func (runner OSPreparationRunner) Run(ctx context.Context, preparation environme
 	if err != nil {
 		return ErrPreparationInvalid
 	}
-	defer stderr.Close()
+	defer func() { _ = stderr.Close() }()
 
 	preparationContext, cancel := context.WithTimeout(ctx, preparation.Timeout)
 	defer cancel()
@@ -322,7 +322,7 @@ func readDiagnosticTail(path string) []byte {
 	if err != nil {
 		return nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return nil

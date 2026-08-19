@@ -185,7 +185,7 @@ func githubObserverSnapshot() contractv1.StatusSnapshot {
 			ID: "repository_test", DisplayName: "marketplace", RootPath: "/repo",
 			Adapter: "marketplace", Remote: "example/marketplace",
 			Worktrees: []contractv1.Worktree{{
-				ID: "worktree_test", Path: "/repo", Branch: "DEMO-830/imports",
+				ID: "worktree_test", Path: "/repo", Branch: "PROJ-830/imports",
 				HeadRevision: "0123456789abcdef0123456789abcdef01234567", IsPrimary: true,
 			}},
 		}},
@@ -198,7 +198,7 @@ func testPullRequest(updatedAt time.Time) contractv1.PullRequest {
 	return contractv1.PullRequest{
 		Number: 830, Title: "Chapter imports", URL: "https://github.com/example/marketplace/pull/830",
 		State: "open", Mergeable: "mergeable", MergeState: "clean", ReviewDecision: "approved",
-		BaseBranch: "main", HeadBranch: "DEMO-830/imports",
+		BaseBranch: "main", HeadBranch: "PROJ-830/imports",
 		HeadRevision: "0123456789abcdef0123456789abcdef01234567",
 		CreatedAt:    updatedAt.Add(-time.Hour), UpdatedAt: updatedAt,
 		Checks: contractv1.PullRequestChecks{

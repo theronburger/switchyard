@@ -30,7 +30,6 @@ public struct LaunchAgentPaths: Sendable, Equatable {
         let logsDirectory = switchyardDirectory.appending(path: "logs")
         return LaunchAgentPaths(
             installedBinaryURL: switchyardDirectory.appending(path: "bin/switchyard"),
-            commandLinkURL: home.appending(path: ".local/bin/sy"),
             launchAgentURL: home.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
             standardOutputURL: logsDirectory.appending(path: "daemon.stdout.log"),
             standardErrorURL: logsDirectory.appending(path: "daemon.stderr.log")
@@ -65,6 +64,7 @@ public struct LaunchAgentInstallPlan: Sendable, Equatable {
 
 public enum LaunchAgentPlanBuilder {
     public static let label = "com.theronburger.switchyard.daemon"
+    public static let appBundleIdentifier = "com.theronburger.switchyard"
 
     public static func make(
         binary: DaemonBinary,
@@ -78,6 +78,7 @@ public enum LaunchAgentPlanBuilder {
             "ProgramArguments": [paths.installedBinaryURL.path, "daemon"],
             "RunAtLoad": true,
             "KeepAlive": true,
+            "AssociatedBundleIdentifiers": [appBundleIdentifier],
             "StandardOutPath": paths.standardOutputURL.path,
             "StandardErrorPath": paths.standardErrorURL.path,
         ]

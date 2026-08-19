@@ -23,7 +23,7 @@ func LoadOwnership(path string) (Ownership, error) {
 	if err != nil {
 		return Ownership{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return Ownership{}, err
@@ -133,6 +133,6 @@ func syncDirectory(directory string) error {
 	if err != nil {
 		return err
 	}
-	defer handle.Close()
+	defer func() { _ = handle.Close() }()
 	return handle.Sync()
 }

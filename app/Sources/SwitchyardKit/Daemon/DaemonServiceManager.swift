@@ -66,13 +66,21 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
 
     public func install() async throws {
         let plan = try makeInstallPlan()
-        try materialize(plan)
+        let changes = try materialize(plan)
         let printed = try commandRunner.run(ExactCommand(
             executableURL: launchctlURL,
             arguments: ["print", plan.serviceTarget]
         ))
         if printed.exitCode == 0 {
-            try runLaunchctl(["kickstart", "-k", plan.serviceTarget])
+            if changes.propertyListChanged {
+                _ = try commandRunner.run(ExactCommand(
+                    executableURL: launchctlURL,
+                    arguments: ["bootout", plan.serviceTarget]
+                ))
+                try runLaunchctl(["bootstrap", plan.userDomain, plan.paths.launchAgentURL.path])
+            } else {
+                try runLaunchctl(["kickstart", "-k", plan.serviceTarget])
+            }
         } else {
             try runLaunchctl(["bootstrap", plan.userDomain, plan.paths.launchAgentURL.path])
         }
@@ -84,7 +92,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
 
     public func repair() async throws {
         let plan = try makeInstallPlan()
-        try materialize(plan)
+        _ = try materialize(plan)
         _ = try commandRunner.run(ExactCommand(
             executableURL: launchctlURL,
             arguments: ["bootout", plan.serviceTarget]
@@ -105,7 +113,11 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         "gui/\(userID)/\(LaunchAgentPlanBuilder.label)"
     }
 
-    private func materialize(_ plan: LaunchAgentInstallPlan) throws {
+    private struct MaterializedChanges {
+        let propertyListChanged: Bool
+    }
+
+    private func materialize(_ plan: LaunchAgentInstallPlan) throws -> MaterializedChanges {
         try verifyDaemonBinary(at: plan.binary.sourceURL, expectedVersion: plan.binary.expectedVersion)
         try createPrivateDirectory(plan.paths.installedBinaryURL.deletingLastPathComponent())
         try createPrivateDirectory(plan.paths.standardOutputURL.deletingLastPathComponent())
@@ -119,9 +131,13 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         }
         try verifyDaemonBinary(at: plan.paths.installedBinaryURL, expectedVersion: plan.binary.expectedVersion)
         try installCommandLinkIfNeeded()
-        if !propertyListMatches(plan.propertyList) {
+        let propertyListChanged = !propertyListMatches(plan.propertyList)
+        if propertyListChanged {
             try writeAtomically(plan.propertyList, to: plan.paths.launchAgentURL, permissions: 0o600)
         }
+        return MaterializedChanges(
+            propertyListChanged: propertyListChanged
+        )
     }
 
     private func verifyDaemonBinary(at url: URL, expectedVersion: String) throws {

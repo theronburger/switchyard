@@ -34,7 +34,7 @@ func TestDiscoverLoadsSeparatePrivateRuntimeFiles(t *testing.T) {
 	if got := connection.Descriptor().DaemonInstanceID; got != "daemon_test" {
 		t.Fatalf("daemon instance: got %q", got)
 	}
-	encoded, err := json.Marshal(connection)
+	encoded, err := json.Marshal(connection) //nolint:staticcheck // Empty JSON is intentional: the test proves private connection fields never serialize.
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated build and release outputs"
+paths = [
+  '''(^|/)app/\.build/''',
+  '''(^|/)dist/''',
+]

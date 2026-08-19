@@ -55,7 +55,7 @@ func TestReserveRejectsWildcardListenerOnDarwin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	port := listener.Addr().(*net.TCPAddr).Port
 	if port == 65535 {
 		t.Skip("cannot construct a bounded fallback after the listener port")

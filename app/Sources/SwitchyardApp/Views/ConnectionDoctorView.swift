@@ -102,13 +102,17 @@ struct ConnectionDoctorView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(status.host.displayName)
                                 .font(.callout.weight(.medium))
+                            HStack(spacing: 8) {
+                                componentState("MCP", status.mcpState)
+                                componentState("Skill", status.skillState)
+                            }
                             Text(status.detail)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
-                        if status.state.canRepair {
+                        if status.canRepair {
                             Button(model.repairingAgentHosts.contains(status.host) ? "Repairing…" : "Repair") {
                                 Task { await model.repairAgentConnection(status.host) }
                             }
@@ -124,6 +128,10 @@ struct ConnectionDoctorView: View {
             } else {
                 ProgressView("Inspecting Codex and Claude Code…")
             }
+            Text("Repair replaces the managed Switchyard skill with the bundled release, including edits inside that managed directory.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -180,6 +188,31 @@ struct ConnectionDoctorView: View {
             Image(systemName: "minus.circle").foregroundStyle(.secondary)
         case .refused:
             Image(systemName: "hand.raised.fill").foregroundStyle(.red)
+        }
+    }
+
+    private func componentState(_ name: String, _ state: AgentConnectionState) -> some View {
+        Text("\(name): \(componentStateLabel(state))")
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(componentStateTint(state))
+    }
+
+    private func componentStateLabel(_ state: AgentConnectionState) -> String {
+        switch state {
+        case .connected: "Connected"
+        case .missing: "Missing"
+        case .needsRepair: "Update needed"
+        case .unavailable: "Unavailable"
+        case .refused: "Refused"
+        }
+    }
+
+    private func componentStateTint(_ state: AgentConnectionState) -> Color {
+        switch state {
+        case .connected: .green
+        case .missing, .needsRepair: .orange
+        case .unavailable: .secondary
+        case .refused: .red
         }
     }
 }

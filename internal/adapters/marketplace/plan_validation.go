@@ -211,18 +211,18 @@ func validateServerlessOverlay(
 	portRequirements map[string]struct{},
 ) error {
 	if overlay.Directory == "" || overlay.Filename == "" || overlay.SourceConfig == "" {
-		return fmt.Errorf("Serverless overlay directory, filename, and source config are required")
+		return fmt.Errorf("Serverless overlay directory, filename, and source config are required") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
 	}
 	if len(overlay.Overrides) == 0 {
-		return fmt.Errorf("Serverless overlay requires at least one override")
+		return fmt.Errorf("Serverless overlay requires at least one override") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
 	}
 	seenPlugins := make(map[string]struct{}, len(overlay.Plugins))
 	for _, plugin := range overlay.Plugins {
 		if !serverlessPluginPattern.MatchString(plugin) {
-			return fmt.Errorf("Serverless overlay plugin is invalid")
+			return fmt.Errorf("Serverless overlay plugin is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
 		}
 		if _, duplicate := seenPlugins[plugin]; duplicate {
-			return fmt.Errorf("Serverless overlay plugin is duplicated")
+			return fmt.Errorf("Serverless overlay plugin is duplicated") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
 		}
 		seenPlugins[plugin] = struct{}{}
 	}

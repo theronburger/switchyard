@@ -1,0 +1,4 @@
+# Reviewed synthetic auth/idempotency fixtures in local-only pre-public history.
+ecb64913dccdc9266c44df41fc9ad23e6171bc64:app/Sources/SwitchyardContractCheck/main.swift:generic-api-key:222
+e27f02801636b9f4d0f097b093598e195acd51a8:internal/daemon/environment_actions_test.go:generic-api-key:315
+faae437fe300140785f72eb2d7dc82c0888b98cd:app/Sources/SwitchyardContractCheck/main.swift:generic-api-key:222
