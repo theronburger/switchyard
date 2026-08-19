@@ -31,7 +31,7 @@ func TestProcessHostHelper(t *testing.T) {
 
 	switch mode {
 	case "child", "stubborn-child", "foreign":
-		fmt.Fprintln(os.Stdout, "helper child stdout")
+		_, _ = fmt.Fprintln(os.Stdout, "helper child stdout")
 		fmt.Fprintln(os.Stderr, "helper child stderr")
 		if readyPath := os.Getenv(helperChildReadyVariable); readyPath != "" {
 			if err := os.WriteFile(readyPath, []byte("ready\n"), 0o600); err != nil {
@@ -63,7 +63,7 @@ func TestProcessHostHelper(t *testing.T) {
 		if err := os.WriteFile(readyPath, []byte(fmt.Sprintf("%d %d\n", os.Getpid(), child.Process.Pid)), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		fmt.Fprintln(os.Stdout, "helper parent stdout")
+		_, _ = fmt.Fprintln(os.Stdout, "helper parent stdout")
 		fmt.Fprintln(os.Stderr, "helper parent stderr")
 		if err := child.Wait(); err != nil {
 			os.Exit(0)

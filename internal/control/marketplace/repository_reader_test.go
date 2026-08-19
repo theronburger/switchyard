@@ -45,7 +45,7 @@ func TestMarketplaceRepositoryReaderProjectsAdapterFixtureWithExactArgv(t *testi
 		{output: marketplaceadapter.CommandOutput{Stdout: []byte("https://credential@github.com/example/marketplace.git\n")}},
 		{output: marketplaceadapter.CommandOutput{Stdout: worktreeFixture}},
 		{output: marketplaceadapter.CommandOutput{Stdout: []byte("/Users/example/Marketplace Repo/.git\n")}},
-		{output: marketplaceadapter.CommandOutput{Stdout: []byte("/Users/example/Marketplace Repo/.git/worktrees/demo-830\n")}},
+		{output: marketplaceadapter.CommandOutput{Stdout: []byte("/Users/example/Marketplace Repo/.git/worktrees/proj-830\n")}},
 	}}
 	reader, err := NewRepositoryReader(runner, "/usr/bin/git")
 	if err != nil {
@@ -114,7 +114,7 @@ func TestMarketplaceRepositoryReaderProjectsAdapterFixtureWithExactArgv(t *testi
 			Executable: "/usr/bin/git",
 			Arguments: []string{
 				"-C",
-				"/Users/example/Developer/marketplace-worktrees/DEMO 830 chapter import",
+				"/Users/example/Developer/marketplace-worktrees/DEMO 42 chapter import",
 				"rev-parse",
 				"--path-format=absolute",
 				"--absolute-git-dir",
@@ -152,9 +152,9 @@ func TestMarketplaceRepositoryReaderDoesNotSurfaceRunnerErrors(t *testing.T) {
 
 func TestNormalizeRemoteStripsCredentialsAndProtocolDifferences(t *testing.T) {
 	tests := map[string]string{
-		"https": "https://user:token@github.com/Example/Marketplace.git\n",
-		"ssh":   "ssh://git:token@github.com/Example/Marketplace.git\n",
-		"scp":   "token@github.com:Example/Marketplace.git\n",
+		"https": "https://user:token@github.com/example/marketplace.git\n",
+		"ssh":   "ssh://git:token@github.com/example/marketplace.git\n",
+		"scp":   "token@github.com:example/marketplace.git\n",
 	}
 	for name, remote := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -30,13 +30,24 @@ public enum AgentConnectionState: String, Sendable, Equatable {
 public struct AgentConnectionStatus: Sendable, Equatable, Identifiable {
     public let host: AgentHost
     public let state: AgentConnectionState
+    public let mcpState: AgentConnectionState
+    public let skillState: AgentConnectionState
     public let detail: String
 
     public var id: AgentHost { host }
+    public var canRepair: Bool { mcpState.canRepair || skillState.canRepair }
 
-    public init(host: AgentHost, state: AgentConnectionState, detail: String) {
+    public init(
+        host: AgentHost,
+        state: AgentConnectionState,
+        detail: String,
+        mcpState: AgentConnectionState? = nil,
+        skillState: AgentConnectionState? = nil
+    ) {
         self.host = host
         self.state = state
+        self.mcpState = mcpState ?? state
+        self.skillState = skillState ?? state
         self.detail = detail
     }
 }
@@ -61,11 +72,15 @@ public protocol AgentConnectionManaging: Sendable {
 
 public struct AgentConnectionPaths: Sendable, Equatable {
     public let switchyardExecutableURL: URL
+    public let skillSourceURL: URL?
     public let codexExecutableURL: URL?
     public let codexConfigURL: URL
+    public let codexSkillURL: URL?
     public let claudeConfigURL: URL
     public let claudeExecutableURL: URL?
+    public let claudeSkillURL: URL?
     public let claudeConfigDirectoryURL: URL
+    public let usesCustomClaudeConfigDirectory: Bool
 
     public init(
         switchyardExecutableURL: URL,
@@ -73,52 +88,57 @@ public struct AgentConnectionPaths: Sendable, Equatable {
         codexConfigURL: URL,
         claudeConfigURL: URL,
         claudeExecutableURL: URL? = nil,
-        claudeConfigDirectoryURL: URL? = nil
+        claudeConfigDirectoryURL: URL? = nil,
+        skillSourceURL: URL? = nil,
+        codexSkillURL: URL? = nil,
+        claudeSkillURL: URL? = nil
     ) {
         self.switchyardExecutableURL = switchyardExecutableURL
+        self.skillSourceURL = skillSourceURL
         self.codexExecutableURL = codexExecutableURL
         self.codexConfigURL = codexConfigURL
+        self.codexSkillURL = codexSkillURL
         self.claudeConfigURL = claudeConfigURL
         self.claudeExecutableURL = claudeExecutableURL
+        self.claudeSkillURL = claudeSkillURL
         self.claudeConfigDirectoryURL = claudeConfigDirectoryURL ?? claudeConfigURL.deletingLastPathComponent()
+        self.usesCustomClaudeConfigDirectory = claudeConfigDirectoryURL != nil
     }
 
     public static func standard(
         fileManager: FileManager = .default,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment _: [String: String] = ProcessInfo.processInfo.environment,
+        bundle: Bundle = .main
     ) -> AgentConnectionPaths {
         let home = fileManager.homeDirectoryForCurrentUser
-        let codexCandidates = [
+        let codexRoot = home.appending(path: ".codex")
+        let claudeRoot = home.appending(path: ".claude")
+        let codexExecutable = findExecutable([
             URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
             home.appending(path: ".local/bin/codex"),
             URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
             URL(fileURLWithPath: "/usr/local/bin/codex"),
-        ]
-        let personalClaudeRoot = home.appending(path: ".claude-personal")
-        let claudeRoot = environment["CLAUDE_CONFIG_DIR"].map(URL.init(fileURLWithPath:)) ?? (
-            fileManager.fileExists(atPath: personalClaudeRoot.appending(path: ".claude.json").path)
-                ? personalClaudeRoot
-                : home
-        )
-        let claudeCandidates = [
+        ], fileManager: fileManager)
+        let claudeExecutable = findExecutable([
             home.appending(path: ".local/bin/claude"),
             URL(fileURLWithPath: "/opt/homebrew/bin/claude"),
             URL(fileURLWithPath: "/usr/local/bin/claude"),
-        ]
-        let codexExecutable = codexCandidates
-            .map { $0.resolvingSymlinksInPath() }
-            .first { fileManager.isExecutableFile(atPath: $0.path) }
-        let claudeExecutable = claudeCandidates
-            .map { $0.resolvingSymlinksInPath() }
-            .first { fileManager.isExecutableFile(atPath: $0.path) }
+        ], fileManager: fileManager)
+        let skillSource = bundle.resourceURL?.appending(path: "skills/switchyard")
         return AgentConnectionPaths(
             switchyardExecutableURL: LaunchAgentPaths.standard(fileManager: fileManager).installedBinaryURL,
             codexExecutableURL: codexExecutable,
-            codexConfigURL: home.appending(path: ".codex/config.toml"),
-            claudeConfigURL: claudeRoot.appending(path: ".claude.json"),
+            codexConfigURL: codexRoot.appending(path: "config.toml"),
+            claudeConfigURL: home.appending(path: ".claude.json"),
             claudeExecutableURL: claudeExecutable,
-            claudeConfigDirectoryURL: claudeRoot
+            skillSourceURL: skillSource,
+            codexSkillURL: codexRoot.appending(path: "skills/switchyard"),
+            claudeSkillURL: claudeRoot.appending(path: "skills/switchyard")
         )
+    }
+
+    private static func findExecutable(_ candidates: [URL], fileManager: FileManager) -> URL? {
+        candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 }
 
@@ -137,17 +157,11 @@ public actor AgentConnectionManager: AgentConnectionManaging {
     }
 
     public func inspect() async -> AgentConnectionReport {
-        AgentConnectionReport(statuses: [inspectCodex(), inspectClaude()])
+        inspectAll()
     }
 
     public func repair(_ host: AgentHost) async -> AgentConnectionReport {
-        let repaired: AgentConnectionStatus
-        switch host {
-        case .codex:
-            repaired = repairCodex()
-        case .claude:
-            repaired = repairClaude()
-        }
+        let repaired = host == .codex ? repairCodex() : repairClaude()
         return AgentConnectionReport(statuses: AgentHost.allCases.map { candidate in
             if candidate == host { return repaired }
             return candidate == .codex ? inspectCodex() : inspectClaude()
@@ -158,35 +172,47 @@ public actor AgentConnectionManager: AgentConnectionManaging {
         AgentConnectionReport(statuses: [repairCodex(), repairClaude()])
     }
 
+    private func inspectAll() -> AgentConnectionReport {
+        AgentConnectionReport(statuses: [inspectCodex(), inspectClaude()])
+    }
+
     private func inspectCodex() -> AgentConnectionStatus {
-        guard helperIsInstalled() else { return helperUnavailable(.codex) }
+        guard paths.codexExecutableURL != nil else {
+            return unavailable(.codex, "The Codex CLI could not be found in a known app or executable location.")
+        }
+        return combined(
+            host: .codex,
+            mcp: inspectCodexMCP(),
+            skill: inspectSkill(for: .codex)
+        )
+    }
+
+    private func inspectCodexMCP() -> ConnectionComponent {
+        guard helperIsInstalled() else { return helperUnavailableComponent() }
         guard let codexExecutableURL = paths.codexExecutableURL else {
-            return AgentConnectionStatus(
-                host: .codex,
-                state: .unavailable,
-                detail: "The Codex CLI could not be found in a known app or executable location."
-            )
+            return ConnectionComponent(state: .unavailable, detail: "The Codex CLI is unavailable.")
         }
         do {
             _ = try PrivateConfigFile.read(paths.codexConfigURL)
         } catch {
-            return unsafeConfig(.codex)
+            return unsafeConfigComponent("Codex")
         }
         let result: ExactCommandResult
         do {
             result = try commandRunner.run(ExactCommand(
                 executableURL: codexExecutableURL,
-                arguments: ["mcp", "list", "--json"]
+                arguments: ["mcp", "list", "--json"],
+                timeout: 5
             ))
         } catch {
-            return refused(.codex, "Codex MCP configuration could not be inspected safely.")
+            return ConnectionComponent(state: .refused, detail: "Codex MCP configuration could not be inspected safely.")
         }
         guard result.exitCode == 0,
               let servers = try? JSONDecoder().decode([CodexMCPServer].self, from: result.standardOutput) else {
-            return refused(.codex, "Codex did not provide a valid MCP configuration; no changes will be made.")
+            return ConnectionComponent(state: .refused, detail: "Codex did not provide a valid MCP configuration; no changes will be made.")
         }
         guard let server = servers.first(where: { $0.name == Self.serverName }) else {
-            return missing(.codex)
+            return missingMCPComponent()
         }
         guard server.enabled,
               server.transport.type == "stdio",
@@ -195,75 +221,93 @@ public actor AgentConnectionManager: AgentConnectionManaging {
               !server.transport.hasEnvironment,
               server.transport.environmentVariables.isEmpty,
               server.transport.cwd == nil else {
-            return needsRepair(.codex)
+            return needsRepairMCPComponent()
         }
-        return connected(.codex)
+        return connectedMCPComponent()
     }
 
     private func repairCodex() -> AgentConnectionStatus {
         let before = inspectCodex()
-        guard before.state.canRepair,
-              let codexExecutableURL = paths.codexExecutableURL else { return before }
-        let expected: Data?
+        guard before.canRepair, let codexExecutableURL = paths.codexExecutableURL else { return before }
+        if before.skillState.canRepair, let failure = repairSkillFailure(for: .codex) {
+            return refused(.codex, failure, mcp: before.mcpState, skill: .refused)
+        }
+        guard before.mcpState.canRepair else { return inspectCodex() }
+
+        let original: Data?
         do {
-            expected = try PrivateConfigFile.read(paths.codexConfigURL)
-            guard try PrivateConfigFile.read(paths.codexConfigURL) == expected else {
-                return refused(.codex, "Codex configuration changed during repair; no changes were made.")
+            original = try PrivateConfigFile.read(paths.codexConfigURL)
+        } catch {
+            return mcpRefused(.codex, "Codex configuration is not safe to repair.")
+        }
+        guard (try? PrivateConfigFile.read(paths.codexConfigURL)) == original else {
+            return mcpRefused(.codex, "Codex configuration changed during repair; no changes were made.")
+        }
+
+        var rollbackExpected = original
+        if before.mcpState == .needsRepair {
+            guard runMutation(executableURL: codexExecutableURL, arguments: ["mcp", "remove", Self.serverName]) else {
+                return mcpRefused(.codex, "Codex refused to remove the outdated MCP entry.")
             }
-        } catch {
-            return unsafeConfig(.codex)
+            do {
+                rollbackExpected = try PrivateConfigFile.read(paths.codexConfigURL)
+            } catch {
+                return mcpRefused(.codex, "Codex configuration became unsafe during repair.")
+            }
         }
-        let result: ExactCommandResult
-        do {
-            result = try commandRunner.run(ExactCommand(
-                executableURL: codexExecutableURL,
-                arguments: [
-                    "mcp", "add", Self.serverName, "--",
-                    paths.switchyardExecutableURL.path, "mcp",
-                ]
-            ))
-        } catch {
-            return refused(.codex, "Codex could not apply the MCP repair.")
-        }
-        guard result.exitCode == 0 else {
-            return refused(.codex, "Codex refused the MCP repair; its configuration was left to Codex.")
+        guard runMutation(
+            executableURL: codexExecutableURL,
+            arguments: ["mcp", "add", Self.serverName, "--", paths.switchyardExecutableURL.path, "mcp"]
+        ) else {
+            return rollbackFailure(
+                host: .codex,
+                configURL: paths.codexConfigURL,
+                expected: rollbackExpected,
+                original: original,
+                commandFailure: "Codex refused the MCP repair."
+            )
         }
         return inspectCodex()
     }
 
     private func inspectClaude() -> AgentConnectionStatus {
-        guard helperIsInstalled() else { return helperUnavailable(.claude) }
+        var mcp = inspectClaudeMCP()
+        if paths.claudeExecutableURL == nil, mcp.state.canRepair {
+            mcp = ConnectionComponent(
+                state: .unavailable,
+                detail: "The Claude Code CLI could not be found in a known executable location."
+            )
+        }
+        return combined(
+            host: .claude,
+            mcp: mcp,
+            skill: inspectSkill(for: .claude)
+        )
+    }
+
+    private func inspectClaudeMCP() -> ConnectionComponent {
+        guard helperIsInstalled() else { return helperUnavailableComponent() }
         let data: Data?
         do {
             data = try PrivateConfigFile.read(paths.claudeConfigURL)
+        } catch PrivateConfigFileError.tooLarge {
+            return oversizedConfigComponent("Claude Code")
         } catch {
-            return unsafeConfig(.claude)
+            return unsafeConfigComponent("Claude Code")
         }
-        guard let data else {
-            guard paths.claudeExecutableURL != nil else {
-                return AgentConnectionStatus(
-                    host: .claude,
-                    state: .unavailable,
-                    detail: "The Claude Code CLI could not be found in a known executable location."
-                )
-            }
-            return missing(.claude)
-        }
+        guard let data else { return missingMCPComponent() }
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return refused(.claude, "Claude Code configuration is not valid JSON; no changes will be made.")
+            return ConnectionComponent(state: .refused, detail: "Claude Code configuration is not valid JSON; no changes will be made.")
         }
-        guard let serversValue = root["mcpServers"] else { return missing(.claude) }
+        guard let serversValue = root["mcpServers"] else { return missingMCPComponent() }
         guard let servers = serversValue as? [String: Any] else {
-            return refused(.claude, "Claude Code uses an unsupported MCP configuration shape; no changes will be made.")
+            return ConnectionComponent(state: .refused, detail: "Claude Code uses an unsupported MCP configuration shape; no changes will be made.")
         }
-        guard let serverValue = servers[Self.serverName] else { return missing(.claude) }
-        guard let server = serverValue as? [String: Any] else { return needsRepair(.claude) }
+        guard let serverValue = servers[Self.serverName] else { return missingMCPComponent() }
+        guard let server = serverValue as? [String: Any] else { return needsRepairMCPComponent() }
         let environmentIsEmpty: Bool
         if let environmentValue = server["env"] {
-            guard let environment = environmentValue as? [String: Any] else {
-                return needsRepair(.claude)
-            }
-            environmentIsEmpty = environment.isEmpty
+            environmentIsEmpty = (environmentValue as? [String: Any])?.isEmpty == true
         } else {
             environmentIsEmpty = true
         }
@@ -271,72 +315,139 @@ public actor AgentConnectionManager: AgentConnectionManaging {
               server["command"] as? String == paths.switchyardExecutableURL.path,
               server["args"] as? [String] == ["mcp"],
               environmentIsEmpty else {
-            return needsRepair(.claude)
+            return needsRepairMCPComponent()
         }
-        return connected(.claude)
+        return connectedMCPComponent()
     }
 
     private func repairClaude() -> AgentConnectionStatus {
         let before = inspectClaude()
-        guard before.state.canRepair,
-              let claudeExecutableURL = paths.claudeExecutableURL else { return before }
-        let expected: Data?
+        guard before.canRepair, let claudeExecutableURL = paths.claudeExecutableURL else { return before }
+        if before.skillState.canRepair, let failure = repairSkillFailure(for: .claude) {
+            return refused(.claude, failure, mcp: before.mcpState, skill: .refused)
+        }
+        guard before.mcpState.canRepair else { return inspectClaude() }
+
+        let original: Data?
         do {
-            expected = try PrivateConfigFile.read(paths.claudeConfigURL)
+            original = try PrivateConfigFile.read(paths.claudeConfigURL)
         } catch {
-            return unsafeConfig(.claude)
+            return mcpRefused(.claude, "Claude Code configuration is not safe to repair.")
         }
-        guard (try? PrivateConfigFile.read(paths.claudeConfigURL)) == expected else {
-            return refused(.claude, "Claude Code configuration changed during repair; no changes were made.")
-        }
-
-        let environment = ["CLAUDE_CONFIG_DIR": paths.claudeConfigDirectoryURL.path]
-        var removed: Data?
-        if before.state == .needsRepair {
-            let removal: ExactCommandResult
-            do {
-                removal = try commandRunner.run(ExactCommand(
-                    executableURL: claudeExecutableURL,
-                    arguments: ["mcp", "remove", Self.serverName, "--scope", "user"],
-                    environmentOverrides: environment
-                ))
-            } catch {
-                return refused(.claude, "Claude Code could not remove the outdated MCP entry.")
-            }
-            guard removal.exitCode == 0 else {
-                return refused(.claude, "Claude Code refused to remove the outdated MCP entry.")
-            }
-            do {
-                removed = try PrivateConfigFile.read(paths.claudeConfigURL)
-            } catch {
-                return unsafeConfig(.claude)
-            }
+        guard (try? PrivateConfigFile.read(paths.claudeConfigURL)) == original else {
+            return mcpRefused(.claude, "Claude Code configuration changed during repair; no changes were made.")
         }
 
-        let addition: ExactCommandResult
-        do {
-            addition = try commandRunner.run(ExactCommand(
+        let environment = paths.usesCustomClaudeConfigDirectory
+            ? ["CLAUDE_CONFIG_DIR": paths.claudeConfigDirectoryURL.path]
+            : [:]
+        var rollbackExpected = original
+        if before.mcpState == .needsRepair {
+            guard runMutation(
                 executableURL: claudeExecutableURL,
-                arguments: [
-                    "mcp", "add", "--scope", "user", Self.serverName, "--",
-                    paths.switchyardExecutableURL.path, "mcp",
-                ],
+                arguments: ["mcp", "remove", Self.serverName, "--scope", "user"],
                 environmentOverrides: environment
-            ))
-        } catch {
-            restoreClaudeAfterFailedRepair(original: expected, removed: removed)
-            return refused(.claude, "Claude Code could not apply the MCP repair.")
+            ) else {
+                return mcpRefused(.claude, "Claude Code refused to remove the outdated MCP entry.")
+            }
+            do {
+                rollbackExpected = try PrivateConfigFile.read(paths.claudeConfigURL)
+            } catch {
+                return mcpRefused(.claude, "Claude Code configuration became unsafe during repair.")
+            }
         }
-        guard addition.exitCode == 0 else {
-            restoreClaudeAfterFailedRepair(original: expected, removed: removed)
-            return refused(.claude, "Claude Code refused the MCP repair.")
+        guard runMutation(
+            executableURL: claudeExecutableURL,
+            arguments: ["mcp", "add", "--scope", "user", Self.serverName, "--", paths.switchyardExecutableURL.path, "mcp"],
+            environmentOverrides: environment
+        ) else {
+            return rollbackFailure(
+                host: .claude,
+                configURL: paths.claudeConfigURL,
+                expected: rollbackExpected,
+                original: original,
+                commandFailure: "Claude Code refused the MCP repair."
+            )
         }
         return inspectClaude()
     }
 
-    private func restoreClaudeAfterFailedRepair(original: Data?, removed: Data?) {
-        guard let original, let removed else { return }
-        try? PrivateConfigFile.replace(paths.claudeConfigURL, expected: removed, with: original)
+    private func runMutation(
+        executableURL: URL,
+        arguments: [String],
+        environmentOverrides: [String: String] = [:]
+    ) -> Bool {
+        do {
+            let result = try commandRunner.run(ExactCommand(
+                executableURL: executableURL,
+                arguments: arguments,
+                environmentOverrides: environmentOverrides,
+                timeout: 15
+            ))
+            return result.exitCode == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func rollbackFailure(
+        host: AgentHost,
+        configURL: URL,
+        expected: Data?,
+        original: Data?,
+        commandFailure: String
+    ) -> AgentConnectionStatus {
+        do {
+            try PrivateConfigFile.restore(configURL, expected: expected, original: original)
+            return mcpRefused(host, "\(commandFailure) Its prior configuration was restored.")
+        } catch PrivateConfigFileError.changed {
+            return mcpRefused(host, "\(commandFailure) A concurrent configuration change was left untouched.")
+        } catch PrivateConfigFileError.recoveryRequired(let path) {
+            return mcpRefused(
+                host,
+                "\(commandFailure) The prior configuration was preserved at \(path); restore it manually after reviewing the concurrent file."
+            )
+        } catch {
+            return mcpRefused(host, "\(commandFailure) Its prior configuration could not be restored safely.")
+        }
+    }
+
+    private func inspectSkill(for host: AgentHost) -> ConnectionComponent {
+        guard let source = paths.skillSourceURL else {
+            return ConnectionComponent(state: .connected, detail: "Managed skill installation is not configured for this build.")
+        }
+        let destination = host == .codex ? paths.codexSkillURL : paths.claudeSkillURL
+        guard let destination else {
+            return ConnectionComponent(state: .unavailable, detail: "The managed skill destination is unavailable.")
+        }
+        do {
+            let sourceFingerprint = try ManagedSkill.fingerprint(source)
+            guard ManagedSkill.exists(destination) else {
+                return ConnectionComponent(state: .missing, detail: "The managed Switchyard skill is not installed.")
+            }
+            let destinationFingerprint = try ManagedSkill.fingerprintOwned(destination)
+            if sourceFingerprint != destinationFingerprint {
+                return ConnectionComponent(state: .needsRepair, detail: "The managed Switchyard skill is out of date.")
+            }
+            return ConnectionComponent(state: .connected, detail: "The managed Switchyard skill is current.")
+        } catch {
+            return ConnectionComponent(state: .refused, detail: "The managed Switchyard skill directory is unsafe.")
+        }
+    }
+
+    private func repairSkillFailure(for host: AgentHost) -> String? {
+        guard let source = paths.skillSourceURL,
+              let destination = host == .codex ? paths.codexSkillURL : paths.claudeSkillURL else {
+            return "The managed Switchyard skill is not available in this build."
+        }
+        do {
+            try ManagedSkill.install(source: source, destination: destination)
+            return nil
+        } catch ManagedSkillError.recoveryRequired(let path) {
+            return "The prior managed skill was preserved at \(path); restore it manually after reviewing the concurrent directory."
+        } catch {
+            return "The managed Switchyard skill could not be installed safely."
+        }
     }
 
     private func helperIsInstalled() -> Bool {
@@ -347,45 +458,88 @@ public actor AgentConnectionManager: AgentConnectionManaging {
             Int(status.st_mode) & 0o111 != 0
     }
 
-    private func connected(_ host: AgentHost) -> AgentConnectionStatus {
-        AgentConnectionStatus(
+    private func combined(
+        host: AgentHost,
+        mcp: ConnectionComponent,
+        skill: ConnectionComponent
+    ) -> AgentConnectionStatus {
+        let state: AgentConnectionState
+        if mcp.state.canRepair || skill.state.canRepair {
+            state = mcp.state == .needsRepair || skill.state == .needsRepair ? .needsRepair : .missing
+        } else if mcp.state == .refused || skill.state == .refused {
+            state = .refused
+        } else if mcp.state == .unavailable || skill.state == .unavailable {
+            state = .unavailable
+        } else {
+            state = .connected
+        }
+        return AgentConnectionStatus(
             host: host,
-            state: .connected,
-            detail: "Switchyard MCP uses the installed helper with no stored daemon credential."
+            state: state,
+            detail: "MCP: \(mcp.detail) Skill: \(skill.detail)",
+            mcpState: mcp.state,
+            skillState: skill.state
         )
     }
 
-    private func missing(_ host: AgentHost) -> AgentConnectionStatus {
-        AgentConnectionStatus(
-            host: host,
-            state: .missing,
-            detail: "Switchyard MCP is not configured for \(host.displayName)."
-        )
-    }
-
-    private func needsRepair(_ host: AgentHost) -> AgentConnectionStatus {
-        AgentConnectionStatus(
-            host: host,
-            state: .needsRepair,
-            detail: "The Switchyard MCP entry does not use the exact installed helper and `mcp` argument."
-        )
-    }
-
-    private func helperUnavailable(_ host: AgentHost) -> AgentConnectionStatus {
+    private func unavailable(_ host: AgentHost, _ detail: String) -> AgentConnectionStatus {
         AgentConnectionStatus(
             host: host,
             state: .unavailable,
-            detail: "The installed Switchyard helper is unavailable. Repair the app helper first."
+            detail: detail,
+            mcpState: .unavailable,
+            skillState: .unavailable
         )
     }
 
-    private func unsafeConfig(_ host: AgentHost) -> AgentConnectionStatus {
-        refused(host, "The host configuration is not an owner-only regular file; Switchyard will not edit it.")
+    private func mcpRefused(_ host: AgentHost, _ detail: String) -> AgentConnectionStatus {
+        combined(
+            host: host,
+            mcp: ConnectionComponent(state: .refused, detail: detail),
+            skill: inspectSkill(for: host)
+        )
     }
 
-    private func refused(_ host: AgentHost, _ detail: String) -> AgentConnectionStatus {
-        AgentConnectionStatus(host: host, state: .refused, detail: detail)
+    private func refused(
+        _ host: AgentHost,
+        _ detail: String,
+        mcp: AgentConnectionState = .refused,
+        skill: AgentConnectionState = .refused
+    ) -> AgentConnectionStatus {
+        AgentConnectionStatus(host: host, state: .refused, detail: detail, mcpState: mcp, skillState: skill)
     }
+
+    private func connectedMCPComponent() -> ConnectionComponent {
+        ConnectionComponent(state: .connected, detail: "Switchyard MCP uses the installed helper with no stored daemon credential.")
+    }
+
+    private func missingMCPComponent() -> ConnectionComponent {
+        ConnectionComponent(state: .missing, detail: "Switchyard MCP is not configured.")
+    }
+
+    private func needsRepairMCPComponent() -> ConnectionComponent {
+        ConnectionComponent(state: .needsRepair, detail: "The MCP entry does not use the exact installed helper and `mcp` argument.")
+    }
+
+    private func helperUnavailableComponent() -> ConnectionComponent {
+        ConnectionComponent(state: .unavailable, detail: "The installed Switchyard helper is unavailable.")
+    }
+
+    private func unsafeConfigComponent(_ hostName: String) -> ConnectionComponent {
+        ConnectionComponent(state: .refused, detail: "\(hostName) configuration is not an owner-controlled regular file.")
+    }
+
+    private func oversizedConfigComponent(_ hostName: String) -> ConnectionComponent {
+        ConnectionComponent(
+            state: .refused,
+            detail: "\(hostName) configuration exceeds Switchyard's 16 MiB safety limit; no changes will be made."
+        )
+    }
+}
+
+private struct ConnectionComponent {
+    let state: AgentConnectionState
+    let detail: String
 }
 
 private struct CodexMCPServer: Decodable {
@@ -419,7 +573,7 @@ private struct CodexMCPTransport: Decodable {
         environmentVariables = try values.decodeIfPresent([String].self, forKey: .environmentVariables) ?? []
         cwd = try values.decodeIfPresent(String.self, forKey: .cwd)
         if values.contains(.env) {
-            hasEnvironment = !(try values.decodeNil(forKey: .env))
+            hasEnvironment = try !values.decodeNil(forKey: .env)
         } else {
             hasEnvironment = false
         }

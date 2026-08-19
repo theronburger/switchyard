@@ -21,12 +21,12 @@ func TestProberAcceptsLeasedTCPAndHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tcpListener.Close()
+	defer func() { _ = tcpListener.Close() }()
 	accepted := make(chan struct{})
 	go func() {
 		connection, acceptErr := tcpListener.Accept()
 		if acceptErr == nil {
-			connection.Close()
+			_ = connection.Close()
 		}
 		close(accepted)
 	}()

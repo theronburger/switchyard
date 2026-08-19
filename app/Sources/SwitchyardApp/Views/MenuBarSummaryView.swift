@@ -112,6 +112,7 @@ struct MenuBarSummaryView: View {
                     }
                 }
             }
+            .switchyardScrollbars()
         }
         .frame(height: min(CGFloat(worktreeCount) * 57, 430))
     }
@@ -221,6 +222,7 @@ private struct MenuWorktreeRow: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.orange)
                 }
+                PullRequestCompactStatus(observation: worktree.pullRequest)
             }
         }
         .padding(.horizontal, 10)

@@ -19,6 +19,95 @@ type actionBackend struct {
 	stop  func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
 }
 
+type workspaceActionBackend struct {
+	create  func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
+	adopt   func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
+	archive func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+}
+
+func (backend workspaceActionBackend) CreateWorktree(
+	ctx context.Context,
+	request contractv1.CreateWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	return backend.create(ctx, request)
+}
+
+func (backend workspaceActionBackend) ArchiveWorktree(
+	ctx context.Context,
+	request contractv1.ArchiveWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	return backend.archive(ctx, request)
+}
+
+func (backend workspaceActionBackend) AdoptWorktree(
+	ctx context.Context,
+	request contractv1.AdoptWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	return backend.adopt(ctx, request)
+}
+
+func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
+	backend := workspaceActionBackend{
+		create: func(_ context.Context, request contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.RepositoryID != "repository_01" || request.Branch != "feature/example" ||
+				request.StartPoint != "origin/main" {
+				t.Fatalf("create request: %+v", request)
+			}
+			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
+		},
+		adopt: func(_ context.Context, request contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.WorktreeID != "worktree_01" {
+				t.Fatalf("adopt request: %+v", request)
+			}
+			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
+		},
+		archive: func(_ context.Context, request contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.WorktreeID != "worktree_01" {
+				t.Fatalf("archive request: %+v", request)
+			}
+			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
+		},
+	}
+	handler, err := NewHTTPHandler(HandlerConfig{
+		Token: testToken, DaemonInstanceID: "daemon_01", DaemonVersion: "0.1.0-dev",
+		StartedAt:    time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC),
+		StatusSource: staticStatusSource{snapshot: validHTTPStatus()}, WorkspaceActions: backend,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := serveMutation(t, handler, "/v1/worktrees", map[string]any{
+		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_create",
+		"idempotencyKey": "create:test", "repositoryId": "repository_01",
+		"branch": "feature/example", "startPoint": "origin/main",
+	})
+	if create.Code != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	adopt := serveMutation(t, handler, "/v1/worktrees/worktree_01/adopt", map[string]any{
+		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_adopt",
+		"idempotencyKey": "adopt:test", "worktreeId": "worktree_01",
+	})
+	if adopt.Code != http.StatusAccepted {
+		t.Fatalf("adopt status=%d body=%s", adopt.Code, adopt.Body.String())
+	}
+	archive := serveMutation(t, handler, "/v1/worktrees/worktree_01/archive", map[string]any{
+		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_archive",
+		"idempotencyKey": "archive:test", "worktreeId": "worktree_01",
+	})
+	if archive.Code != http.StatusAccepted {
+		t.Fatalf("archive status=%d body=%s", archive.Code, archive.Body.String())
+	}
+	mismatch := serveMutation(t, handler, "/v1/worktrees/worktree_01/archive", map[string]any{
+		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_mismatch",
+		"idempotencyKey": "archive:mismatch", "worktreeId": "worktree_02",
+	})
+	if mismatch.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched archive status=%d body=%s", mismatch.Code, mismatch.Body.String())
+	}
+}
+
 func (backend actionBackend) StartEnvironment(
 	ctx context.Context,
 	request contractv1.StartEnvironmentRequest,
@@ -180,6 +269,8 @@ func TestEnvironmentMutationErrorsAreStableAndRedacted(t *testing.T) {
 			name: "public conflict",
 			err: &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
 				Code: "ENVIRONMENT_BUSY", Message: "The environment already has an active operation.", Retryable: true,
+				ResourceKind: "environment", ResourceID: "environment_01", Phase: "preparing-services",
+				NextAction: "wait_for_active_operation",
 			}},
 			wantStatus: http.StatusConflict,
 			wantCode:   "ENVIRONMENT_BUSY",
@@ -206,6 +297,14 @@ func TestEnvironmentMutationErrorsAreStableAndRedacted(t *testing.T) {
 			if strings.Contains(response.Body.String(), "Users") || strings.Contains(response.Body.String(), "sqlite") ||
 				strings.Contains(response.Body.String(), "bearer-secret") {
 				t.Fatalf("private failure leaked: %s", response.Body.String())
+			}
+			if test.name == "public conflict" {
+				var failure errorResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil ||
+					failure.Error.ResourceID != "environment_01" || failure.Error.Phase != "preparing-services" ||
+					failure.Error.NextAction != "wait_for_active_operation" {
+					t.Fatalf("structured action error: %+v err=%v", failure, err)
+				}
 			}
 		})
 	}

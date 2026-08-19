@@ -38,11 +38,36 @@ func TestPlanLocalExcludeEditIsIdempotent(t *testing.T) {
 	want := []byte(
 		"# >>> Switchyard managed local excludes >>>\n" +
 			"/.switchyard.yaml\n" +
+			"/.switchyard.env.cjs\n" +
 			"**/.switchyard.serverless.ts\n" +
+			"**/.switchyard.endpoints.cjs\n" +
 			"# <<< Switchyard managed local excludes <<<\n",
 	)
 	if !bytes.Equal(first.ProposedContents, want) {
 		t.Fatalf("empty-file plan: got %q, want %q", first.ProposedContents, want)
+	}
+}
+
+func TestPlanLocalExcludeEditUpgradesExactLegacyOwnedBlock(t *testing.T) {
+	current := append([]byte("# personal\n"), legacyLocalExcludeBlock...)
+	plan := PlanLocalExcludeEdit(current)
+	if plan.Action != LocalExcludeAppend || !bytes.HasPrefix(plan.ProposedContents, []byte("# personal\n")) ||
+		!bytes.Contains(plan.ProposedContents, []byte("**/.switchyard.endpoints.cjs\n")) {
+		t.Fatalf("legacy upgrade plan: %#v", plan)
+	}
+}
+
+func TestPlanLocalExcludeEditUpgradesInterimEndpointBlock(t *testing.T) {
+	plan := PlanLocalExcludeEdit(interimLocalExcludeBlock)
+	if plan.Action != LocalExcludeAppend || !bytes.Equal(plan.ProposedContents, localExcludeBlock) {
+		t.Fatalf("interim upgrade plan: %#v", plan)
+	}
+}
+
+func TestPlanLocalExcludeEditUpgradesEndpointBlockWithEnvironmentShim(t *testing.T) {
+	plan := PlanLocalExcludeEdit(endpointLocalExcludeBlock)
+	if plan.Action != LocalExcludeAppend || !bytes.Equal(plan.ProposedContents, localExcludeBlock) {
+		t.Fatalf("endpoint upgrade plan: %#v", plan)
 	}
 }
 

@@ -30,6 +30,11 @@ The app is the primary human experience:
 - one-click Connection Doctor and Repair All;
 - Codex and Claude MCP configuration and validation;
 - notifications with direct actions such as Open Logs, Restart, Stop, or Review Plan.
+- per-service committed and uncommitted line attribution, with shared repository changes kept separate;
+- exact-worktree editor actions such as opening the checkout in a new Zed window;
+- branch-derived Jira references with optional app-owned reads through the raw relay contract, isolated from daemon health;
+- daemon-owned GitHub pull-request and CI observations through the user's authenticated Keychain-backed `gh` session, isolated from environment health;
+- running state rendered directly in the menu-bar mark, with configurable compact attention and resource indicators beside it.
 
 The app should render useful fixture data before the daemon exists so UI work can proceed independently.
 
@@ -44,12 +49,17 @@ Prefer one bundled Go executable with modes or subcommands for:
 
 The MCP process is per client and therefore stateless. It connects to the machine daemon. If an installed daemon is absent, the helper may ask launchd to start it. If setup or approval is required, it returns a useful repair error without launching the GUI.
 
+MCP process working directories are not identity. A host can share or launch a server outside the active task, so the current-worktree read requires the physical absolute workspace path from host context; clients retry a rejected logical hint with read-only `pwd -P`, never branch guessing. The resolver canonicalizes existing symlinks before matching. Global inventory and single-environment polling are separate tools. The CLI may safely derive the same worktree projection from its own process working directory; `--all` opts into inventory.
+
 ### Core domain
 
 The core knows these generic concepts:
 
 - `Repository`
 - `Worktree`
+- `WorkspacePlan`
+- `WorkspaceReadiness`
+- `Toolchain`
 - `Environment`
 - `ServiceDefinition`
 - `ServiceRun`
@@ -63,7 +73,13 @@ The core knows these generic concepts:
 - `AgentSession`
 - `Event`
 
-It does not know Deed environment variable names or Turbo commands. Those belong to the Marketplace adapter.
+It does not know Node, Yarn, Go, Deed environment variable names, or Turbo commands. An adapter turns repository inputs into exact finite workspace steps, generic toolchain metadata, requirements, and environment plans.
+
+### Workspace before environment
+
+Every environment start passes through `workspace.Ensure` first. The coordinator serializes per worktree, computes an adapter-provided content fingerprint, re-verifies readiness requirements on cache hits, durably checkpoints each finite step, and publishes a repository-neutral readiness result to SQLite and the status snapshot. Marketplace fingerprints `.nvmrc`, Yarn configuration/lock state, and bounded package manifests; generated `node_modules` content is excluded. It uses immutable Yarn hydration and shared content-addressed caches while leaving each worktree's mutable install tree separate.
+
+Git creation/adoption/removal is a separate positively-owned lifecycle. Existing worktrees are auto-discovered with run-only `adopted` inventory ownership. An explicit adoption may promote an eligible non-primary checkout to `managed` only when it is a clean, pushed, non-symlinked direct child of the configured managed root and Git proves it belongs to the exact repository. Switchyard-managed worktrees have a durable private ownership record bound to repository root, exact worktree path, branch, upstream/start revision, and Git administrative directory. Archive re-verifies that identity and refuses primary, active, dirty, unpushed, foreign, or unverifiable worktrees.
 
 ### Repository adapters
 
@@ -100,15 +116,19 @@ V1 uses authenticated loopback HTTP on an ephemeral port described by a mode-`06
 
 - request IDs and idempotency keys for mutations;
 - explicit desired and observed states;
-- streaming or tail-friendly logs/events without making the UI poll aggressively;
+- tail-friendly logs/events without making the UI poll aggressively or placing raw log contents in routine agent context;
 - an exact-version handshake with a stable upgrade-required error;
 - atomic status snapshots;
 - stable machine-readable error codes;
 - no secret values in responses.
 
-## State footer
+## Context reads and state footer
 
-Every environment-scoped MCP tool result includes a complete capped environment context at a revision. It informs the agent at action boundaries without sending unsolicited messages or requiring per-client cursor state. Global calls have no implicit environment.
+The daemon's atomic snapshot is global, but client reads are intentionally explicit. Human `status` resolves the containing worktree and `status --all` requests inventory. MCP exposes `switchyard_context(worktreePath)`, `switchyard_environment_status(environmentId)`, and `switchyard_inventory()` instead of an ambiguous generic status tool. The context read returns one repository/worktree plus only its environments, operations, and alerts; the environment read returns one exact environment and its owning worktree. Inventory never implies that its first or similarly named entry is current.
+
+Failed operations keep routine reads compact by publishing structured, bounded failure context and an opaque log reference rather than log contents. When that diagnosis is insufficient, `switchyard_operation_diagnostics(operationId, maxBytes?)` explicitly retrieves bounded tail excerpts from the referenced Switchyard-owned stdout/stderr files. The daemon, not MCP, resolves and validates the reference, rejects links or unsafe file modes, caps each stream, and applies command, environment, credential, account-path, and email safety redactions before content crosses the API boundary.
+
+Every accepted environment mutation result also includes a complete capped environment context at a revision. It informs the agent at action boundaries without sending unsolicited messages or requiring per-client cursor state. Workspace mutations return their receipt and deliberately restart the helper after successful identity-changing actions.
 
 Illustrative shape:
 
@@ -149,16 +169,18 @@ Cap attention at three entries and URLs at eight. The UI owns proactive notifica
 
 Every mutation is first persisted as an asynchronous operation. Operations are serialized per environment so unrelated environments progress concurrently. Reconciliation resumes or safely fails incomplete operations after a daemon restart.
 
+Immediately before a start is accepted, the adapter reads the exact worktree HEAD and tracked/untracked dirty state. That source snapshot and the newly allocated run ID are persisted with the operation and projected into every service run. A terminal operation is not evidence that an older healthy run was replaced unless the published environment carries the same run ID.
+
 Retries use bounded exponential backoff. Crash loops become an alert rather than an infinite silent restart.
 
 ## Monitoring cadence
 
 - Owned process exits and Docker events: event-driven.
 - Health checks: frequent while starting, relaxed when stable.
-- Git/worktree state: on demand plus modest periodic reconciliation.
+- Git/worktree state: at startup and every 30 seconds, with per-repository successful-observation and last-attempt timestamps; failed refreshes retain explicitly stale last-known data.
 - Agent-session discovery: consented and adaptive, inspired by CodexBar.
 - CPU and memory: grouped by logical service, sampled at a modest cadence.
 - Disk accounting: slow background work, cached and paused under resource pressure.
-- PR/CI and integration provenance: optional polling with backoff.
+- PR/CI: immediate for unseen or changed heads; 30 seconds while checks are pending; then stepped from one minute to six hours as PR activity ages. Branches with no PR receive an hourly safety lookup. Failures retry every five minutes while preserving last-known state.
 
 Low Power Mode and serious/critical thermal pressure should reduce nonessential scans.

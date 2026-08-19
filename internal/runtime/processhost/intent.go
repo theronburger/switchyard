@@ -24,7 +24,7 @@ func LoadLaunchIntent(path string) (LaunchIntent, error) {
 	if err != nil {
 		return LaunchIntent{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return LaunchIntent{}, err

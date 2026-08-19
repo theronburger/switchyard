@@ -21,7 +21,7 @@ import (
 	"github.com/theronburger/switchyard/internal/state"
 )
 
-const version = "0.1.0-dev"
+var version = "0.1.0-dev"
 
 const applicationSupportOverride = "SWITCHYARD_APPLICATION_SUPPORT"
 
@@ -122,8 +122,10 @@ func localPaths() (applicationPaths, error) {
 }
 
 func runDaemon(parent context.Context, paths applicationPaths) error {
-	ctx, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	signalContext, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
+	ctx, restartDaemon := context.WithCancel(signalContext)
+	defer restartDaemon()
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -132,7 +134,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	instanceID, err := newInstanceID()
 	if err != nil {
@@ -143,16 +145,24 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		return err
 	}
 	discoveredRepositories := discoverRepositoryInventory(ctx, time.Now().UTC())
+	if err := annotateWorkspaceInventory(paths, &discoveredRepositories); err != nil {
+		return err
+	}
+	if err := restoreWorkspaceInventory(ctx, store, &discoveredRepositories); err != nil {
+		return err
+	}
 	if err := publishDaemonSnapshot(
 		ctx, store, instanceID, startedAt, "starting", discoveredRepositories,
 	); err != nil {
 		return err
 	}
-	runtime, err := buildEnvironmentRuntime(ctx, store, paths, instanceID, discoveredRepositories)
+	runtime, err := buildEnvironmentRuntime(
+		ctx, store, paths, instanceID, discoveredRepositories, restartDaemon,
+	)
 	if err != nil {
 		return err
 	}
-	if runtime.actions != nil || runtime.observerDone != nil {
+	if runtime.actions != nil || runtime.workspaceActions != nil || runtime.observerDone != nil {
 		defer func() {
 			waitContext, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 			defer cancel()
@@ -179,13 +189,19 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if ctx.Err() != nil {
 		return nil
 	}
+	operationDiagnostics, err := daemon.NewOperationDiagnosticsReader(store, filepath.Join(paths.directory, "runtime"))
+	if err != nil {
+		return err
+	}
 	handler, err := daemon.NewHTTPHandler(daemon.HandlerConfig{
-		Token:              token,
-		DaemonInstanceID:   instanceID,
-		DaemonVersion:      version,
-		StartedAt:          startedAt,
-		StatusSource:       store,
-		EnvironmentActions: runtime.actions,
+		Token:                token,
+		DaemonInstanceID:     instanceID,
+		DaemonVersion:        version,
+		StartedAt:            startedAt,
+		StatusSource:         store,
+		EnvironmentActions:   runtime.actions,
+		WorkspaceActions:     runtime.workspaceActions,
+		OperationDiagnostics: operationDiagnostics,
 	})
 	if err != nil {
 		return err
@@ -235,6 +251,32 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		return shutdownServerAndWait(server, serveErrors, err)
 	}
 	defer removeOwnedRuntimeDescriptor(paths.runtimeDescriptor, instanceID)
+	githubObserverContext, stopGitHubObserver := context.WithCancel(ctx)
+	githubObserverDone := make(chan struct{})
+	go func() {
+		defer close(githubObserverDone)
+		_ = newGitHubStatusObserver(store).Run(githubObserverContext)
+	}()
+	defer func() {
+		stopGitHubObserver()
+		select {
+		case <-githubObserverDone:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+	repositoryObserverContext, stopRepositoryObserver := context.WithCancel(ctx)
+	repositoryObserverDone := make(chan struct{})
+	go func() {
+		defer close(repositoryObserverDone)
+		_ = newRepositoryObserver(store, paths, restartDaemon).Run(repositoryObserverContext)
+	}()
+	defer func() {
+		stopRepositoryObserver()
+		select {
+		case <-repositoryObserverDone:
+		case <-time.After(2 * time.Second):
+		}
+	}()
 
 	select {
 	case err := <-serveErrors:

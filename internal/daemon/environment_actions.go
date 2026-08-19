@@ -11,6 +11,7 @@ import (
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
+	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
 	"github.com/theronburger/switchyard/internal/state"
@@ -33,10 +34,16 @@ type EnvironmentActionCoordinator interface {
 	Stop(context.Context, environmentcontrol.StopRequest) (environmentcontrol.EnvironmentResult, error)
 }
 
+type WorkspaceEnsurer interface {
+	Ensure(context.Context, workspacecontrol.EnsureRequest) (workspacecontrol.Result, error)
+}
+
 type EnvironmentStartResolution struct {
 	EnvironmentID string
+	WorktreeID    string
 	Ports         []portlease.Reservation
 	Intent        environmentcontrol.PlanIntent
+	Source        environmentcontrol.SourceSnapshot
 }
 
 type EnvironmentActionResolver interface {
@@ -49,6 +56,7 @@ type EnvironmentActionServiceConfig struct {
 	Store       EnvironmentActionStore
 	Journal     EnvironmentActionJournal
 	Coordinator EnvironmentActionCoordinator
+	Workspace   WorkspaceEnsurer
 	Resolver    EnvironmentActionResolver
 	NewID       func(string) (string, error)
 }
@@ -57,6 +65,7 @@ type EnvironmentActionService struct {
 	store       EnvironmentActionStore
 	journal     EnvironmentActionJournal
 	coordinator EnvironmentActionCoordinator
+	workspace   WorkspaceEnsurer
 	resolver    EnvironmentActionResolver
 	newID       func(string) (string, error)
 	lifecycle   context.Context
@@ -77,7 +86,8 @@ func NewEnvironmentActionService(config EnvironmentActionServiceConfig) (*Enviro
 	lifecycle, cancel := context.WithCancel(config.Lifecycle)
 	return &EnvironmentActionService{
 		store: config.Store, journal: config.Journal, coordinator: config.Coordinator,
-		resolver: config.Resolver, newID: config.NewID, lifecycle: lifecycle, cancel: cancel,
+		workspace: config.Workspace, resolver: config.Resolver, newID: config.NewID,
+		lifecycle: lifecycle, cancel: cancel,
 	}, nil
 }
 
@@ -98,7 +108,8 @@ func (service *EnvironmentActionService) StartEnvironment(
 		return contractv1.MutationReceipt{}, safeResolutionError(err)
 	}
 	if resolution.EnvironmentID == "" || resolution.Intent.Adapter == "" ||
-		len(resolution.Intent.ServiceIDs) == 0 {
+		len(resolution.Intent.ServiceIDs) == 0 || resolution.Source.Revision == "" ||
+		resolution.Source.ObservedAt.IsZero() || (service.workspace != nil && resolution.WorktreeID == "") {
 		return contractv1.MutationReceipt{}, invalidActionRequest()
 	}
 	operationID, err := service.newID("operation")
@@ -118,15 +129,17 @@ func (service *EnvironmentActionService) StartEnvironment(
 		RequestFingerprint: fingerprint, Kind: string(environmentcontrol.OperationStart),
 		EnvironmentID:               resolution.EnvironmentID,
 		ExpectedEnvironmentRevision: request.ExpectedEnvironmentRevision,
+		RunID:                       runID,
 	})
 	if err != nil {
 		return contractv1.MutationReceipt{}, operationCreationError(err)
 	}
 	if created {
 		service.workers.Add(1)
-		go service.executeStart(environmentcontrol.StartRequest{
+		go service.executeStart(resolution.WorktreeID, environmentcontrol.StartRequest{
 			OperationID: operation.ID, EnvironmentID: resolution.EnvironmentID, RunID: runID,
 			Ports: cloneReservations(resolution.Ports), Intent: clonePlanIntent(resolution.Intent),
+			Source: cloneSourceSnapshot(resolution.Source),
 		})
 	}
 	return receiptForOperation(request.RequestID, operation), nil
@@ -198,8 +211,20 @@ func (service *EnvironmentActionService) CloseAndWait(ctx context.Context) error
 	}
 }
 
-func (service *EnvironmentActionService) executeStart(request environmentcontrol.StartRequest) {
+func (service *EnvironmentActionService) executeStart(
+	worktreeID string,
+	request environmentcontrol.StartRequest,
+) {
 	defer service.workers.Done()
+	if service.workspace != nil {
+		_, err := service.workspace.Ensure(service.lifecycle, workspacecontrol.EnsureRequest{
+			OperationID: request.OperationID, WorktreeID: worktreeID,
+		})
+		if err != nil {
+			service.finalizeUnhandled(request.OperationID, err)
+			return
+		}
+	}
 	_, err := service.coordinator.Start(service.lifecycle, request)
 	service.finalizeUnhandled(request.OperationID, err)
 }
@@ -240,7 +265,13 @@ func receiptForOperation(requestID string, operation contractv1.Operation) contr
 	return contractv1.MutationReceipt{
 		SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
 		OperationID: operation.ID, AcceptedAt: operation.CreatedAt, EnvironmentID: operation.EnvironmentID,
+		RunID: operation.RunID,
 	}
+}
+
+func cloneSourceSnapshot(source environmentcontrol.SourceSnapshot) *environmentcontrol.SourceSnapshot {
+	copy := source
+	return &copy
 }
 
 func randomActionID(prefix string) (string, error) {
@@ -262,7 +293,8 @@ func cloneReservations(source []portlease.Reservation) []portlease.Reservation {
 
 func clonePlanIntent(intent environmentcontrol.PlanIntent) *environmentcontrol.PlanIntent {
 	return &environmentcontrol.PlanIntent{
-		Adapter: intent.Adapter, ServiceIDs: append([]string(nil), intent.ServiceIDs...),
+		Adapter: intent.Adapter, TargetID: intent.TargetID,
+		ServiceIDs: append([]string(nil), intent.ServiceIDs...),
 	}
 }
 
@@ -271,6 +303,10 @@ func operationCreationError(err error) error {
 	case errors.Is(err, state.ErrIdempotencyConflict):
 		return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
 			Code: "IDEMPOTENCY_CONFLICT", Message: "The idempotency key was already used for another action.",
+		}}
+	case errors.Is(err, state.ErrEnvironmentBusy):
+		return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+			Code: "ENVIRONMENT_BUSY", Message: "The environment already has an active operation.", Retryable: true,
 		}}
 	case errors.Is(err, state.ErrEnvironmentRevisionConflict):
 		return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{

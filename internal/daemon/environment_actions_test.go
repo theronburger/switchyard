@@ -9,6 +9,7 @@ import (
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
+	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
 	"github.com/theronburger/switchyard/internal/state"
@@ -46,7 +47,7 @@ func (store *fakeActionOperationStore) CreateOperation(
 	}
 	now := time.Date(2026, 8, 14, 16, 30, 0, 0, time.UTC)
 	operation := contractv1.Operation{
-		ID: request.ID, Kind: request.Kind, State: string(domain.OperationPending),
+		ID: request.ID, RunID: request.RunID, Kind: request.Kind, State: string(domain.OperationPending),
 		EnvironmentID: request.EnvironmentID, CreatedAt: now, UpdatedAt: now,
 	}
 	store.byKey[request.IdempotencyKey] = request
@@ -116,10 +117,137 @@ type fakeActionResolver struct {
 	err   error
 }
 
+type fakeWorkspaceEnsurer struct {
+	ensure func(context.Context, workspacecontrol.EnsureRequest) (workspacecontrol.Result, error)
+}
+
+func (ensurer fakeWorkspaceEnsurer) Ensure(
+	ctx context.Context,
+	request workspacecontrol.EnsureRequest,
+) (workspacecontrol.Result, error) {
+	return ensurer.ensure(ctx, request)
+}
+
+func TestEnvironmentActionServiceEnsuresWorkspaceBeforeEnvironment(t *testing.T) {
+	store := newFakeActionOperationStore()
+	order := make([]string, 0, 2)
+	var orderMutex sync.Mutex
+	coordinator := fakeActionCoordinator{
+		start: func(_ context.Context, request environmentcontrol.StartRequest) (environmentcontrol.EnvironmentResult, error) {
+			orderMutex.Lock()
+			defer orderMutex.Unlock()
+			order = append(order, "environment")
+			return environmentcontrol.EnvironmentResult{}, nil
+		},
+		stop: func(context.Context, environmentcontrol.StopRequest) (environmentcontrol.EnvironmentResult, error) {
+			return environmentcontrol.EnvironmentResult{}, nil
+		},
+	}
+	service, err := NewEnvironmentActionService(EnvironmentActionServiceConfig{
+		Lifecycle: context.Background(), Store: store, Journal: fakeActionJournal{}, Coordinator: coordinator,
+		Workspace: fakeWorkspaceEnsurer{ensure: func(
+			_ context.Context,
+			request workspacecontrol.EnsureRequest,
+		) (workspacecontrol.Result, error) {
+			if request.OperationID != "operation_1" || request.WorktreeID != "worktree_01" {
+				t.Errorf("workspace request: %+v", request)
+			}
+			orderMutex.Lock()
+			defer orderMutex.Unlock()
+			order = append(order, "workspace")
+			return workspacecontrol.Result{}, nil
+		}},
+		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
+			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
+			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+		}},
+		NewID: func(prefix string) (string, error) {
+			if prefix == "operation" {
+				return "operation_1", nil
+			}
+			return "run_2", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartEnvironment(context.Background(), validActionStartRequest()); err != nil {
+		t.Fatal(err)
+	}
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.CloseAndWait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	orderMutex.Lock()
+	defer orderMutex.Unlock()
+	if len(order) != 2 || order[0] != "workspace" || order[1] != "environment" {
+		t.Fatalf("action order: %v", order)
+	}
+}
+
+func TestEnvironmentActionServiceDoesNotStartEnvironmentWhenWorkspaceFails(t *testing.T) {
+	store := newFakeActionOperationStore()
+	coordinatorCalls := 0
+	coordinator := fakeActionCoordinator{
+		start: func(context.Context, environmentcontrol.StartRequest) (environmentcontrol.EnvironmentResult, error) {
+			coordinatorCalls++
+			return environmentcontrol.EnvironmentResult{}, nil
+		},
+		stop: func(context.Context, environmentcontrol.StopRequest) (environmentcontrol.EnvironmentResult, error) {
+			return environmentcontrol.EnvironmentResult{}, nil
+		},
+	}
+	service, err := NewEnvironmentActionService(EnvironmentActionServiceConfig{
+		Lifecycle: context.Background(), Store: store, Journal: fakeActionJournal{}, Coordinator: coordinator,
+		Workspace: fakeWorkspaceEnsurer{ensure: func(
+			context.Context,
+			workspacecontrol.EnsureRequest,
+		) (workspacecontrol.Result, error) {
+			return workspacecontrol.Result{}, errors.New("private hydration path")
+		}},
+		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
+			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
+			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+		}},
+		NewID: func(prefix string) (string, error) {
+			if prefix == "operation" {
+				return "operation_1", nil
+			}
+			return "run_2", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartEnvironment(context.Background(), validActionStartRequest()); err != nil {
+		t.Fatal(err)
+	}
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.CloseAndWait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.ReadOperation(context.Background(), "operation_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coordinatorCalls != 0 || operation.State != string(domain.OperationFailed) ||
+		operation.Error == nil || operation.Error.Code != "ENVIRONMENT_ACTION_FAILED" {
+		t.Fatalf("workspace failure: calls=%d operation=%+v", coordinatorCalls, operation)
+	}
+}
+
 func (resolver fakeActionResolver) ResolveStart(
 	context.Context,
 	contractv1.StartEnvironmentRequest,
 ) (EnvironmentStartResolution, error) {
+	if resolver.start.Source.Revision == "" {
+		resolver.start.Source = environmentcontrol.SourceSnapshot{
+			Revision:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ObservedAt: time.Date(2026, 8, 14, 16, 29, 0, 0, time.UTC),
+		}
+	}
 	return resolver.start, resolver.err
 }
 
@@ -175,7 +303,8 @@ func TestEnvironmentActionServiceIsIdempotentAndDetachesWorkerFromRequest(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retried.OperationID != receipt.OperationID || receipt.Validate() != nil {
+	if retried.OperationID != receipt.OperationID || receipt.RunID != "run_2" ||
+		retried.RunID != receipt.RunID || receipt.Validate() != nil {
 		t.Fatalf("receipt=%+v retried=%+v", receipt, retried)
 	}
 	close(release)
@@ -254,6 +383,7 @@ func TestEnvironmentActionServiceMapsPersistenceConflicts(t *testing.T) {
 		code string
 	}{
 		{err: state.ErrIdempotencyConflict, code: "IDEMPOTENCY_CONFLICT"},
+		{err: state.ErrEnvironmentBusy, code: "ENVIRONMENT_BUSY"},
 		{err: state.ErrEnvironmentRevisionConflict, code: "ENVIRONMENT_REVISION_CONFLICT"},
 		{err: errors.New("private /Users/person/state.sqlite"), code: "ACTIONS_UNAVAILABLE"},
 	}

@@ -49,6 +49,51 @@ func (c *Client) StopEnvironment(
 	return c.postMutation(ctx, "/v1/environments/"+environmentID+"/stop", request)
 }
 
+func (c *Client) CreateWorktree(
+	ctx context.Context,
+	request contractv1.CreateWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if request.Validate() != nil {
+		return contractv1.MutationReceipt{}, newCodedError(
+			ErrorActionRequestInvalid, fmt.Errorf("worktree creation request is invalid"),
+		)
+	}
+	if _, err := c.Handshake(ctx); err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return c.postMutation(ctx, "/v1/worktrees", request)
+}
+
+func (c *Client) ArchiveWorktree(
+	ctx context.Context,
+	request contractv1.ArchiveWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if !safeMutationPathID(request.WorktreeID) || request.Validate() != nil {
+		return contractv1.MutationReceipt{}, newCodedError(
+			ErrorActionRequestInvalid, fmt.Errorf("worktree archive request is invalid"),
+		)
+	}
+	if _, err := c.Handshake(ctx); err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/archive", request)
+}
+
+func (c *Client) AdoptWorktree(
+	ctx context.Context,
+	request contractv1.AdoptWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if !safeMutationPathID(request.WorktreeID) || request.Validate() != nil {
+		return contractv1.MutationReceipt{}, newCodedError(
+			ErrorActionRequestInvalid, fmt.Errorf("worktree adoption request is invalid"),
+		)
+	}
+	if _, err := c.Handshake(ctx); err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/adopt", request)
+}
+
 func (c *Client) postMutation(
 	ctx context.Context,
 	path string,
@@ -72,7 +117,7 @@ func (c *Client) postMutation(
 	if err != nil {
 		return contractv1.MutationReceipt{}, newCodedError(ErrorDaemonUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if !secureResponseHeaders(response) {
 		return contractv1.MutationReceipt{}, newCodedError(
 			ErrorDaemonResponseInvalid,
@@ -113,8 +158,8 @@ func (c *Client) postMutation(
 			fmt.Errorf("daemon mutation error is invalid"),
 		)
 	}
-	return contractv1.MutationReceipt{}, newCodedError(
-		ErrorCode(failure.Error.Code),
+	return contractv1.MutationReceipt{}, newContractError(
+		failure.Error,
 		fmt.Errorf("daemon rejected environment mutation"),
 	)
 }
@@ -140,6 +185,39 @@ func (c Connector) StopEnvironment(
 		return contractv1.MutationReceipt{}, err
 	}
 	return client.StopEnvironment(ctx, environmentID, request)
+}
+
+func (c Connector) CreateWorktree(
+	ctx context.Context,
+	request contractv1.CreateWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	client, err := c.Client()
+	if err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return client.CreateWorktree(ctx, request)
+}
+
+func (c Connector) ArchiveWorktree(
+	ctx context.Context,
+	request contractv1.ArchiveWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	client, err := c.Client()
+	if err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return client.ArchiveWorktree(ctx, request)
+}
+
+func (c Connector) AdoptWorktree(
+	ctx context.Context,
+	request contractv1.AdoptWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	client, err := c.Client()
+	if err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return client.AdoptWorktree(ctx, request)
 }
 
 func decodeSingleJSON(contents []byte, destination any) error {

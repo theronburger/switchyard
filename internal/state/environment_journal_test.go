@@ -436,6 +436,84 @@ func TestEnvironmentJournalNeverPublishesRawFailure(t *testing.T) {
 	}
 }
 
+func TestEnvironmentJournalPublishesPhaseAndSafeStructuredFailure(t *testing.T) {
+	t.Parallel()
+	store, journal, record := preparedRunningJournal(t, defaultProjector)
+	record.Phase = environmentcontrol.PhasePreparingServices
+	if err := journal.Update(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.ReadOperation(context.Background(), record.ID)
+	if err != nil || active.Phase != string(environmentcontrol.PhasePreparingServices) {
+		t.Fatalf("public operation phase: %+v err=%v", active, err)
+	}
+	exitCode := 2
+	failureDetail := &environmentcontrol.OperationFailure{
+		Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.", Retryable: false,
+		ResourceKind: "service", ResourceID: "nonprofit-service",
+		Phase: environmentcontrol.PhasePreparingServices, Step: "nonprofit-service.prepare.0",
+		Diagnostic:   "src/utils/importFoundation.ts:43:43: TS2304: Cannot find name 'ManagedImportIndexDefinition'.",
+		LogReference: "run_test/preparations/nonprofit-service/command-0",
+		NextAction:   "fix_service_build", ExitCode: &exitCode,
+	}
+	if !validOperationFailure(*failureDetail) {
+		t.Fatalf("structured failure fixture is invalid: %+v", failureDetail)
+	}
+	record.EnvironmentState = domain.EnvironmentStopping
+	record.Phase = environmentcontrol.PhaseRollingBack
+	if err := journal.Update(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	record.State = domain.OperationFailed
+	record.EnvironmentState = domain.EnvironmentStopped
+	record.Phase = environmentcontrol.PhaseComplete
+	record.Failure = "environment operation failed"
+	record.FailureDetail = failureDetail
+	result := successfulEnvironmentResult(record.EnvironmentID)
+	result.State = domain.EnvironmentStopped
+	if err := journal.Publish(context.Background(), record, result); err != nil {
+		t.Fatal(err)
+	}
+	public, err := store.ReadOperation(context.Background(), record.ID)
+	if err != nil || public.Phase != string(environmentcontrol.PhaseComplete) || public.Error == nil {
+		t.Fatalf("public structured failure: %+v err=%v", public, err)
+	}
+	if public.Error.Code != "SERVICE_PREPARATION_FAILED" || public.Error.Retryable ||
+		public.Error.Phase != string(environmentcontrol.PhasePreparingServices) ||
+		public.Error.ResourceID != "nonprofit-service" || public.Error.ExitCode == nil || *public.Error.ExitCode != 2 ||
+		public.Error.Diagnostic != record.FailureDetail.Diagnostic || public.Error.LogReference != record.FailureDetail.LogReference {
+		t.Fatalf("public structured failure: %+v", public.Error)
+	}
+}
+
+func TestEnvironmentJournalPublishesSafeOwnershipFailure(t *testing.T) {
+	t.Parallel()
+	store, journal, record := preparedRunningJournal(t, defaultProjector)
+	record.EnvironmentState = domain.EnvironmentStopping
+	record.Phase = environmentcontrol.PhaseStoppingServices
+	if err := journal.Update(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	record.State = domain.OperationFailed
+	record.EnvironmentState = domain.EnvironmentFailed
+	record.Phase = environmentcontrol.PhaseComplete
+	record.Failure = environmentcontrol.OperationFailureOwnershipUnverified
+	result := successfulEnvironmentResult(record.EnvironmentID)
+	result.State = domain.EnvironmentFailed
+	if err := journal.Publish(context.Background(), record, result); err != nil {
+		t.Fatal(err)
+	}
+	public, err := store.ReadOperation(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public.Error == nil || public.Error.Code != "ENVIRONMENT_PROCESS_OWNERSHIP_UNVERIFIED" ||
+		public.Error.Message != "Switchyard could not verify ownership of one or more service processes, so it did not signal them." ||
+		!public.Error.Retryable {
+		t.Fatalf("public error: %+v", public.Error)
+	}
+}
+
 func TestEnvironmentJournalRejectsCorruptAndFutureRecordPayloads(t *testing.T) {
 	t.Parallel()
 	t.Run("operation-json", func(t *testing.T) {

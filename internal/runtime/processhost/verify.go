@@ -39,10 +39,12 @@ func verifyOwnedGroup(ctx context.Context, inspector ProcessInspector, ownership
 		if !wasPersisted {
 			continue
 		}
-		if !sameProcessIdentity(persisted, snapshot.Identity) {
+		if !sameProcessInstance(persisted, snapshot.Identity) {
 			return nil, fmt.Errorf("%w: pid %d identity changed", ErrOwnershipMismatch, pid)
 		}
-		trusted[pid] = true
+		if sameProcessIdentity(persisted, snapshot.Identity) {
+			trusted[pid] = true
+		}
 	}
 
 	if leader, exists := currentByPID[ownership.Leader.PID]; exists {
@@ -90,10 +92,14 @@ func hasTrustedAncestor(pid int, current map[int]ProcessSnapshot, trusted map[in
 	}
 }
 
-func sameProcessIdentity(expected, actual ProcessIdentity) bool {
+func sameProcessInstance(expected, actual ProcessIdentity) bool {
 	return expected.PID == actual.PID &&
 		expected.ProcessGroupID == actual.ProcessGroupID &&
-		expected.StartedAt.Equal(actual.StartedAt) &&
+		expected.StartedAt.Equal(actual.StartedAt)
+}
+
+func sameProcessIdentity(expected, actual ProcessIdentity) bool {
+	return sameProcessInstance(expected, actual) &&
 		expected.CommandFingerprint == actual.CommandFingerprint
 }
 

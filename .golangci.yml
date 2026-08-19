@@ -1,0 +1,22 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  exclusions:
+    # Marketplace-prefixed errors are user-facing diagnostics surfaced by the
+    # app and CLI, so preserve the product name at the beginning of sentences.
+    rules:
+      - linters: [staticcheck]
+        text: "ST1005:"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

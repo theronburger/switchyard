@@ -25,9 +25,9 @@ func TestParseWorktreePorcelain(t *testing.T) {
 			IsPrimary:    true,
 		},
 		{
-			Path:         "/Users/example/Developer/marketplace-worktrees/DEMO 830 chapter import",
+			Path:         "/Users/example/Developer/marketplace-worktrees/DEMO 42 chapter import",
 			HeadRevision: "2222222222222222222222222222222222222222",
-			Branch:       "feature/DEMO-830/chapter-import",
+			Branch:       "feature/DEMO-42/chapter-import",
 			Locked:       true,
 			LockReason:   "agent owns this worktree",
 		},

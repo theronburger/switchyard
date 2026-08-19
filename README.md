@@ -1,94 +1,113 @@
-# Switchyard
+<div align="center">
+  <img src="packaging/SwitchyardIcon-Source.png" alt="Switchyard icon" width="280" height="280">
+  <h1>Switchyard</h1>
+  <p><strong>A native macOS control plane for isolated local worktree environments.</strong></p>
+  <p>
+    <a href="https://github.com/theronburger/switchyard/actions/workflows/ci.yml"><img src="https://github.com/theronburger/switchyard/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/theronburger/switchyard/actions/workflows/codeql.yml"><img src="https://github.com/theronburger/switchyard/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+    <a href="https://github.com/theronburger/switchyard/releases/latest"><img src="https://img.shields.io/github/v/release/theronburger/switchyard?label=release" alt="Latest release"></a>
+  </p>
+</div>
 
-A private, personal macOS control plane for Marketplace worktrees and their local runtime environments.
+Switchyard turns a Marketplace Git worktree into the smallest useful local environment without port collisions, cross-worktree state leaks, unexplained process forests, or terminal setup. A native SwiftUI app, human CLI, Codex, and Claude Code all use the same Go daemon—the sole owner of runtime state, ports, processes, Docker resources, health, and cleanup.
 
-## North star
+<p align="center">
+  <img src="assets/switchyard-command-center-v1.png" alt="Switchyard command center showing a fictional worktree and environment" width="900">
+  <br>
+  <sub>The command center with synthetic fixture data. No real repository path, pull request, account, or environment is shown.</sub>
+</p>
 
-From any Marketplace worktree, one action should produce the smallest useful local environment without port collisions, cross-worktree state leaks, unexplained process forests, or terminal setup. The same environment must be understandable and controllable from a native macOS app, a human CLI, Codex, and Claude.
+## Requirements
 
-The first-class object is an **environment**, not a worktree. An environment binds together:
+- macOS 15 Sequoia or newer
+- Apple Silicon or Intel Mac
+- A local Marketplace checkout for the built-in Marketplace adapter
+- Docker through Colima for services that require isolated infrastructure
 
-- a repository and worktree;
-- its branch, base, pull request, and integration provenance;
-- active agent sessions;
-- requested and auto-detected services;
-- stable port and infrastructure leases;
-- generated routing configuration;
-- owned native process groups and Docker resources;
-- health, logs, alerts, resource use, and cleanup state.
+## Install
 
-## Product stance
+Install the universal app and `sy` CLI, explicitly trust only this Cask, remove quarantine only from the installed app, and open it:
 
-- This is a private personal tool, not a Example or Example project.
-- It is optimized fully for Theron's Marketplace workflow.
-- Its core abstractions remain repository-neutral so another repository can be added through configuration or a small adapter rather than a rewrite.
-- Marketplace is the first and initially only rich adapter.
-- There is no customer, public product, generic plugin marketplace, or cross-platform requirement.
-- Quality, safety, speed, and delight are not reduced merely because there is one user.
+```bash
+brew tap theronburger/tap && brew trust --cask theronburger/tap/switchyard && brew install --cask switchyard && xattr -dr com.apple.quarantine "/Applications/Switchyard.app" && open -a "Switchyard"
+```
 
-## Surfaces
+Switchyard does not currently have an Apple Developer identity. Releases use the stable self-signed `Theron Burger Apps Release` identity and therefore cannot be notarized. The explicit `xattr` command above is the required Gatekeeper acknowledgement for this self-signed app and is deliberately scoped to `/Applications/Switchyard.app`. In-app updates are authenticated separately with Switchyard's dedicated Ed25519 Sparkle key and verified before extraction.
 
-- **SwiftUI app:** menu bar overview, command-center window, notifications, setup, repair, and all normal lifecycle actions.
-- **Go daemon:** sole owner of runtime state, leases, processes, health, reconciliation, Docker resources, and SQLite persistence.
-- **CLI:** concise human commands and stable JSON output.
-- **MCP:** thin agent-facing projection over the daemon. It never owns lifecycle state.
+On first launch, the app installs and starts its own per-user daemon, detects standard Codex and Claude Code installations, and opens Connection Doctor when an MCP connection or managed `switchyard` skill needs attention. Repair invokes each agent's exact CLI; there is no repository clone or hand-edited agent configuration.
 
-The app must ensure the daemon and agent connections are installed, running, current, and repairable. A user LaunchAgent owns daemon lifetime independently of the app. Normal use must not require a terminal command to start a background service, and quitting the app does not stop environments.
+The same archive is available from [GitHub Releases](https://github.com/theronburger/switchyard/releases/latest).
 
-## Golden experience
+## Use
 
-1. Open Switchyard.
-2. It discovers the main Marketplace checkout and all linked worktrees.
-3. Choose a worktree and press **Run affected**.
-4. Switchyard detects the changed Marketplace services, allocates stable free ports, materializes the routing environment, starts isolated mutable infrastructure, launches owned process groups, and waits for health.
-5. The app shows friendly URLs, logical services, aggregate CPU and memory, recent logs, Git/PR state, and any action needed.
-6. A second worktree can run the same services concurrently without collisions or shared mutable queue/database state.
-7. Codex or Claude sees the same compact environment context whenever it calls a Switchyard tool, without background chat injection.
-8. Stopping or cleaning an environment affects only resources Switchyard positively owns.
+Open Switchyard, select a discovered worktree, choose a runtime target and services, then start the environment. Switchyard verifies and prepares the workspace before it builds services, assigns stable loopback ports, creates isolated infrastructure, launches owned process groups, and waits for readiness.
 
-## Initial acceptance demonstration
+The installed CLI is current-worktree-first:
 
-Run `organizer` and `nonprofit-service` concurrently in two Marketplace worktrees. Both environments must:
+```bash
+sy status
+sy status --all
+sy doctor
+```
 
-- receive stable, distinct ports;
-- route only to services in the same environment;
-- use isolated mutable infrastructure;
-- report health and logical process-group resource totals;
-- survive app/daemon reconciliation;
-- stop without touching the other environment or foreign processes;
-- be controllable from the app, CLI, Codex MCP, and Claude MCP.
+`sy status` resolves the containing known worktree, even from a child directory. `--all` is the deliberate machine-wide inventory. Environment and worktree mutations are also available through the app and the installed MCP server.
 
-## Developer build
+Switchyard currently ships one rich repository adapter: Marketplace. The core lifecycle and contracts remain repository-neutral, but the product deliberately does not pretend a generic plugin framework exists before a second real repository needs one.
 
-The baseline deliberately requires only the standard Go and Swift toolchains:
+## Agent connections
+
+Connection Doctor reports MCP and skill health independently for every detected Codex or Claude Code installation. **Repair** or **Repair All** registers the exact installed helper through the host CLI and installs the release's bundled `switchyard` skill.
+
+Standard installs use `~/.codex` and `~/.claude.json`; Switchyard does not redirect repairs into a custom `CLAUDE_CONFIG_DIR`. An explicit repair replaces the managed skill directory with the bundled release, including local edits inside that directory.
+
+## Architecture and safety
+
+```text
+Codex / Claude ── MCP ──┐
+Human shell ──── CLI ───┼── authenticated local API ── Go daemon
+SwiftUI app ────────────┘                              ├── repository adapters
+                                                       ├── leases and supervisor
+                                                       ├── health and reconciliation
+                                                       └── SQLite and event history
+```
+
+The daemon is the only runtime-state writer. MCP has no repository or lifecycle logic. Switchyard signals only positively owned process groups, removes only labelled owned Docker resources, and refuses to archive dirty, unpushed, active, locked, or unverifiable worktrees. Cleanup is plan-then-apply; global Docker prune and kill-by-name are never used.
+
+Marketplace's tracked files, public `.gitignore`, and `scripts/start-changed.sh` are never edited. Local projections and personal configuration stay private to the checkout.
+
+Read the [architecture](docs/ARCHITECTURE.md), [safety invariants](docs/SAFETY.md), and [Marketplace adapter design](docs/MARKETPLACE.md) for the complete boundary.
+
+## Updates
+
+The app checks its signed Sparkle feed once per day. **Check for Updates…** in the app menu or Settings downloads, verifies, installs, and relaunches an available version. Automatic checks can be disabled in Settings. A successful app update replaces an outdated bundled daemon and reloads Switchyard's own LaunchAgent when its generated registration changes; helper-only changes use a scoped `launchctl kickstart -k` before reconnecting.
+
+## Uninstall
+
+Remove the MCP registrations before uninstalling so agent hosts do not retain a path to the deleted app:
+
+```bash
+codex mcp remove switchyard
+claude mcp remove switchyard --scope user
+brew uninstall --cask switchyard
+```
+
+Homebrew stops the app and daemon on ordinary uninstall. Add `--zap` when you also want Homebrew to remove Switchyard's app-managed runtime and preferences. Managed skills are intentionally retained; remove `switchyard` from each agent's skills directory if it is no longer wanted.
+
+## Security
+
+The daemon binds only an ephemeral `127.0.0.1` port and requires a separate owner-only bearer token. Runtime descriptors, tokens, logs, process identity, configuration repair, generated projections, and cleanup plans are all validated against explicit ownership and size boundaries.
+
+Release archives are universal, hardened-runtime signed with a stable self-signed identity, authenticated by Sparkle Ed25519 signatures, accompanied by SHA-256 checksums and a CycloneDX SBOM for the Go runtime dependency graph, and covered by GitHub provenance attestations. Swift dependencies remain pinned in `app/Package.resolved`. See [SECURITY.md](SECURITY.md) for reporting and verification.
+
+## Development
 
 ```bash
 make check
 make race
-make app-bundle
-open dist/Switchyard.app
+make ui-snapshots
+make release-dry-run
 ```
 
-The packaged app contains both the SwiftUI executable and the Go daemon. On first launch it installs the daemon into the user's Application Support directory and registers a private user LaunchAgent; normal use does not require starting a daemon from a terminal. For development diagnostics after the app has launched:
+CI runs race detection, Swift tests, the cross-language contract suite, golangci-lint, actionlint, govulncheck, CodeQL, and a universal packaging dry run. Tagged releases add protected signing, signed Sparkle metadata, provenance, a GitHub Release, and an automatic downgrade-guarded Homebrew Cask update. See the [release runbook](docs/RELEASING.md).
 
-```bash
-"$HOME/Library/Application Support/Switchyard/bin/switchyard" doctor
-"$HOME/Library/Application Support/Switchyard/bin/switchyard" status --json
-```
-
-## Current milestone
-
-The first end-to-end milestone is complete. The packaged app owns installation and repair, its LaunchAgent keeps the authenticated Go daemon alive, and the daemon discovers Marketplace worktrees, persists operations, allocates isolated ports, prepares services, starts owned process groups and labelled ElasticMQ containers, initializes queues, observes live health/resources, and safely reconciles across app and daemon restarts. Start and stop work through the SwiftUI app, CLI, and thin MCP surface; the app can also inspect and repair Codex and Claude MCP connections.
-
-The two-worktree Marketplace acceptance run passed with `organizer` and `nonprofit-service` healthy at the same time on distinct ports and infrastructure. Stopping either environment affected only its positively owned processes, container, projection, and leases; pre-existing Marketplace services and the foreign `demo-elasticmq` container survived. See the [golden Marketplace acceptance record](docs/reviews/GOLDEN_MARKETPLACE_2026-08-14.md) and [next actions](docs/NEXT.md).
-
-## Documents
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Marketplace adapter](docs/MARKETPLACE.md)
-- [Safety invariants](docs/SAFETY.md)
-- [Parallel build plan](docs/BUILD_PLAN.md)
-- [Decision log](docs/DECISIONS.md)
-- [Next actions](docs/NEXT.md)
-- [Golden Marketplace acceptance](docs/reviews/GOLDEN_MARKETPLACE_2026-08-14.md)
-- [Fable environment integration review](docs/reviews/FABLE_ENVIRONMENT_INTEGRATION_REVIEW.md)
+Switchyard is a personal project published for transparency. No license is granted unless one is added explicitly.

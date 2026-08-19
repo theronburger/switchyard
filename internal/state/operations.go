@@ -15,6 +15,7 @@ import (
 
 var (
 	ErrIdempotencyConflict         = errors.New("idempotency key was already used for a different request")
+	ErrEnvironmentBusy             = errors.New("environment already has an active operation")
 	ErrEnvironmentRevisionConflict = errors.New("environment revision does not match the mutation precondition")
 	ErrOperationNotFound           = errors.New("operation not found")
 	ErrInvalidOperationTransition  = errors.New("invalid operation transition")
@@ -22,6 +23,7 @@ var (
 
 type NewOperation struct {
 	ID                          string
+	RunID                       string
 	RequestID                   string
 	IdempotencyKey              string
 	RequestFingerprint          [sha256.Size]byte
@@ -69,6 +71,23 @@ func (store *Store) CreateOperation(ctx context.Context, request NewOperation) (
 		_ = transaction.Rollback()
 		return contractv1.Operation{}, false, fmt.Errorf("read idempotent operation: %w", err)
 	}
+	if request.EnvironmentID != "" {
+		var activeOperationID string
+		err := transaction.QueryRowContext(ctx, `
+SELECT id
+FROM operations
+WHERE environment_id = ? AND state IN ('pending', 'running')
+ORDER BY created_at, id
+LIMIT 1`, request.EnvironmentID).Scan(&activeOperationID)
+		if err == nil {
+			_ = transaction.Rollback()
+			return contractv1.Operation{}, false, ErrEnvironmentBusy
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			_ = transaction.Rollback()
+			return contractv1.Operation{}, false, fmt.Errorf("read active environment operation: %w", err)
+		}
+	}
 	if request.ExpectedEnvironmentRevision != nil {
 		if request.EnvironmentID == "" {
 			_ = transaction.Rollback()
@@ -93,21 +112,27 @@ func (store *Store) CreateOperation(ctx context.Context, request NewOperation) (
 	}
 
 	now := store.now().UTC()
+	phase := ""
+	if request.EnvironmentID != "" {
+		phase = "pending"
+	}
 	var environmentRevision any
 	if request.ExpectedEnvironmentRevision != nil {
 		environmentRevision = *request.ExpectedEnvironmentRevision
 	}
 	if _, err := transaction.ExecContext(ctx, `
 INSERT INTO operations(
-    id, request_id, idempotency_key, request_fingerprint, kind, state,
-    environment_id, environment_revision, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)`,
+    id, run_id, request_id, idempotency_key, request_fingerprint, kind, state,
+    phase, environment_id, environment_revision, created_at, updated_at
+) VALUES (?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)`,
 		request.ID,
+		request.RunID,
 		request.RequestID,
 		request.IdempotencyKey,
 		request.RequestFingerprint[:],
 		request.Kind,
 		"pending",
+		phase,
 		request.EnvironmentID,
 		environmentRevision,
 		now.Format(timeFormat),
@@ -126,8 +151,10 @@ INSERT INTO operations(
 
 	operation := contractv1.Operation{
 		ID:            request.ID,
+		RunID:         request.RunID,
 		Kind:          request.Kind,
 		State:         "pending",
+		Phase:         phase,
 		EnvironmentID: request.EnvironmentID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -231,7 +258,7 @@ WHERE operation_state IN ('pending', 'running')`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	owned := make(map[string]struct{})
 	for rows.Next() {
 		var operationID string
@@ -326,7 +353,7 @@ func operationTransitionAllowed(currentState, nextState string) bool {
 }
 
 const operationQuery = `
-SELECT id, request_fingerprint, kind, state, environment_id, environment_revision,
+SELECT id, run_id, request_fingerprint, kind, state, phase, environment_id, environment_revision,
        created_at, updated_at, error_json
 FROM operations`
 
@@ -339,7 +366,7 @@ func listOperations(ctx context.Context, queryer operationQueryer) ([]contractv1
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	operations := make([]contractv1.Operation, 0)
 	for rows.Next() {
@@ -370,6 +397,7 @@ func readOperationByIdempotencyKey(
 func scanStoredOperation(row rowScanner) (contractv1.Operation, []byte, error) {
 	var operation contractv1.Operation
 	var fingerprint []byte
+	var runID sql.NullString
 	var environmentID sql.NullString
 	var environmentRevision sql.NullInt64
 	var createdAt string
@@ -377,9 +405,11 @@ func scanStoredOperation(row rowScanner) (contractv1.Operation, []byte, error) {
 	var errorPayload []byte
 	if err := row.Scan(
 		&operation.ID,
+		&runID,
 		&fingerprint,
 		&operation.Kind,
 		&operation.State,
+		&operation.Phase,
 		&environmentID,
 		&environmentRevision,
 		&createdAt,
@@ -398,6 +428,7 @@ func scanStoredOperation(row rowScanner) (contractv1.Operation, []byte, error) {
 		return contractv1.Operation{}, nil, fmt.Errorf("parse operation update time: %w", err)
 	}
 	operation.EnvironmentID = environmentID.String
+	operation.RunID = runID.String
 	operation.EnvironmentRevision = environmentRevision.Int64
 	operation.CreatedAt = parsedCreatedAt
 	operation.UpdatedAt = parsedUpdatedAt

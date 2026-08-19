@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,7 +13,9 @@ import (
 
 	marketplaceadapter "github.com/theronburger/switchyard/internal/adapters/marketplace"
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	controlconfig "github.com/theronburger/switchyard/internal/control/config"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
+	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
@@ -29,6 +32,10 @@ func TestMarketplaceActionResolverBuildsRelativeAndLocalPreferredPorts(t *testin
 		},
 	}
 	resolver := newMarketplaceActionResolver([]marketplaceEnvironment{registered}, marketplaceCatalogForTest())
+	resolver.sourceReader = staticMarketplaceSourceReader{source: environmentcontrol.SourceSnapshot{
+		Revision:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ObservedAt: time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC),
+	}}
 	resolution, err := resolver.ResolveStart(context.Background(), contractv1.StartEnvironmentRequest{
 		MutationRequest: contractv1.MutationRequest{
 			SchemaVersion: contractv1.SchemaVersion, RequestID: "request", IdempotencyKey: "key",
@@ -56,9 +63,71 @@ func TestMarketplaceActionResolverBuildsRelativeAndLocalPreferredPorts(t *testin
 		t.Fatalf("preferred ports: got %+v want %+v", preferred, want)
 	}
 	if resolution.EnvironmentID != registered.EnvironmentID ||
+		resolution.Intent.TargetID != "testing" ||
 		!reflect.DeepEqual(resolution.Intent.ServiceIDs, []string{"nonprofit-service", "organizer"}) {
 		t.Fatalf("resolution: %+v", resolution)
 	}
+	_, err = resolver.ResolveStart(context.Background(), contractv1.StartEnvironmentRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request-production", IdempotencyKey: "key-production",
+		},
+		WorktreeID: worktree.ID, TargetID: "production", ServiceIDs: []string{"organizer"},
+	})
+	var confirmationError *daemon.ActionError
+	if !errors.As(err, &confirmationError) || confirmationError.Contract.Code != "TARGET_CONFIRMATION_REQUIRED" {
+		t.Fatalf("unconfirmed production target error: %v", err)
+	}
+	production, err := resolver.ResolveStart(context.Background(), contractv1.StartEnvironmentRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request-production-confirmed", IdempotencyKey: "key-production-confirmed",
+		},
+		WorktreeID: worktree.ID, TargetID: "production", ConfirmedTargetID: "production",
+		ServiceIDs: []string{"organizer"},
+	})
+	if err != nil || production.Intent.TargetID != "production" {
+		t.Fatalf("production resolution: %+v err=%v", production, err)
+	}
+	_, err = resolver.ResolveStart(context.Background(), contractv1.StartEnvironmentRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request-production-again", IdempotencyKey: "key-production-again",
+		},
+		WorktreeID: worktree.ID, TargetID: "production", ServiceIDs: []string{"organizer"},
+	})
+	if !errors.As(err, &confirmationError) || confirmationError.Contract.Code != "TARGET_CONFIRMATION_REQUIRED" {
+		t.Fatalf("confirmation was incorrectly reused: %v", err)
+	}
+	_, err = resolver.ResolveStart(context.Background(), contractv1.StartEnvironmentRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request-demo-mismatch", IdempotencyKey: "key-demo-mismatch",
+		},
+		WorktreeID: worktree.ID, TargetID: "demo", ConfirmedTargetID: "production",
+		ServiceIDs: []string{"organizer"},
+	})
+	if !errors.As(err, &confirmationError) || confirmationError.Contract.Code != "TARGET_CONFIRMATION_MISMATCH" {
+		t.Fatalf("mismatched target confirmation error: %v", err)
+	}
+	_, err = resolver.ResolveStart(context.Background(), contractv1.StartEnvironmentRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request-unknown", IdempotencyKey: "key-unknown",
+		},
+		WorktreeID: worktree.ID, TargetID: "unknown", ServiceIDs: []string{"organizer"},
+	})
+	var actionError *daemon.ActionError
+	if !errors.As(err, &actionError) || actionError.Contract.Code != "TARGET_NOT_SUPPORTED" {
+		t.Fatalf("unknown target error: %v", err)
+	}
+}
+
+type staticMarketplaceSourceReader struct {
+	source environmentcontrol.SourceSnapshot
+	err    error
+}
+
+func (reader staticMarketplaceSourceReader) Read(
+	context.Context,
+	string,
+) (environmentcontrol.SourceSnapshot, error) {
+	return reader.source, reader.err
 }
 
 func TestMarketplacePreferredPortsStillAllocateDistinctEnvironments(t *testing.T) {
@@ -86,13 +155,47 @@ func TestMarketplacePreferredPortsStillAllocateDistinctEnvironments(t *testing.T
 	}
 }
 
+func TestMarketplaceNodeInstallPreparationUsesConstantShellAndArgumentVersion(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	home := t.TempDir()
+	temporary := t.TempDir()
+	nvmScript := filepath.Join(t.TempDir(), "nvm.sh")
+	if err := os.WriteFile(nvmScript, []byte("nvm() { return 0; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths := applicationPaths{directory: filepath.Join(t.TempDir(), "support")}
+	preparation, err := marketplaceNodeInstallPreparation(
+		paths, root, home, temporary, nvmScript, "24",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparation.Executable != "/bin/bash" || len(preparation.Arguments) != 5 ||
+		preparation.Arguments[2] != "switchyard-node-install" || preparation.Arguments[3] != nvmScript ||
+		preparation.Arguments[4] != "24" || strings.Contains(preparation.Arguments[1], nvmScript) ||
+		strings.Contains(preparation.Arguments[1], "24") {
+		t.Fatalf("node install argv was not constant/exact: %+v", preparation)
+	}
+	if _, err := marketplaceNodeInstallPreparation(
+		paths, root, home, temporary, nvmScript, "24; touch /tmp/foreign",
+	); !errors.Is(err, errMarketplaceNodeUnavailable) {
+		t.Fatalf("hostile Node constraint was accepted: %v", err)
+	}
+}
+
 func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T) {
 	now := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
+	runtime, err := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	worktree := contractv1.Worktree{
 		ID: "worktree_01", Path: "/tmp/marketplace", Branch: "feature/test", HeadRevision: "abc",
 	}
 	metadata := marketplaceEnvironment{
 		EnvironmentID: "environment_01", RepositoryID: "repository_01", Worktree: worktree,
+		Runtime: runtime,
 	}
 	projector := marketplaceEnvironmentProjector([]marketplaceEnvironment{metadata}, marketplaceCatalogForTest())
 	lease := portlease.Lease{
@@ -102,7 +205,7 @@ func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T)
 		Host: "127.0.0.1", Port: 17005,
 	}
 	projected, err := projector(nil, environmentcontrol.EnvironmentResult{
-		EnvironmentID: metadata.EnvironmentID, RunID: "run_01", State: domain.EnvironmentRunning,
+		EnvironmentID: metadata.EnvironmentID, RunID: "run_01", TargetID: "testing", State: domain.EnvironmentRunning,
 		Ports: []portlease.Lease{lease}, Infrastructure: []containerhost.Goal{},
 		Services: []environmentcontrol.ServiceResult{{
 			ID: "organizer", EnvironmentID: metadata.EnvironmentID, RunID: "run_01", Owned: true,
@@ -129,7 +232,7 @@ func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T)
 		},
 		Repositories: []contractv1.Repository{{
 			ID: metadata.RepositoryID, DisplayName: "marketplace", RootPath: worktree.Path,
-			Adapter: "marketplace", Worktrees: []contractv1.Worktree{worktree},
+			Adapter: "marketplace", Worktrees: []contractv1.Worktree{worktree}, Runtime: &runtime,
 		}},
 		Environments: []contractv1.Environment{projected},
 		Operations:   []contractv1.Operation{}, Alerts: []contractv1.Alert{},
@@ -137,7 +240,7 @@ func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T)
 	if err := snapshot.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if projected.Health != "healthy" || projected.URLs["organizer"] != "http://127.0.0.1:17005" ||
+	if projected.TargetID != "testing" || projected.Health != "healthy" || projected.URLs["organizer"] != "http://localhost:17005" ||
 		len(projected.Services) != 1 || projected.Services[0].Run == nil ||
 		projected.Services[0].Run.ProcessCount != 3 || projected.Services[0].Run.MemoryBytes != 8192 ||
 		projected.Resources.MemoryBytes != 8192 || projected.Services[0].Run.CPUPercent != 0 {
@@ -149,6 +252,94 @@ func TestMarketplaceEnvironmentProjectorProducesContractValidState(t *testing.T)
 	}
 	if strings.Contains(string(payload), "/private/secret") || strings.Contains(string(payload), "ownership.json") {
 		t.Fatalf("public environment leaked a private runtime path: %s", payload)
+	}
+}
+
+func TestMarketplaceEnvironmentProjectorPreservesFailedOwnershipState(t *testing.T) {
+	now := time.Date(2026, 8, 17, 19, 9, 49, 0, time.UTC)
+	runtime, err := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := contractv1.Worktree{
+		ID: "worktree_01", Path: "/tmp/marketplace", Branch: "feature/test", HeadRevision: "abc",
+	}
+	metadata := marketplaceEnvironment{
+		EnvironmentID: "environment_01", RepositoryID: "repository_01", Worktree: worktree,
+		Runtime: runtime,
+	}
+	projector := marketplaceEnvironmentProjector([]marketplaceEnvironment{metadata}, marketplaceCatalogForTest())
+	result := environmentcontrol.EnvironmentResult{
+		EnvironmentID: metadata.EnvironmentID, RunID: "run_01", TargetID: "testing",
+		State: domain.EnvironmentFailed,
+		Ports: []portlease.Lease{{
+			Key:  portlease.Key{EnvironmentID: metadata.EnvironmentID, ServiceID: "organizer", Purpose: "http"},
+			Host: "127.0.0.1", Port: 17005,
+		}},
+		Infrastructure: []containerhost.Goal{},
+		Services: []environmentcontrol.ServiceResult{{
+			ID: "organizer", EnvironmentID: metadata.EnvironmentID, RunID: "run_01", Owned: true,
+			OwnershipPath: "/private/runtime/ownership.json",
+			Process: processhost.Ownership{
+				EnvironmentID: metadata.EnvironmentID, ServiceID: "organizer", RunID: "run_01",
+				StartedAt: now, Members: []processhost.ProcessIdentity{},
+			},
+			Health: environmentcontrol.HealthReport{Readiness: "ready", Health: "degraded"},
+			Observation: environmentcontrol.ServiceObservation{
+				State: "unverifiable", Code: environmentcontrol.ServiceObservationOwnershipUnverified,
+				ObservedAt: now,
+			},
+		}},
+		UpdatedAt: now,
+	}
+
+	failed, err := projector(nil, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.DesiredState != "stopped" || failed.ObservedState != "failed" || failed.Health != "degraded" ||
+		len(failed.Services) != 1 || failed.Services[0].DesiredState != "stopped" ||
+		failed.Services[0].ObservedState != "unverifiable" ||
+		failed.Services[0].ObservationCode != environmentcontrol.ServiceObservationOwnershipUnverified {
+		t.Fatalf("failed projection: %+v", failed)
+	}
+
+	result.State = domain.EnvironmentRunning
+	running, err := projector(nil, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.DesiredState != "running" || running.ObservedState != "running" || running.Health != "degraded" {
+		t.Fatalf("running degraded projection: %+v", running)
+	}
+}
+
+func TestMarketplaceEnvironmentProjectorDoesNotPublishConfigurationOnlyHTTPPort(t *testing.T) {
+	runtime, err := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := marketplaceEnvironment{
+		EnvironmentID: "environment_01", RepositoryID: "repository_01",
+		Worktree: contractv1.Worktree{ID: "worktree_01", Path: "/tmp/marketplace", Branch: "feature/test"},
+		Runtime:  runtime,
+	}
+	projected, err := marketplaceEnvironmentProjector(
+		[]marketplaceEnvironment{metadata}, marketplaceCatalogForTest(),
+	)(nil, environmentcontrol.EnvironmentResult{
+		EnvironmentID: metadata.EnvironmentID, RunID: "run_01", TargetID: "testing",
+		State: domain.EnvironmentStarting,
+		Ports: []portlease.Lease{
+			{Key: portlease.Key{EnvironmentID: metadata.EnvironmentID, ServiceID: "auth-service", Purpose: "http"}, Host: "127.0.0.1", Port: 4011},
+			{Key: portlease.Key{EnvironmentID: metadata.EnvironmentID, ServiceID: "auth-service", Purpose: "lambda"}, Host: "127.0.0.1", Port: 5011},
+		},
+		UpdatedAt: time.Date(2026, 8, 16, 20, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, published := projected.URLs["auth-service"]; published {
+		t.Fatalf("Auth configuration-only HTTP port was published as a URL: %+v", projected.URLs)
 	}
 }
 

@@ -54,19 +54,63 @@ func BuildEnvironmentContext(
 	for _, name := range urlNames[:min(len(urlNames), maximumURLs)] {
 		urls[name] = environment.URLs[name]
 	}
+	pullRequest := pullRequestContext(snapshot.Repositories, environment)
+	runID := ""
+	sourceRevision := ""
+	sourceDirty := false
+	for _, service := range environment.Services {
+		if service.Run == nil {
+			continue
+		}
+		if runID == "" {
+			runID = service.Run.ID
+			sourceRevision = service.Run.SourceRevision
+			sourceDirty = service.Run.SourceHasTrackedChanges || service.Run.SourceHasUntrackedFiles
+		}
+	}
 
 	return &contractv1.EnvironmentContext{
 		Revision:       environment.Revision,
 		EnvironmentID:  environment.ID,
+		RunID:          runID,
+		SourceRevision: sourceRevision,
+		SourceDirty:    sourceDirty,
 		DesiredState:   environment.DesiredState,
 		ObservedState:  environment.ObservedState,
 		Health:         environment.Health,
 		URLs:           urls,
 		AttentionCount: len(environment.AttentionAlertIDs),
 		Attention:      attention,
+		PullRequest:    pullRequest,
 		Truncated: len(environment.AttentionAlertIDs) > maximumAttentionItems ||
 			len(environment.URLs) > maximumURLs,
 	}, nil
+}
+
+func pullRequestContext(
+	repositories []contractv1.Repository,
+	environment contractv1.Environment,
+) *contractv1.PullRequestContext {
+	for _, repository := range repositories {
+		if repository.ID != environment.RepositoryID {
+			continue
+		}
+		for _, worktree := range repository.Worktrees {
+			if worktree.ID != environment.WorktreeID || worktree.PullRequest == nil ||
+				worktree.PullRequest.Status != "found" || worktree.PullRequest.PullRequest == nil {
+				continue
+			}
+			pullRequest := worktree.PullRequest.PullRequest
+			return &contractv1.PullRequestContext{
+				Number: pullRequest.Number, URL: pullRequest.URL, State: pullRequest.State,
+				Draft: pullRequest.Draft, Mergeable: pullRequest.Mergeable,
+				ReviewDecision: pullRequest.ReviewDecision, ChecksState: pullRequest.Checks.State,
+				HeadMatchesLocal: pullRequest.HeadRevision == worktree.HeadRevision,
+				Stale:            worktree.PullRequest.Stale,
+			}
+		}
+	}
+	return nil
 }
 
 func environmentByID(environments []contractv1.Environment, id string) (contractv1.Environment, bool) {

@@ -2,8 +2,14 @@ package marketplace
 
 import (
 	"fmt"
+	"path"
+	"regexp"
 	"strconv"
+	"strings"
 )
+
+var queueNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}(?:\.fifo)?$`)
+var serverlessPluginPattern = regexp.MustCompile(`^(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+$`)
 
 func validateServiceDefinition(definition ServiceDefinition) error {
 	if definition.ID == "" || definition.WorkspacePackage == "" {
@@ -17,6 +23,11 @@ func validateServiceDefinition(definition ServiceDefinition) error {
 	if err != nil {
 		return err
 	}
+	if definition.HasHTTPListener {
+		if _, exists := portRequirements["http"]; !exists {
+			return fmt.Errorf("HTTP-listening service requires an HTTP port")
+		}
+	}
 	if err := validateEnvironmentBindings(definition, portRequirements); err != nil {
 		return err
 	}
@@ -26,8 +37,38 @@ func validateServiceDefinition(definition ServiceDefinition) error {
 	if err := validateInfrastructure(definition.Infrastructure, portRequirements); err != nil {
 		return err
 	}
+	if err := validateQueues(definition.Queues, definition.Infrastructure); err != nil {
+		return err
+	}
 	if definition.ServerlessOverlay != nil {
 		return validateServerlessOverlay(*definition.ServerlessOverlay, portRequirements)
+	}
+	return nil
+}
+
+func validateQueues(queues []QueueDefinition, infrastructure []InfrastructureRequirement) error {
+	if len(queues) == 0 {
+		return nil
+	}
+	hasElasticMQ := false
+	for _, requirement := range infrastructure {
+		if requirement.ID == "elasticmq" {
+			hasElasticMQ = true
+		}
+	}
+	if !hasElasticMQ {
+		return fmt.Errorf("queue definitions require ElasticMQ infrastructure")
+	}
+	seen := make(map[string]struct{}, len(queues))
+	for _, queue := range queues {
+		if !queueNamePattern.MatchString(queue.Name) || queue.FIFO != strings.HasSuffix(queue.Name, ".fifo") ||
+			(!queue.FIFO && queue.ContentBasedDeduplication) {
+			return fmt.Errorf("queue definition is invalid")
+		}
+		if _, duplicate := seen[queue.Name]; duplicate {
+			return fmt.Errorf("queue %q is duplicated", queue.Name)
+		}
+		seen[queue.Name] = struct{}{}
 	}
 	return nil
 }
@@ -94,7 +135,8 @@ func validateEnvironmentBindings(
 		if _, exists := portRequirements[binding.PortRequirement]; !exists {
 			return fmt.Errorf("environment binding %q refers to unknown port %q", binding.Name, binding.PortRequirement)
 		}
-		if binding.Format != EnvironmentValueDecimalPort && binding.Format != EnvironmentValueHTTPURL {
+		if binding.Format != EnvironmentValueDecimalPort && binding.Format != EnvironmentValueHTTPURL &&
+			binding.Format != EnvironmentValueBrowserHTTPURL {
 			return fmt.Errorf("environment binding %q has unknown format %q", binding.Name, binding.Format)
 		}
 	}
@@ -169,10 +211,20 @@ func validateServerlessOverlay(
 	portRequirements map[string]struct{},
 ) error {
 	if overlay.Directory == "" || overlay.Filename == "" || overlay.SourceConfig == "" {
-		return fmt.Errorf("Serverless overlay directory, filename, and source config are required")
+		return fmt.Errorf("Serverless overlay directory, filename, and source config are required") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
 	}
 	if len(overlay.Overrides) == 0 {
-		return fmt.Errorf("Serverless overlay requires at least one override")
+		return fmt.Errorf("Serverless overlay requires at least one override") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
+	}
+	seenPlugins := make(map[string]struct{}, len(overlay.Plugins))
+	for _, plugin := range overlay.Plugins {
+		if !serverlessPluginPattern.MatchString(plugin) {
+			return fmt.Errorf("Serverless overlay plugin is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
+		}
+		if _, duplicate := seenPlugins[plugin]; duplicate {
+			return fmt.Errorf("Serverless overlay plugin is duplicated") //nolint:staticcheck // Product-facing diagnostic starts with the service name.
+		}
+		seenPlugins[plugin] = struct{}{}
 	}
 	for _, override := range overlay.Overrides {
 		if len(override.ConfigurationPath) == 0 {
@@ -181,8 +233,14 @@ func validateServerlessOverlay(
 		if _, exists := portRequirements[override.PortRequirement]; !exists {
 			return fmt.Errorf("Serverless override refers to unknown port %q", override.PortRequirement)
 		}
-		if override.Format != OverlayValueIntegerPort && override.Format != OverlayValueHTTPURL {
+		if override.Format != OverlayValueIntegerPort && override.Format != OverlayValueHTTPURL &&
+			override.Format != OverlayValueLoopback {
 			return fmt.Errorf("Serverless override has unknown format %q", override.Format)
+		}
+		if override.URLPath != "" && (override.Format != OverlayValueHTTPURL ||
+			!strings.HasPrefix(override.URLPath, "/") || path.Clean(override.URLPath) != override.URLPath ||
+			strings.ContainsAny(override.URLPath, "?#\x00")) {
+			return fmt.Errorf("Serverless override URL path is invalid")
 		}
 	}
 	return nil

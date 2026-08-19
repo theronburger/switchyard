@@ -4,6 +4,8 @@ import (
 	"net"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"unicode/utf8"
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
@@ -35,7 +37,13 @@ func validateOperationRecord(record environmentcontrol.OperationRecord) error {
 	if (record.State == domain.OperationPending || record.State == domain.OperationRunning || record.State == domain.OperationSucceeded) && record.Failure != "" {
 		return ErrEnvironmentRecordInvalid
 	}
+	if (record.State == domain.OperationPending || record.State == domain.OperationRunning || record.State == domain.OperationSucceeded) && record.FailureDetail != nil {
+		return ErrEnvironmentRecordInvalid
+	}
 	if (record.State == domain.OperationFailed || record.State == domain.OperationCancelled) && record.Failure == "" {
+		return ErrEnvironmentRecordInvalid
+	}
+	if record.FailureDetail != nil && !validOperationFailure(*record.FailureDetail) {
 		return ErrEnvironmentRecordInvalid
 	}
 	if record.Rollback == nil {
@@ -56,6 +64,9 @@ func validateOperationRecord(record environmentcontrol.OperationRecord) error {
 			seen[serviceID] = struct{}{}
 		}
 	}
+	if record.Source != nil && !validEnvironmentSource(*record.Source) {
+		return ErrEnvironmentRecordInvalid
+	}
 	if record.Target != nil {
 		if err := validateEnvironmentResult(*record.Target); err != nil || record.Target.EnvironmentID != record.EnvironmentID || record.Target.RunID != record.RunID {
 			return ErrEnvironmentRecordInvalid
@@ -73,6 +84,36 @@ func validateOperationRecord(record environmentcontrol.OperationRecord) error {
 		}
 	}
 	return nil
+}
+
+func validOperationFailure(failure environmentcontrol.OperationFailure) bool {
+	if !safeFailureText(failure.Code, 256) || !safeFailureText(failure.Message, 2048) ||
+		!validOperationPhase(failure.Phase) || failure.Phase == environmentcontrol.PhaseComplete ||
+		len(failure.ResourceKind) > 256 || len(failure.ResourceID) > 256 || len(failure.Step) > 512 ||
+		len(failure.Diagnostic) > 2048 || len(failure.LogReference) > 1024 || len(failure.NextAction) > 256 {
+		return false
+	}
+	for _, value := range []string{
+		failure.ResourceKind, failure.ResourceID, failure.Step, failure.Diagnostic,
+		failure.LogReference, failure.NextAction,
+	} {
+		if value != "" && !safeFailureText(value, len(value)) {
+			return false
+		}
+	}
+	return failure.ExitCode == nil || *failure.ExitCode >= -1 && *failure.ExitCode <= 255
+}
+
+func safeFailureText(value string, maximumBytes int) bool {
+	if value == "" || len(value) > maximumBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 && character != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRollbackRecord(environmentID, runID string, entry environmentcontrol.RollbackEntry) error {
@@ -140,6 +181,9 @@ func validateEnvironmentResult(result environmentcontrol.EnvironmentResult) erro
 	if result.State == domain.EnvironmentUnknown || result.State == domain.EnvironmentStarting || result.State == domain.EnvironmentStopping {
 		return ErrEnvironmentResultInvalid
 	}
+	if result.Source != nil && !validEnvironmentSource(*result.Source) {
+		return ErrEnvironmentResultInvalid
+	}
 	seenPorts := make(map[int]struct{}, len(result.Ports))
 	seenKeys := make(map[portlease.Key]struct{}, len(result.Ports))
 	for _, lease := range result.Ports {
@@ -175,6 +219,18 @@ func validateEnvironmentResult(result environmentcontrol.EnvironmentResult) erro
 		seenServices[service.ID] = struct{}{}
 	}
 	return nil
+}
+
+func validEnvironmentSource(source environmentcontrol.SourceSnapshot) bool {
+	if source.ObservedAt.IsZero() || (len(source.Revision) != 40 && len(source.Revision) != 64) {
+		return false
+	}
+	for _, character := range source.Revision {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
+			return false
+		}
+	}
+	return true
 }
 
 func validLeaseHost(host string) bool {
@@ -213,7 +269,8 @@ func validEnvironmentRefresh(
 	if current.EnvironmentID != next.EnvironmentID || current.RunID != next.RunID ||
 		current.State != domain.EnvironmentRunning || next.State != domain.EnvironmentRunning ||
 		!reflect.DeepEqual(current.Ports, next.Ports) || !reflect.DeepEqual(current.Projection, next.Projection) ||
-		!reflect.DeepEqual(current.Infrastructure, next.Infrastructure) || len(current.Services) != len(next.Services) {
+		!reflect.DeepEqual(current.Infrastructure, next.Infrastructure) ||
+		!reflect.DeepEqual(current.Source, next.Source) || len(current.Services) != len(next.Services) {
 		return false
 	}
 	for index := range current.Services {
@@ -261,6 +318,7 @@ func validOperationPhase(phase environmentcontrol.OperationPhase) bool {
 		environmentcontrol.PhaseRemovingProjection,
 		environmentcontrol.PhaseReleasingPorts,
 		environmentcontrol.PhaseRollingBack,
+		environmentcontrol.PhasePublishingResult,
 		environmentcontrol.PhaseComplete:
 		return true
 	default:
@@ -269,6 +327,14 @@ func validOperationPhase(phase environmentcontrol.OperationPhase) bool {
 }
 
 func normalizeOperationRecord(record environmentcontrol.OperationRecord) environmentcontrol.OperationRecord {
+	if record.FailureDetail != nil {
+		failure := *record.FailureDetail
+		if failure.ExitCode != nil {
+			exitCode := *failure.ExitCode
+			failure.ExitCode = &exitCode
+		}
+		record.FailureDetail = &failure
+	}
 	if len(record.Rollback) == 0 {
 		record.Rollback = make([]environmentcontrol.RollbackEntry, 0)
 	} else {
@@ -305,6 +371,10 @@ func normalizeOperationRecord(record environmentcontrol.OperationRecord) environ
 		}
 		record.Intent = &intent
 	}
+	if record.Source != nil {
+		source := *record.Source
+		record.Source = &source
+	}
 	if record.Target != nil {
 		target := normalizeEnvironmentResult(*record.Target)
 		record.Target = &target
@@ -313,6 +383,10 @@ func normalizeOperationRecord(record environmentcontrol.OperationRecord) environ
 }
 
 func normalizeEnvironmentResult(result environmentcontrol.EnvironmentResult) environmentcontrol.EnvironmentResult {
+	if result.Source != nil {
+		source := *result.Source
+		result.Source = &source
+	}
 	if len(result.Ports) == 0 {
 		result.Ports = make([]portlease.Lease, 0)
 	} else {

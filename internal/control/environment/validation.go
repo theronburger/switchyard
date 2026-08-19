@@ -42,7 +42,22 @@ func validateStartRequest(request StartRequest) error {
 			seenServices[serviceID] = struct{}{}
 		}
 	}
+	if request.Source != nil && !validSourceSnapshot(*request.Source) {
+		return ErrInvalidRequest
+	}
 	return nil
+}
+
+func validSourceSnapshot(source SourceSnapshot) bool {
+	if source.ObservedAt.IsZero() || (len(source.Revision) != 40 && len(source.Revision) != 64) {
+		return false
+	}
+	for _, character := range source.Revision {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateExecutionPlan(
@@ -372,6 +387,14 @@ func cloneIntent(intent *PlanIntent) *PlanIntent {
 	return &copy
 }
 
+func cloneSource(source *SourceSnapshot) *SourceSnapshot {
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
+}
+
 func cloneService(service *ServiceResult) *ServiceResult {
 	if service == nil {
 		return nil
@@ -387,6 +410,7 @@ func cloneEnvironment(result EnvironmentResult) EnvironmentResult {
 	copy.Projection = cloneProjection(result.Projection)
 	copy.Infrastructure = cloneGoals(result.Infrastructure)
 	copy.Services = append([]ServiceResult(nil), result.Services...)
+	copy.Source = cloneSource(result.Source)
 	for index := range copy.Services {
 		copy.Services[index].Process.Members = append(
 			copy.Services[index].Process.Members[:0:0], result.Services[index].Process.Members...,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStatusFixture(t *testing.T) {
@@ -21,8 +22,48 @@ func TestStatusFixture(t *testing.T) {
 	if err := snapshot.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := snapshot.Environments[0].DisplayName, "DEMO-830"; got != want {
+	if got, want := snapshot.Environments[0].DisplayName, "Demo environment"; got != want {
 		t.Fatalf("display name: got %q, want %q", got, want)
+	}
+	if observation := snapshot.Repositories[0].Observation; observation == nil || observation.Stale || observation.ObservedAt == nil {
+		t.Fatalf("repository observation did not decode: %#v", observation)
+	}
+	run := snapshot.Environments[0].Services[0].Run
+	if run == nil || run.SourceRevision != snapshot.Repositories[0].Worktrees[0].HeadRevision ||
+		!run.SourceHasTrackedChanges || run.SourceObservedAt.IsZero() {
+		t.Fatalf("run source provenance did not decode: %#v", run)
+	}
+	if snapshot.Operations[0].RunID != run.ID {
+		t.Fatalf("operation run id %q does not match service run %q", snapshot.Operations[0].RunID, run.ID)
+	}
+}
+
+func TestStatusAcceptsRepositoryNeutralWorkspaceToolchains(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	contents, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot StatusSnapshot
+	if err := json.Unmarshal(contents, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	worktree := &snapshot.Repositories[0].Worktrees[0]
+	worktree.Workspace = &WorkspaceStatus{
+		Ownership: "adopted", State: "ready",
+		Fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PreparedAt:  time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC),
+		Toolchains: []WorkspaceToolchain{
+			{ID: "go", RequestedVersion: "1.26", ResolvedVersion: "1.26.5"},
+			{ID: "node", RequestedVersion: "24", ResolvedVersion: "24.19.0"},
+		},
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	worktree.Workspace.Toolchains = nil
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("null workspace toolchains were accepted")
 	}
 }
 
@@ -99,6 +140,109 @@ func TestStatusRejectsNullCollections(t *testing.T) {
 				t.Fatal("null collection was accepted")
 			}
 		})
+	}
+}
+
+func TestStatusRejectsEnvironmentTargetOutsideRepositoryCatalog(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	contents, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot StatusSnapshot
+	if err := json.Unmarshal(contents, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Environments[0].TargetID = "unknown"
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("environment target outside the repository catalog was accepted")
+	}
+}
+
+func TestStatusValidatesLifecycleVocabularyAndAcceptsLegacyPersistedStates(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	contents, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot StatusSnapshot
+	if err := json.Unmarshal(contents, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	environment := &snapshot.Environments[0]
+	environment.DesiredState = "failed"
+	environment.ObservedState = "degraded"
+	environment.Services[0].DesiredState = "failed"
+	environment.Services[0].ObservedState = "unverifiable"
+	environment.Services[0].ObservationCode = "PROCESS_OWNERSHIP_UNVERIFIED"
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("legacy persisted state was rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Environment)
+	}{
+		{name: "environment desired", mutate: func(environment *Environment) { environment.DesiredState = "surprising" }},
+		{name: "environment observed", mutate: func(environment *Environment) { environment.ObservedState = "surprising" }},
+		{name: "environment health", mutate: func(environment *Environment) { environment.Health = "surprising" }},
+		{name: "service desired", mutate: func(environment *Environment) { environment.Services[0].DesiredState = "surprising" }},
+		{name: "service observed", mutate: func(environment *Environment) { environment.Services[0].ObservedState = "surprising" }},
+		{name: "service health", mutate: func(environment *Environment) { environment.Services[0].Health = "surprising" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var candidate StatusSnapshot
+			if err := json.Unmarshal(contents, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&candidate.Environments[0])
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("invalid lifecycle value was accepted")
+			}
+		})
+	}
+}
+
+func TestStatusRejectsInconsistentWorktreeLineAttribution(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	contents, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot StatusSnapshot
+	if err := json.Unmarshal(contents, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Repositories[0].Worktrees[0].Changes.Services[0].Committed.Additions++
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("inconsistent service line attribution was accepted")
+	}
+}
+
+func TestStatusRejectsInconsistentPullRequestChecks(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	contents, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot StatusSnapshot
+	if err := json.Unmarshal(contents, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	checks := &snapshot.Repositories[0].Worktrees[0].PullRequest.PullRequest.Checks
+	checks.State = "passing"
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("passing state with a pending check was accepted")
+	}
+
+	if err := json.Unmarshal(contents, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	checks = &snapshot.Repositories[0].Worktrees[0].PullRequest.PullRequest.Checks
+	checks.Pending = -1
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("negative check count was accepted")
 	}
 }
 
@@ -200,6 +344,10 @@ func TestStartEnvironmentRequestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 		}},
 		{name: "duplicate services", mutate: func(request *StartEnvironmentRequest) {
 			request.ServiceIDs = []string{"organizer", "organizer"}
+		}},
+		{name: "mismatched target confirmation", mutate: func(request *StartEnvironmentRequest) {
+			request.TargetID = "demo"
+			request.ConfirmedTargetID = "production"
 		}},
 	}
 

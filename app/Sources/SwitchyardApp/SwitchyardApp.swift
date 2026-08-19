@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SwitchyardApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model: AppModel
+    @State private var updates = AppUpdateController()
 
     init() {
         let model = AppModel(configuration: .resolve())
@@ -31,20 +32,30 @@ struct SwitchyardApp: App {
     var body: some Scene {
         Window("Switchyard", id: "command-center") {
             CommandCenterView(model: model)
-                .task { model.startPolling() }
+                .task {
+                    model.startPolling()
+                    updates.start()
+                }
         }
-        .defaultSize(width: 1320, height: 820)
+        .defaultSize(width: CommandCenterLayout.defaultWidth, height: CommandCenterLayout.defaultHeight)
         .windowResizability(.contentMinSize)
 
         MenuBarExtra {
             MenuBarSummaryView(model: model)
         } label: {
-            Label("Switchyard", systemImage: "point.3.connected.trianglepath.dotted")
+            MenuBarStatusLabel(model: model)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(model: model)
+            SettingsView(model: model, updates: updates)
+        }
+
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button(updates.buttonTitle) { updates.checkForUpdates() }
+                    .disabled(!updates.canCheckForUpdates)
+            }
         }
     }
 }

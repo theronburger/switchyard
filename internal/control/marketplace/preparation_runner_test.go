@@ -75,6 +75,28 @@ func TestOSPreparationRunnerRedactsFailureAndRefusesSymlinkLogs(t *testing.T) {
 	}
 }
 
+func TestOSPreparationRunnerReturnsSafeStructuredCompilerDiagnostic(t *testing.T) {
+	t.Parallel()
+	preparation := helperPreparation(t, "typescript-failure")
+	preparation.ServiceID = "nonprofit-service"
+	preparation.LogReference = "run_test/preparations/nonprofit-service/command-0"
+	err := (OSPreparationRunner{}).Run(context.Background(), preparation)
+	var failure *PreparationFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("structured preparation failure: %v", err)
+	}
+	if failure.ExitCode == nil || *failure.ExitCode != 2 ||
+		failure.Diagnostic != "src/utils/importFoundation.ts:43:43: TS2304: Cannot find name 'ManagedImportIndexDefinition'." ||
+		failure.LogReference != preparation.LogReference {
+		t.Fatalf("structured preparation failure: %+v", failure)
+	}
+	public := failure.OperationFailure()
+	if public.Code != "SERVICE_PREPARATION_FAILED" || public.Retryable ||
+		public.ResourceID != "nonprofit-service" || public.NextAction != "fix_service_build" {
+		t.Fatalf("public preparation failure: %+v", public)
+	}
+}
+
 func TestOSPreparationRunnerCancelsItsOwnedProcessGroup(t *testing.T) {
 	t.Parallel()
 	preparation := helperPreparation(t, "parent")
@@ -138,7 +160,7 @@ func TestElasticMQReadinessRetriesEmptyReplyAtAssignedEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	endpoint := "http://" + listener.Addr().String()
 	action := make(chan string, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -231,11 +253,14 @@ func TestPreparationHelperProcess(t *testing.T) {
 	}
 	switch mode {
 	case "exact":
-		fmt.Fprint(os.Stdout, strings.Join(append(arguments, os.Getenv("PLANNED_VALUE")), "|"))
-		fmt.Fprint(os.Stdout, strings.Repeat("x", 4096))
+		_, _ = fmt.Fprint(os.Stdout, strings.Join(append(arguments, os.Getenv("PLANNED_VALUE")), "|"))
+		_, _ = fmt.Fprint(os.Stdout, strings.Repeat("x", 4096))
 	case "failure":
 		fmt.Fprintln(os.Stderr, strings.Join(arguments, "|"))
 		os.Exit(23)
+	case "typescript-failure":
+		_, _ = fmt.Fprintln(os.Stdout, "nonprofit-service:build:no-dependencies: src/utils/importFoundation.ts(43,43): error TS2304: Cannot find name 'ManagedImportIndexDefinition'.")
+		os.Exit(2)
 	case "parent":
 		child := exec.Command(os.Args[0], "-test.run=TestPreparationHelperProcess")
 		child.Env = replaceEnvironment(os.Environ(), preparationHelperMode, "child")

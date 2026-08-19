@@ -13,6 +13,8 @@ import (
 
 const timeFormat = time.RFC3339Nano
 
+type SnapshotUpdater func(*contractv1.StatusSnapshot) (bool, error)
+
 func (store *Store) CommitSnapshot(ctx context.Context, snapshot contractv1.StatusSnapshot) (contractv1.StatusSnapshot, error) {
 	transaction, err := store.database.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
@@ -27,6 +29,48 @@ func (store *Store) CommitSnapshot(ctx context.Context, snapshot contractv1.Stat
 		return contractv1.StatusSnapshot{}, fmt.Errorf("commit status snapshot: %w", err)
 	}
 	return committed, nil
+}
+
+// UpdateSnapshot applies a fast, side-effect-free mutation to the latest
+// snapshot inside the store transaction. External observation must happen
+// before this call so a stale read cannot overwrite a concurrent environment
+// or operation publication.
+func (store *Store) UpdateSnapshot(
+	ctx context.Context,
+	update SnapshotUpdater,
+) (contractv1.StatusSnapshot, bool, error) {
+	if update == nil {
+		return contractv1.StatusSnapshot{}, false, errors.New("snapshot updater is required")
+	}
+	transaction, err := store.database.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return contractv1.StatusSnapshot{}, false, fmt.Errorf("begin status snapshot update: %w", err)
+	}
+	snapshot, err := readSnapshotTransaction(ctx, transaction)
+	if err != nil {
+		_ = transaction.Rollback()
+		return contractv1.StatusSnapshot{}, false, err
+	}
+	changed, err := update(&snapshot)
+	if err != nil {
+		_ = transaction.Rollback()
+		return contractv1.StatusSnapshot{}, false, err
+	}
+	if !changed {
+		if err := transaction.Rollback(); err != nil {
+			return contractv1.StatusSnapshot{}, false, fmt.Errorf("close unchanged status snapshot: %w", err)
+		}
+		return snapshot, false, nil
+	}
+	committed, err := store.commitSnapshotTransaction(ctx, transaction, snapshot)
+	if err != nil {
+		_ = transaction.Rollback()
+		return contractv1.StatusSnapshot{}, false, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return contractv1.StatusSnapshot{}, false, fmt.Errorf("commit status snapshot update: %w", err)
+	}
+	return committed, true, nil
 }
 
 func (store *Store) commitSnapshotTransaction(

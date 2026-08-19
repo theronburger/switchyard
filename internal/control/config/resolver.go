@@ -54,6 +54,8 @@ type RepositoryConfiguration struct {
 	RootPath                    string
 	Adapter                     string
 	DisplayName                 string
+	Runtime                     RuntimeSettings
+	Workspace                   WorkspaceSettings
 	Source                      string
 	ManifestPath                string
 	RequiredLocalExcludePattern string
@@ -154,6 +156,8 @@ func (resolver Resolver) Resolve(
 				RootPath:                    rootPath,
 				Adapter:                     manifest.Adapter,
 				DisplayName:                 displayName,
+				Runtime:                     manifest.Runtime,
+				Workspace:                   manifest.Workspace,
 				Source:                      "local-manifest",
 				ManifestPath:                manifestPath,
 				RequiredLocalExcludePattern: LocalManifestExcludePattern,

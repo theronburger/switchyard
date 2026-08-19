@@ -3,6 +3,10 @@ import SwitchyardKit
 
 struct SettingsView: View {
     @Bindable var model: AppModel
+    @Bindable var updates: AppUpdateController
+    @AppStorage(MenuBarPreferenceKey.showAttention) private var showAttention = true
+    @AppStorage(MenuBarPreferenceKey.showProcesses) private var showProcesses = false
+    @AppStorage(MenuBarPreferenceKey.showMemory) private var showMemory = false
 
     var body: some View {
         Form {
@@ -34,6 +38,37 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("Menu bar indicators") {
+                Toggle("Attention count", isOn: $showAttention)
+                Toggle("Owned process count", isOn: $showProcesses)
+                Toggle("Environment memory", isOn: $showMemory)
+                Text("The Switchyard mark connects when an environment is running. Optional runtime indicators update from the same atomic daemon snapshot as the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.switch)
+            Section("Updates") {
+                LabeledContent(
+                    "Installed version",
+                    value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
+                )
+                if let availableVersion = updates.availableVersion {
+                    LabeledContent("Available version", value: availableVersion)
+                }
+                Button(updates.buttonTitle) { updates.checkForUpdates() }
+                    .disabled(!updates.canCheckForUpdates)
+                Toggle(
+                    "Check automatically",
+                    isOn: Binding(
+                        get: { updates.automaticallyChecksForUpdates },
+                        set: { updates.setAutomaticUpdateChecks($0) }
+                    )
+                )
+                Text("Switchyard checks once per day and verifies every update with its dedicated Ed25519 release key before extraction.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.switch)
             Section("About") {
                 LabeledContent("Contract schema", value: "v\(contractSchemaVersion)")
                 if let daemon = model.snapshot?.daemon {

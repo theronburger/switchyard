@@ -3,6 +3,7 @@ package marketplace
 import (
 	"bytes"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,16 +17,11 @@ func TestRenderServerlessProjectionIsDeterministicAndComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	reordered := overlay
-	reordered.Overrides = []ServerlessOverride{
-		overlay.Overrides[2],
-		overlay.Overrides[0],
-		overlay.Overrides[1],
-	}
-	reorderedProjection, err := RenderServerlessProjection(reordered, []PortAssignment{
-		ports[2],
-		ports[0],
-		ports[1],
-	})
+	reordered.Overrides = append([]ServerlessOverride(nil), overlay.Overrides...)
+	slices.Reverse(reordered.Overrides)
+	reorderedPorts := append([]PortAssignment(nil), ports...)
+	slices.Reverse(reorderedPorts)
+	reorderedProjection, err := RenderServerlessProjection(reordered, reorderedPorts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +38,7 @@ func TestRenderServerlessProjectionIsDeterministicAndComplete(t *testing.T) {
 		"// switchyard-owner: switchyard.marketplace.serverless.v1\n",
 		"// switchyard-payload-sha256: " + projection.PayloadSHA256 + "\n\n",
 		`const configuration = require("./serverless.ts")`,
+		`configuration["custom"]["serverless-offline"]["host"] = "127.0.0.1"`,
 		`configuration["custom"]["serverless-offline"]["httpPort"] = 4016`,
 		`configuration["custom"]["serverless-offline"]["lambdaPort"] = 5016`,
 		`configuration["custom"]["serverless-offline-sqs"]["endpoint"] = "http://127.0.0.1:19324"`,

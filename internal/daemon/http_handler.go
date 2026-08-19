@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,25 +28,31 @@ type EnvironmentActions interface {
 	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
 }
 
+type WorkspaceActions interface {
+	CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
+	AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
+	ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+}
+
+type OperationDiagnosticsSource interface {
+	ReadOperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error)
+}
+
 type HandlerConfig struct {
-	Token              string
-	DaemonInstanceID   string
-	DaemonVersion      string
-	StartedAt          time.Time
-	StatusSource       StatusSource
-	EventSource        EventSource
-	EnvironmentActions EnvironmentActions
+	Token                string
+	DaemonInstanceID     string
+	DaemonVersion        string
+	StartedAt            time.Time
+	StatusSource         StatusSource
+	EventSource          EventSource
+	EnvironmentActions   EnvironmentActions
+	WorkspaceActions     WorkspaceActions
+	OperationDiagnostics OperationDiagnosticsSource
 }
 
 type errorResponse struct {
-	SchemaVersion int              `json:"schemaVersion"`
-	Error         errorDescription `json:"error"`
-}
-
-type errorDescription struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
+	SchemaVersion int                      `json:"schemaVersion"`
+	Error         contractv1.ContractError `json:"error"`
 }
 
 func NewHTTPHandler(config HandlerConfig) (http.Handler, error) {
@@ -115,11 +122,71 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		}
 		handler.events(response, request)
 	default:
+		if handler.operationDiagnostics(response, request) {
+			return
+		}
 		if handler.mutation(response, request) {
 			return
 		}
 		writeError(response, http.StatusNotFound, "NOT_FOUND", "Route not found", false)
 	}
+}
+
+func (handler *apiHandler) operationDiagnostics(response http.ResponseWriter, request *http.Request) bool {
+	const prefix = "/v1/operations/"
+	const suffix = "/diagnostics"
+	if !strings.HasPrefix(request.URL.Path, prefix) || !strings.HasSuffix(request.URL.Path, suffix) {
+		return false
+	}
+	operationID := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, prefix), suffix)
+	if operationID == "" || strings.Contains(operationID, "/") {
+		return false
+	}
+	if request.Method != http.MethodGet {
+		response.Header().Set("Allow", http.MethodGet)
+		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+		return true
+	}
+	maximumBytes := 0
+	query := request.URL.Query()
+	if len(query) > 1 || (len(query) == 1 && !query.Has("maxBytes")) || len(query["maxBytes"]) > 1 {
+		writeError(response, http.StatusBadRequest, "INVALID_DIAGNOSTICS_REQUEST", "Diagnostics request is invalid", false)
+		return true
+	}
+	if value, present := query["maxBytes"]; present {
+		if len(value) != 1 || value[0] == "" {
+			writeError(response, http.StatusBadRequest, "INVALID_DIAGNOSTICS_REQUEST", "Diagnostics request is invalid", false)
+			return true
+		}
+		parsed, err := strconv.Atoi(value[0])
+		if err != nil {
+			writeError(response, http.StatusBadRequest, "INVALID_DIAGNOSTICS_REQUEST", "Diagnostics request is invalid", false)
+			return true
+		}
+		if parsed < 256 || parsed > MaximumOperationDiagnosticBytes {
+			writeError(response, http.StatusBadRequest, "INVALID_DIAGNOSTICS_REQUEST", "Diagnostics request is invalid", false)
+			return true
+		}
+		maximumBytes = parsed
+	}
+	if handler.config.OperationDiagnostics == nil {
+		writeError(response, http.StatusServiceUnavailable, "DIAGNOSTICS_UNAVAILABLE", "Operation diagnostics are not available", true)
+		return true
+	}
+	diagnostics, err := handler.config.OperationDiagnostics.ReadOperationDiagnostics(request.Context(), operationID, maximumBytes)
+	switch {
+	case errors.Is(err, ErrOperationDiagnosticsInvalid):
+		writeError(response, http.StatusBadRequest, "INVALID_DIAGNOSTICS_REQUEST", "Diagnostics request is invalid", false)
+	case errors.Is(err, ErrOperationDiagnosticsNotFound):
+		writeError(response, http.StatusNotFound, "OPERATION_NOT_FOUND", "Operation was not found", false)
+	case errors.Is(err, ErrOperationDiagnosticsUnavailable):
+		writeError(response, http.StatusConflict, "DIAGNOSTICS_UNAVAILABLE", "This operation has no available diagnostics", false)
+	case err != nil:
+		writeError(response, http.StatusServiceUnavailable, "DIAGNOSTICS_UNAVAILABLE", "Operation diagnostics are not available", true)
+	default:
+		writeJSON(response, http.StatusOK, diagnostics)
+	}
+	return true
 }
 
 func (handler *apiHandler) handshake(response http.ResponseWriter) {
@@ -174,13 +241,13 @@ func tokenMatches(request *http.Request, expectedToken string) bool {
 }
 
 func writeError(response http.ResponseWriter, status int, code, message string, retryable bool) {
+	writeContractError(response, status, contractv1.ContractError{Code: code, Message: message, Retryable: retryable})
+}
+
+func writeContractError(response http.ResponseWriter, status int, contractError contractv1.ContractError) {
 	writeJSON(response, status, errorResponse{
 		SchemaVersion: contractv1.SchemaVersion,
-		Error: errorDescription{
-			Code:      code,
-			Message:   message,
-			Retryable: retryable,
-		},
+		Error:         contractError,
 	})
 }
 

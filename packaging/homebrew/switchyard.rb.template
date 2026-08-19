@@ -1,0 +1,57 @@
+cask "switchyard" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/theronburger/switchyard/releases/download/v#{version}/switchyard_#{version}_macos_universal.zip"
+  name "Switchyard"
+  desc "Native control plane for isolated local worktree environments"
+  homepage "https://github.com/theronburger/switchyard"
+
+  auto_updates true
+  depends_on macos: :sequoia
+
+  app "Switchyard.app"
+  binary "#{appdir}/Switchyard.app/Contents/Resources/SwitchyardDaemon", target: "sy"
+
+  uninstall early_script: {
+              executable: "/usr/bin/osascript",
+              args:       [
+                "-l",
+                "JavaScript",
+                "#{appdir}/Switchyard.app/Contents/Resources/quit-switchyard.js",
+                "com.theronburger.switchyard",
+              ],
+            },
+            launchctl:    "com.theronburger.switchyard.daemon",
+            quit:         "com.theronburger.switchyard",
+            delete:       [
+              "~/Library/Application Support/Switchyard/bin/switchyard",
+              "~/Library/LaunchAgents/com.theronburger.switchyard.daemon.plist",
+            ]
+
+  zap trash: [
+    "~/Library/Application Support/Switchyard",
+    "~/Library/LaunchAgents/com.theronburger.switchyard.daemon.plist",
+    "~/Library/Preferences/com.theronburger.switchyard.plist",
+  ]
+
+  caveats <<~EOS
+    Switchyard is self-signed because the project does not currently have an
+    Apple Developer identity. Homebrew 6 requires explicit trust, followed by
+    an app-scoped Gatekeeper post-processing step after installation:
+
+      brew tap theronburger/tap
+      brew trust --cask theronburger/tap/switchyard
+      brew install --cask switchyard
+      xattr -dr com.apple.quarantine "/Applications/Switchyard.app"
+      open -a "Switchyard"
+
+    Uninstall stops the app and daemon. Remove the MCP registrations manually:
+
+      codex mcp remove switchyard
+      claude mcp remove switchyard --scope user
+
+    Managed Switchyard skills are intentionally retained. Remove them from the
+    agent skills directories if they are no longer wanted.
+  EOS
+end

@@ -15,8 +15,10 @@ import (
 
 	marketplaceadapter "github.com/theronburger/switchyard/internal/adapters/marketplace"
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	controlconfig "github.com/theronburger/switchyard/internal/control/config"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	marketplacecontrol "github.com/theronburger/switchyard/internal/control/marketplace"
+	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
@@ -34,9 +36,12 @@ const (
 	maximumLocalConfigBytes  = 1024 * 1024
 )
 
+var errMarketplaceNodeUnavailable = errors.New("Marketplace Node runtime is unavailable") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
+
 type environmentRuntime struct {
-	actions      *daemon.EnvironmentActionService
-	observerDone <-chan error
+	actions          *daemon.EnvironmentActionService
+	workspaceActions *daemon.WorkspaceActionService
+	observerDone     <-chan error
 }
 
 type marketplaceEnvironment struct {
@@ -44,12 +49,18 @@ type marketplaceEnvironment struct {
 	RepositoryID  string
 	Worktree      contractv1.Worktree
 	PortDefaults  map[string]int
+	Runtime       contractv1.RepositoryRuntime
 }
 
 type marketplaceActionResolver struct {
 	byWorktree    map[string]marketplaceEnvironment
 	byEnvironment map[string]marketplaceEnvironment
 	catalog       marketplaceadapter.Catalog
+	sourceReader  marketplaceSourceReader
+}
+
+type marketplaceSourceReader interface {
+	Read(context.Context, string) (environmentcontrol.SourceSnapshot, error)
 }
 
 func buildEnvironmentRuntime(
@@ -58,8 +69,11 @@ func buildEnvironmentRuntime(
 	paths applicationPaths,
 	instanceID string,
 	discovered repositoryInventory,
+	restart func(),
 ) (*environmentRuntime, error) {
-	environments, registrations, err := marketplaceRegistrations(paths, instanceID, discovered.Repositories)
+	environments, registrations, workspaceRegistrations, err := marketplaceRegistrations(
+		ctx, paths, instanceID, discovered.Repositories,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +96,19 @@ func buildEnvironmentRuntime(
 		}
 		return &environmentRuntime{}, nil
 	}
+	managedManager, err := newManagedWorkspaceManager(paths, discovered)
+	if err != nil {
+		return nil, err
+	}
+	for index := range workspaceRegistrations {
+		for _, environment := range environments {
+			if environment.Worktree.ID == workspaceRegistrations[index].WorktreeID &&
+				managedManager.Owns(environment.RepositoryID, environment.Worktree.Path) {
+				workspaceRegistrations[index].Ownership = workspacecontrol.OwnershipManaged
+				break
+			}
+		}
+	}
 
 	registry, err := marketplacecontrol.NewEnvironmentRegistry(registrations)
 	if err != nil {
@@ -89,6 +116,25 @@ func buildEnvironmentRuntime(
 	}
 	planner, err := marketplacecontrol.NewDefaultPlanBuilder(registry)
 	if err != nil {
+		return nil, err
+	}
+	workspaceJournal, err := state.NewWorkspaceJournal(store)
+	if err != nil {
+		return nil, err
+	}
+	workspacePlanner, err := marketplacecontrol.NewWorkspacePlanBuilder(workspaceRegistrations)
+	if err != nil {
+		return nil, err
+	}
+	workspaceCoordinator, err := workspacecontrol.NewCoordinator(workspacecontrol.Config{
+		Journal: workspaceJournal, Planner: workspacePlanner,
+		Runner:   marketplacecontrol.WorkspacePreparationRunner{},
+		Verifier: workspacecontrol.OSRequirementVerifier{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := workspaceCoordinator.Reconcile(ctx); err != nil {
 		return nil, err
 	}
 	projections, err := marketplacecontrol.NewProjectionApplier(registry)
@@ -161,7 +207,15 @@ func buildEnvironmentRuntime(
 	observerDone := make(chan error, 1)
 	resolver := newMarketplaceActionResolver(environments, marketplaceadapter.DefaultCatalog())
 	actions, err := daemon.NewEnvironmentActionService(daemon.EnvironmentActionServiceConfig{
-		Lifecycle: ctx, Store: store, Journal: journal, Coordinator: coordinator, Resolver: resolver,
+		Lifecycle: ctx, Store: store, Journal: journal, Coordinator: coordinator,
+		Workspace: workspaceCoordinator, Resolver: resolver,
+	})
+	if err != nil {
+		return nil, err
+	}
+	workspaceActions, err := daemon.NewWorkspaceActionService(daemon.WorkspaceActionServiceConfig{
+		Lifecycle: ctx, Store: store, Backend: managedManager,
+		Resolver: newManagedWorkspaceResolver(store, discovered), Restart: restart,
 	})
 	if err != nil {
 		return nil, err
@@ -169,13 +223,18 @@ func buildEnvironmentRuntime(
 	go func() {
 		observerDone <- observer.Run(ctx)
 	}()
-	return &environmentRuntime{actions: actions, observerDone: observerDone}, nil
+	return &environmentRuntime{
+		actions: actions, workspaceActions: workspaceActions, observerDone: observerDone,
+	}, nil
 }
 
 func (runtime *environmentRuntime) CloseAndWait(ctx context.Context) error {
 	var actionError error
 	if runtime.actions != nil {
 		actionError = runtime.actions.CloseAndWait(ctx)
+	}
+	if runtime.workspaceActions != nil {
+		actionError = errors.Join(actionError, runtime.workspaceActions.CloseAndWait(ctx))
 	}
 	var observerError error
 	if runtime.observerDone != nil {
@@ -218,17 +277,24 @@ func restoreEnvironmentLeases(
 }
 
 func marketplaceRegistrations(
+	ctx context.Context,
 	paths applicationPaths,
 	instanceID string,
 	repositories []contractv1.Repository,
-) ([]marketplaceEnvironment, []marketplacecontrol.EnvironmentRegistration, error) {
+) (
+	[]marketplaceEnvironment,
+	[]marketplacecontrol.EnvironmentRegistration,
+	[]marketplacecontrol.WorkspaceRegistration,
+	error,
+) {
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	temporaryDirectory := filepath.Clean(os.TempDir())
 	environments := make([]marketplaceEnvironment, 0)
 	registrations := make([]marketplacecontrol.EnvironmentRegistration, 0)
+	workspaceRegistrations := make([]marketplacecontrol.WorkspaceRegistration, 0)
 	for _, repository := range repositories {
 		if repository.Adapter != "marketplace" {
 			continue
@@ -238,24 +304,35 @@ func marketplaceRegistrations(
 				continue
 			}
 			nodeExecutable, err := resolveNodeExecutable(worktree.Path)
+			if errors.Is(err, errMarketplaceNodeUnavailable) {
+				nodeExecutable, err = installMarketplaceNode(ctx, paths, worktree.Path)
+			}
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			yarnCJS, err := resolveYarnCJS(worktree.Path)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			portDefaults, err := readMarketplacePortDefaults(worktree.Path)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			environmentID := stableEnvironmentID(worktree.ID)
+			runtime := repository.Runtime
+			if runtime == nil {
+				fallback, runtimeError := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{})
+				if runtimeError != nil {
+					return nil, nil, nil, runtimeError
+				}
+				runtime = &fallback
+			}
 			environments = append(environments, marketplaceEnvironment{
 				EnvironmentID: environmentID, RepositoryID: repository.ID,
-				Worktree: worktree, PortDefaults: portDefaults,
+				Worktree: worktree, PortDefaults: portDefaults, Runtime: *runtime,
 			})
 			registrations = append(registrations, marketplacecontrol.EnvironmentRegistration{
-				EnvironmentID: environmentID, WorktreeRoot: worktree.Path,
+				EnvironmentID: environmentID, RepositoryRoot: repository.RootPath, WorktreeRoot: worktree.Path,
 				NodeExecutable: nodeExecutable, YarnCJS: yarnCJS,
 				RunRoot:       filepath.Join(paths.directory, "runtime"),
 				HomeDirectory: homeDirectory, TemporaryDirectory: temporaryDirectory,
@@ -263,19 +340,36 @@ func marketplaceRegistrations(
 					":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 				DaemonInstanceID: instanceID,
 			})
+			nodeRequested, nodeResolved, err := marketplaceNodeVersions(worktree.Path, nodeExecutable)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			workspaceRegistrations = append(workspaceRegistrations, marketplacecontrol.WorkspaceRegistration{
+				WorktreeID: worktree.ID, WorktreeRoot: worktree.Path,
+				NodeExecutable: nodeExecutable, NodeRequested: nodeRequested, NodeResolved: nodeResolved,
+				YarnCJS: yarnCJS, RunRoot: filepath.Join(paths.directory, "runtime"),
+				HomeDirectory: homeDirectory, TemporaryDirectory: temporaryDirectory,
+				ExecutablePath: filepath.Join(filepath.Dir(nodeExecutable)) +
+					":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+				Ownership: workspacecontrol.OwnershipAdopted,
+			})
 		}
 	}
-	return environments, registrations, nil
+	return environments, registrations, workspaceRegistrations, nil
 }
 
 func newMarketplaceActionResolver(
 	environments []marketplaceEnvironment,
 	catalog marketplaceadapter.Catalog,
 ) marketplaceActionResolver {
+	sourceReader, _ := marketplacecontrol.NewSourceSnapshotReader(
+		marketplacecontrol.OSCommandRunner{}, configuredGitExecutable(),
+	)
 	resolver := marketplaceActionResolver{
 		byWorktree:    make(map[string]marketplaceEnvironment, len(environments)),
 		byEnvironment: make(map[string]marketplaceEnvironment, len(environments)),
 		catalog:       catalog,
+		sourceReader:  sourceReader,
 	}
 	for _, environment := range environments {
 		resolver.byWorktree[environment.Worktree.ID] = environment
@@ -285,7 +379,7 @@ func newMarketplaceActionResolver(
 }
 
 func (resolver marketplaceActionResolver) ResolveStart(
-	_ context.Context,
+	ctx context.Context,
 	request contractv1.StartEnvironmentRequest,
 ) (daemon.EnvironmentStartResolution, error) {
 	registered, found := resolver.byWorktree[request.WorktreeID]
@@ -298,6 +392,52 @@ func (resolver marketplaceActionResolver) ResolveStart(
 	}
 	serviceIDs := append([]string(nil), request.ServiceIDs...)
 	sort.Strings(serviceIDs)
+	runtime := registered.Runtime
+	if runtime.DefaultTargetID == "" {
+		fallback, runtimeError := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{})
+		if runtimeError != nil {
+			return daemon.EnvironmentStartResolution{}, &daemon.ActionError{
+				Status: 500, Contract: contractv1.ContractError{
+					Code: "RUNTIME_CATALOG_UNAVAILABLE", Message: "The repository runtime catalog is unavailable.",
+				},
+			}
+		}
+		runtime = fallback
+	}
+	targetID := request.TargetID
+	if targetID == "" {
+		targetID = runtime.DefaultTargetID
+	}
+	var selectedTarget contractv1.RuntimeTarget
+	targetFound := false
+	for _, target := range runtime.Targets {
+		if target.ID == targetID {
+			selectedTarget = target
+			targetFound = true
+			break
+		}
+	}
+	if !targetFound {
+		return daemon.EnvironmentStartResolution{}, &daemon.ActionError{
+			Status: 400, Contract: contractv1.ContractError{
+				Code: "TARGET_NOT_SUPPORTED", Message: "The requested target environment is not configured for this repository.",
+			},
+		}
+	}
+	if request.ConfirmedTargetID != "" && request.ConfirmedTargetID != targetID {
+		return daemon.EnvironmentStartResolution{}, &daemon.ActionError{
+			Status: 409, Contract: contractv1.ContractError{
+				Code: "TARGET_CONFIRMATION_MISMATCH", Message: "The target confirmation does not match the requested target.",
+			},
+		}
+	}
+	if selectedTarget.WarnOnStart && request.ConfirmedTargetID != targetID {
+		return daemon.EnvironmentStartResolution{}, &daemon.ActionError{
+			Status: 409, Contract: contractv1.ContractError{
+				Code: "TARGET_CONFIRMATION_REQUIRED", Message: "This target requires explicit confirmation for every start.",
+			},
+		}
+	}
 	reservations := make([]portlease.Reservation, 0)
 	for _, serviceID := range serviceIDs {
 		definition, found := resolver.catalog.Definition(serviceID)
@@ -330,9 +470,25 @@ func (resolver marketplaceActionResolver) ResolveStart(
 			reservations = append(reservations, reservation)
 		}
 	}
+	if resolver.sourceReader == nil {
+		return daemon.EnvironmentStartResolution{}, &daemon.ActionError{
+			Status: 503, Contract: contractv1.ContractError{
+				Code: "SOURCE_OBSERVATION_UNAVAILABLE", Message: "The worktree source state could not be observed.", Retryable: true,
+			},
+		}
+	}
+	source, err := resolver.sourceReader.Read(ctx, registered.Worktree.Path)
+	if err != nil {
+		return daemon.EnvironmentStartResolution{}, &daemon.ActionError{
+			Status: 503, Contract: contractv1.ContractError{
+				Code: "SOURCE_OBSERVATION_UNAVAILABLE", Message: "The worktree source state could not be observed.", Retryable: true,
+			},
+		}
+	}
 	return daemon.EnvironmentStartResolution{
-		EnvironmentID: registered.EnvironmentID, Ports: reservations,
-		Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: serviceIDs},
+		EnvironmentID: registered.EnvironmentID, WorktreeID: registered.Worktree.ID, Ports: reservations,
+		Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", TargetID: targetID, ServiceIDs: serviceIDs},
+		Source: source,
 	}, nil
 }
 
@@ -365,16 +521,23 @@ func marketplaceEnvironmentProjector(
 		if !found {
 			return contractv1.Environment{}, errors.New("environment metadata is unavailable")
 		}
+		desiredState, observedState := projectedLifecycleStates(result.State)
 		projected := contractv1.Environment{
 			ID: result.EnvironmentID, RepositoryID: metadata.RepositoryID, WorktreeID: metadata.Worktree.ID,
-			DisplayName:  environmentDisplayName(metadata.Worktree),
-			DesiredState: string(result.State), ObservedState: string(result.State),
+			DisplayName: environmentDisplayName(metadata.Worktree), TargetID: result.TargetID,
+			DesiredState: desiredState, ObservedState: observedState,
 			Health: "unknown", Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{},
 			InfrastructureLeases: []contractv1.InfrastructureLease{}, URLs: map[string]string{},
 			AttentionAlertIDs: []string{},
 		}
 		if current != nil {
 			projected.AttentionAlertIDs = append([]string(nil), current.AttentionAlertIDs...)
+			if projected.TargetID == "" {
+				projected.TargetID = current.TargetID
+			}
+		}
+		if projected.TargetID == "" {
+			projected.TargetID = metadata.Runtime.DefaultTargetID
 		}
 		leaseIDsByService := make(map[string][]string)
 		for _, lease := range result.Ports {
@@ -393,8 +556,13 @@ func marketplaceEnvironmentProjector(
 				Host: lease.Host, Port: lease.Port, State: "leased", AcquiredAt: acquiredAt,
 			})
 			leaseIDsByService[lease.Key.ServiceID] = append(leaseIDsByService[lease.Key.ServiceID], leaseID)
-			if lease.Key.Purpose == "http" {
-				projected.URLs[lease.Key.ServiceID] = "http://" + lease.Host + ":" + strconv.Itoa(lease.Port)
+			definition, definitionFound := catalog.Definition(lease.Key.ServiceID)
+			if lease.Key.Purpose == "http" && definitionFound && definition.HasHTTPListener {
+				host := lease.Host
+				if definition.Kind == marketplaceadapter.ServiceKindWeb {
+					host = "localhost"
+				}
+				projected.URLs[lease.Key.ServiceID] = "http://" + host + ":" + strconv.Itoa(lease.Port)
 			}
 		}
 		serviceResults := make(map[string]environmentcontrol.ServiceResult, len(result.Services))
@@ -427,7 +595,7 @@ func marketplaceEnvironmentProjector(
 			serviceResult, running := serviceResults[serviceID]
 			service := contractv1.Service{
 				ID: serviceID, DisplayName: definition.DisplayName, Kind: string(definition.Kind),
-				DesiredState: string(result.State), ObservedState: string(result.State), Health: "unknown",
+				DesiredState: desiredState, ObservedState: observedState, Health: "unknown",
 				PortLeaseIDs: append([]string(nil), leaseIDsByService[serviceID]...),
 			}
 			if running {
@@ -435,6 +603,7 @@ func marketplaceEnvironmentProjector(
 					service.ObservedState = serviceResult.Observation.State
 				}
 				service.Health = serviceResult.Health.Health
+				service.ObservationCode = serviceResult.Observation.Code
 				if service.Health == "" {
 					service.Health = "unknown"
 				}
@@ -446,6 +615,12 @@ func marketplaceEnvironmentProjector(
 					ID: result.RunID, StartedAt: serviceResult.Process.StartedAt,
 					ProcessCount: processCount, CPUPercent: serviceResult.Observation.CPUPercent,
 					MemoryBytes: serviceResult.Observation.MemoryBytes,
+				}
+				if result.Source != nil {
+					service.Run.SourceRevision = result.Source.Revision
+					service.Run.SourceHasTrackedChanges = result.Source.HasTrackedChanges
+					service.Run.SourceHasUntrackedFiles = result.Source.HasUntrackedFiles
+					service.Run.SourceObservedAt = result.Source.ObservedAt
 				}
 				projected.Resources.MemoryBytes = saturatingResourceAdd(
 					projected.Resources.MemoryBytes, serviceResult.Observation.MemoryBytes,
@@ -466,14 +641,12 @@ func marketplaceEnvironmentProjector(
 		if projected.Resources.CPUPercent > 100 {
 			projected.Resources.CPUPercent = 100
 		}
-		if result.State == domain.EnvironmentRunning && anyProcessDegraded {
-			projected.ObservedState = "degraded"
-		}
 		if allHealthy {
 			projected.Health = "healthy"
 		} else if anyUnhealthy {
 			projected.Health = "unhealthy"
-		} else if result.State == domain.EnvironmentRunning {
+		} else if anyProcessDegraded || result.State == domain.EnvironmentRunning ||
+			result.State == domain.EnvironmentFailed || result.State == domain.EnvironmentOrphaned {
 			projected.Health = "degraded"
 		}
 		for _, goal := range result.Infrastructure {
@@ -490,6 +663,25 @@ func marketplaceEnvironmentProjector(
 			return projected.InfrastructureLeases[left].ID < projected.InfrastructureLeases[right].ID
 		})
 		return projected, nil
+	}
+}
+
+func projectedLifecycleStates(state domain.EnvironmentState) (desired string, observed string) {
+	switch state {
+	case domain.EnvironmentStarting:
+		return "running", "starting"
+	case domain.EnvironmentRunning:
+		return "running", "running"
+	case domain.EnvironmentStopping:
+		return "stopped", "stopping"
+	case domain.EnvironmentStopped:
+		return "stopped", "stopped"
+	case domain.EnvironmentFailed:
+		return "stopped", "failed"
+	case domain.EnvironmentOrphaned:
+		return "stopped", "orphaned"
+	default:
+		return "unknown", "unknown"
 	}
 }
 
@@ -541,7 +733,7 @@ func resolveNodeExecutable(worktreeRoot string) (string, error) {
 	requested := strings.TrimPrefix(strings.TrimSpace(string(contents)), "v")
 	requestedParts, ok := numericVersionParts(requested)
 	if !ok {
-		return "", errors.New("Marketplace .nvmrc is invalid")
+		return "", errors.New("Marketplace .nvmrc is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -550,7 +742,7 @@ func resolveNodeExecutable(worktreeRoot string) (string, error) {
 	versionsRoot := filepath.Join(home, ".nvm", "versions", "node")
 	entries, err := os.ReadDir(versionsRoot)
 	if err != nil || len(entries) > 256 {
-		return "", errors.New("Marketplace Node runtime is unavailable")
+		return "", errMarketplaceNodeUnavailable
 	}
 	type candidate struct {
 		parts []int
@@ -571,12 +763,106 @@ func resolveNodeExecutable(worktreeRoot string) (string, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return "", errors.New("Marketplace Node runtime is unavailable")
+		return "", errMarketplaceNodeUnavailable
 	}
 	sort.Slice(candidates, func(left, right int) bool {
 		return compareVersionParts(candidates[left].parts, candidates[right].parts) > 0
 	})
 	return candidates[0].path, nil
+}
+
+func installMarketplaceNode(
+	ctx context.Context,
+	paths applicationPaths,
+	worktreeRoot string,
+) (string, error) {
+	homeDirectory, err := os.UserHomeDir()
+	if err != nil {
+		return "", errMarketplaceNodeUnavailable
+	}
+	temporaryDirectory := filepath.Clean(os.TempDir())
+	nvmScript, err := filepath.EvalSymlinks(filepath.Join(homeDirectory, ".nvm", "nvm.sh"))
+	if err != nil {
+		return "", errMarketplaceNodeUnavailable
+	}
+	contents, err := readBoundedRegularFile(filepath.Join(worktreeRoot, ".nvmrc"), 128)
+	if err != nil {
+		return "", err
+	}
+	requested := strings.TrimPrefix(strings.TrimSpace(string(contents)), "v")
+	if _, ok := numericVersionParts(requested); !ok {
+		return "", errors.New("Marketplace .nvmrc is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
+	}
+	preparation, err := marketplaceNodeInstallPreparation(
+		paths, worktreeRoot, homeDirectory, temporaryDirectory, nvmScript, requested,
+	)
+	if err != nil {
+		return "", err
+	}
+	if err := (marketplacecontrol.OSPreparationRunner{}).Run(ctx, preparation); err != nil {
+		return "", errMarketplaceNodeUnavailable
+	}
+	return resolveNodeExecutable(worktreeRoot)
+}
+
+func marketplaceNodeInstallPreparation(
+	paths applicationPaths,
+	worktreeRoot string,
+	homeDirectory string,
+	temporaryDirectory string,
+	nvmScript string,
+	requested string,
+) (environmentcontrol.PreparationSpec, error) {
+	for _, path := range []string{paths.directory, worktreeRoot, homeDirectory, temporaryDirectory, nvmScript} {
+		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+			return environmentcontrol.PreparationSpec{}, errMarketplaceNodeUnavailable
+		}
+	}
+	if _, ok := numericVersionParts(requested); !ok {
+		return environmentcontrol.PreparationSpec{}, errMarketplaceNodeUnavailable
+	}
+	info, err := os.Lstat(nvmScript)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return environmentcontrol.PreparationSpec{}, errMarketplaceNodeUnavailable
+	}
+	return environmentcontrol.PreparationSpec{
+		ID:         "marketplace.node.install",
+		Executable: "/bin/bash",
+		Arguments: []string{
+			"-c",
+			"set -eo pipefail\n. \"$1\" --no-use\nnvm install \"$2\"",
+			"switchyard-node-install",
+			nvmScript,
+			requested,
+		},
+		Environment: []string{
+			"HOME=" + homeDirectory,
+			"NVM_DIR=" + filepath.Join(homeDirectory, ".nvm"),
+			"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+			"TMPDIR=" + temporaryDirectory,
+		},
+		Directory: worktreeRoot,
+		RunDirectory: filepath.Join(
+			paths.directory, "runtime", "toolchains", "node", requested,
+		),
+		Timeout: 30 * time.Minute,
+	}, nil
+}
+
+func marketplaceNodeVersions(worktreeRoot string, nodeExecutable string) (string, string, error) {
+	contents, err := readBoundedRegularFile(filepath.Join(worktreeRoot, ".nvmrc"), 128)
+	if err != nil {
+		return "", "", err
+	}
+	requested := strings.TrimPrefix(strings.TrimSpace(string(contents)), "v")
+	if _, ok := numericVersionParts(requested); !ok {
+		return "", "", errors.New("Marketplace .nvmrc is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
+	}
+	resolved := strings.TrimPrefix(filepath.Base(filepath.Dir(filepath.Dir(nodeExecutable))), "v")
+	if _, ok := numericVersionParts(resolved); !ok {
+		resolved = requested
+	}
+	return requested, resolved, nil
 }
 
 func resolveYarnCJS(worktreeRoot string) (string, error) {
@@ -592,7 +878,7 @@ func resolveYarnCJS(worktreeRoot string) (string, error) {
 			continue
 		}
 		if yarnPath != "" {
-			return "", errors.New("Marketplace Yarn path is ambiguous")
+			return "", errors.New("Marketplace Yarn path is ambiguous") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 		}
 		yarnPath = strings.TrimSpace(strings.TrimPrefix(line, "yarnPath:"))
 		yarnPath = strings.Trim(yarnPath, "\"'")
@@ -600,12 +886,12 @@ func resolveYarnCJS(worktreeRoot string) (string, error) {
 	if scanner.Err() != nil || yarnPath == "" || filepath.IsAbs(yarnPath) ||
 		filepath.Clean(yarnPath) != yarnPath || strings.HasPrefix(yarnPath, "..") ||
 		filepath.Ext(yarnPath) != ".cjs" {
-		return "", errors.New("Marketplace Yarn path is invalid")
+		return "", errors.New("Marketplace Yarn path is invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	path := filepath.Join(worktreeRoot, yarnPath)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("Marketplace Yarn runtime is unavailable")
+		return "", errors.New("Marketplace Yarn runtime is unavailable") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 	}
 	return path, nil
 }
@@ -622,7 +908,7 @@ func readMarketplacePortDefaults(worktreeRoot string) (map[string]int, error) {
 		}
 		parsed, err := marketplaceadapter.DefaultCatalog().ParsePortDefaults(contents)
 		if err != nil {
-			return nil, errors.New("Marketplace local port defaults are invalid")
+			return nil, errors.New("Marketplace local port defaults are invalid") //nolint:staticcheck // Product-facing diagnostic starts with the repository name.
 		}
 		for _, portDefault := range parsed {
 			defaults[portDefault.EnvironmentVariable] = portDefault.Port

@@ -2,17 +2,20 @@ import Foundation
 
 public struct LaunchAgentPaths: Sendable, Equatable {
     public let installedBinaryURL: URL
+    public let commandLinkURL: URL?
     public let launchAgentURL: URL
     public let standardOutputURL: URL
     public let standardErrorURL: URL
 
     public init(
         installedBinaryURL: URL,
+        commandLinkURL: URL? = nil,
         launchAgentURL: URL,
         standardOutputURL: URL,
         standardErrorURL: URL
     ) {
         self.installedBinaryURL = installedBinaryURL
+        self.commandLinkURL = commandLinkURL
         self.launchAgentURL = launchAgentURL
         self.standardOutputURL = standardOutputURL
         self.standardErrorURL = standardErrorURL
@@ -61,6 +64,7 @@ public struct LaunchAgentInstallPlan: Sendable, Equatable {
 
 public enum LaunchAgentPlanBuilder {
     public static let label = "com.theronburger.switchyard.daemon"
+    public static let appBundleIdentifier = "com.theronburger.switchyard"
 
     public static func make(
         binary: DaemonBinary,
@@ -74,6 +78,7 @@ public enum LaunchAgentPlanBuilder {
             "ProgramArguments": [paths.installedBinaryURL.path, "daemon"],
             "RunAtLoad": true,
             "KeepAlive": true,
+            "AssociatedBundleIdentifiers": [appBundleIdentifier],
             "StandardOutPath": paths.standardOutputURL.path,
             "StandardErrorPath": paths.standardErrorURL.path,
         ]

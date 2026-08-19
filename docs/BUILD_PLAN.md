@@ -1,6 +1,6 @@
 # Parallel build plan
 
-Current status: Waves 0 and 1 are complete. Wave 2 has delivered the live app lifecycle, Marketplace inventory, safe process/container hosts, health primitives, and resumable daemon events. Persisted environment action integration is active; Wave 3 has not yet been claimed complete.
+Current status: Waves 0 through 3 are complete. The live app, daemon, Marketplace runtime, CLI/MCP surfaces, workspace lifecycle, and golden two-worktree demonstration have passed their acceptance gates. Public distribution and signed update operations are tracked in `RELEASING.md`.
 
 ## Coordination rule
 
@@ -21,7 +21,7 @@ Coordinator owns:
 - integration branch and merge order.
 - authenticated loopback transport and exact-version handshake.
 
-Fable concurrently performs a read-only architecture, lifecycle, and product critique using `docs/prompts/FABLE_ARCHITECTURE_REVIEW.md`. Findings are triaged; Fable does not silently change accepted decisions.
+Fable performs read-only architecture, lifecycle, and product critiques through the installed `claude-personal-fable` skill. Findings are triaged; Fable does not silently change accepted decisions.
 
 Exit gate:
 
@@ -50,7 +50,7 @@ Exit gate:
 - daemon, CLI, and MCP communicate through the frozen contract;
 - Marketplace detection runs read-only against the real checkout.
 
-## Wave 2: integration fan-out — in progress
+## Wave 2: integration fan-out — complete
 
 Parallel tracks:
 
@@ -69,9 +69,9 @@ Exit gate:
 - crash, restart, conflict, and stale-state paths are visible;
 - the safety suite proves foreign resources survive.
 
-## Wave 3: Marketplace golden demonstration — pending
+## Wave 3: Marketplace golden demonstration — complete
 
-Run organizer and nonprofit-service in two simultaneous worktrees.
+Run representative web and API services in two simultaneous worktrees.
 
 Required scenarios:
 
@@ -87,7 +87,7 @@ Required scenarios:
 - foreign Docker resources exist;
 - disk scan exceeds its time budget.
 
-Nothing is called complete until these are mechanically verified.
+The private acceptance capture was intentionally removed before publication; the durable safety assertions remain in the automated contract and lifecycle suites.
 
 ## Fable usage
 

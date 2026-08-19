@@ -13,12 +13,48 @@ struct ConnectionDoctorView: View {
                     .font(.largeTitle.bold())
                 lifecycleCard
                 agentConnectionsCard
+                githubCard
                 checksCard
             }
             .padding(20)
             .frame(maxWidth: 640, alignment: .leading)
+            .switchyardScrollbars()
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var githubCard: some View {
+        SectionCard(title: "GitHub CLI", systemImage: "arrow.triangle.branch") {
+            let observations = model.snapshot?.repositories.flatMap(\.worktrees).compactMap(\.pullRequest) ?? []
+            let accounts = Array(Set(observations.compactMap(\.account))).sorted()
+            if observations.isEmpty {
+                Text("Waiting for the daemon's first GitHub observation.")
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: observations.contains(where: { $0.status == .unavailable }) ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(observations.contains(where: { $0.status == .unavailable }) ? .orange : .green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(accounts.isEmpty ? "GitHub observation active" : "Authenticated as \(accounts.joined(separator: ", "))")
+                            .font(.callout.weight(.medium))
+                        Text("\(observations.count(where: { $0.status == .found })) pull requests · \(observations.count(where: { $0.status == .none })) branches without a PR · \(observations.count(where: { $0.stale })) stale")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                if let unavailable = observations.first(where: { $0.status == .unavailable }) {
+                    Divider()
+                    Text(githubErrorDescription(unavailable.errorCode))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Text("Switchyard uses the existing Keychain-backed gh login. It never stores or requests a GitHub token, and GitHub availability does not affect environment health.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var lifecycleCard: some View {
@@ -66,13 +102,17 @@ struct ConnectionDoctorView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(status.host.displayName)
                                 .font(.callout.weight(.medium))
+                            HStack(spacing: 8) {
+                                componentState("MCP", status.mcpState)
+                                componentState("Skill", status.skillState)
+                            }
                             Text(status.detail)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
-                        if status.state.canRepair {
+                        if status.canRepair {
                             Button(model.repairingAgentHosts.contains(status.host) ? "Repairing…" : "Repair") {
                                 Task { await model.repairAgentConnection(status.host) }
                             }
@@ -88,6 +128,10 @@ struct ConnectionDoctorView: View {
             } else {
                 ProgressView("Inspecting Codex and Claude Code…")
             }
+            Text("Repair replaces the managed Switchyard skill with the bundled release, including edits inside that managed directory.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -144,6 +188,31 @@ struct ConnectionDoctorView: View {
             Image(systemName: "minus.circle").foregroundStyle(.secondary)
         case .refused:
             Image(systemName: "hand.raised.fill").foregroundStyle(.red)
+        }
+    }
+
+    private func componentState(_ name: String, _ state: AgentConnectionState) -> some View {
+        Text("\(name): \(componentStateLabel(state))")
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(componentStateTint(state))
+    }
+
+    private func componentStateLabel(_ state: AgentConnectionState) -> String {
+        switch state {
+        case .connected: "Connected"
+        case .missing: "Missing"
+        case .needsRepair: "Update needed"
+        case .unavailable: "Unavailable"
+        case .refused: "Refused"
+        }
+    }
+
+    private func componentStateTint(_ state: AgentConnectionState) -> Color {
+        switch state {
+        case .connected: .green
+        case .missing, .needsRepair: .orange
+        case .unavailable: .secondary
+        case .refused: .red
         }
     }
 }

@@ -10,15 +10,30 @@ let package = Package(
         .executable(name: "SwitchyardApp", targets: ["SwitchyardApp"]),
         .executable(name: "SwitchyardContractCheck", targets: ["SwitchyardContractCheck"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5"),
+    ],
     targets: [
         .target(name: "SwitchyardKit"),
         .executableTarget(
             name: "SwitchyardApp",
-            dependencies: ["SwitchyardKit"]
+            dependencies: [
+                "SwitchyardKit",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            resources: [.copy("Resources/SwitchyardTile.png")]
         ),
         .executableTarget(
             name: "SwitchyardContractCheck",
             dependencies: ["SwitchyardKit"]
+        ),
+        .testTarget(
+            name: "SwitchyardTests",
+            dependencies: ["SwitchyardApp", "SwitchyardKit"],
+            path: "Tests/SwitchyardTests",
+            swiftSettings: [
+                .enableExperimentalFeature("SwiftTesting"),
+            ]
         ),
     ]
 )

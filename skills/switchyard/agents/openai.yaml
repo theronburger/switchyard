@@ -1,0 +1,4 @@
+interface:
+  display_name: "Switchyard"
+  short_description: "Manage isolated local worktree environments"
+  default_prompt: "Use $switchyard to inspect or manage this worktree through the Switchyard control plane."

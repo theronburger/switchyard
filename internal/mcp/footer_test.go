@@ -78,6 +78,40 @@ func TestBuildEnvironmentContextOmitsFooterForGlobalCalls(t *testing.T) {
 	}
 }
 
+func TestBuildEnvironmentContextIncludesPullRequestStatus(t *testing.T) {
+	snapshot := contractv1.StatusSnapshot{
+		Repositories: []contractv1.Repository{{
+			ID: "repo_test",
+			Worktrees: []contractv1.Worktree{{
+				ID: "worktree_test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				PullRequest: &contractv1.PullRequestObservation{
+					Status: "found", Stale: true,
+					PullRequest: &contractv1.PullRequest{
+						Number: 9556, URL: "https://github.com/example/marketplace/pull/42",
+						State: "open", Mergeable: "mergeable", ReviewDecision: "review_required",
+						HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						Checks:       contractv1.PullRequestChecks{State: "passing"},
+					},
+				},
+			}},
+		}},
+		Environments: []contractv1.Environment{{
+			ID: "env_test", Revision: 1, RepositoryID: "repo_test", WorktreeID: "worktree_test",
+			URLs: map[string]string{}, AttentionAlertIDs: []string{},
+		}},
+		Alerts: []contractv1.Alert{},
+	}
+	context, err := BuildEnvironmentContext(snapshot, "env_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.PullRequest == nil || context.PullRequest.Number != 9556 ||
+		context.PullRequest.ChecksState != "passing" || context.PullRequest.HeadMatchesLocal ||
+		!context.PullRequest.Stale {
+		t.Fatalf("unexpected pull request context: %#v", context.PullRequest)
+	}
+}
+
 func TestBuildEnvironmentContextRejectsUnknownEnvironmentAndAlert(t *testing.T) {
 	if _, err := BuildEnvironmentContext(contractv1.StatusSnapshot{}, "env_missing"); err == nil {
 		t.Fatal("expected unknown environment error")

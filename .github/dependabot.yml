@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: Europe/Berlin
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    labels: [dependencies, go]
+  - package-ecosystem: swift
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:10"
+      timezone: Europe/Berlin
+    labels: [dependencies, swift]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:20"
+      timezone: Europe/Berlin
+    groups:
+      github-actions:
+        patterns: ["*"]
+    labels: [dependencies, github-actions]

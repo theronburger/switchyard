@@ -35,6 +35,36 @@ public struct Repository: Decodable, Identifiable, Sendable {
     public let adapter: String
     public let remote: String
     public let worktrees: [Worktree]
+    public let runtime: RepositoryRuntime?
+    public let observation: RepositoryObservation?
+}
+
+public struct RepositoryObservation: Decodable, Sendable {
+    public let observedAt: Date?
+    public let lastAttemptAt: Date
+    public let stale: Bool
+    public let errorCode: String?
+}
+
+public struct RepositoryRuntime: Decodable, Sendable {
+    public let defaultTargetId: String
+    public let targets: [RuntimeTarget]
+    public let services: [RuntimeService]
+}
+
+public struct RuntimeTarget: Decodable, Identifiable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let risk: String
+    public let warnOnStart: Bool
+}
+
+public struct RuntimeService: Decodable, Identifiable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let kind: String
+    public let available: Bool
+    public let unavailableReason: String?
 }
 
 public struct Worktree: Decodable, Identifiable, Sendable {
@@ -44,6 +74,146 @@ public struct Worktree: Decodable, Identifiable, Sendable {
     public let headRevision: String
     public let isPrimary: Bool
     public let git: WorktreeState
+    public let changes: WorktreeChanges?
+    public let pullRequest: PullRequestObservation?
+    public let workspace: WorkspaceStatus?
+}
+
+public struct WorkspaceStatus: Decodable, Sendable {
+    public let ownership: WorkspaceOwnership
+    public let state: WorkspacePreparationState
+    public let fingerprint: String
+    public let preparedAt: Date
+    public let toolchains: [WorkspaceToolchain]
+}
+
+public enum WorkspaceOwnership: String, ForwardCompatibleDecodable {
+    case unknown
+    case adopted
+    case managed
+}
+
+public enum WorkspacePreparationState: String, ForwardCompatibleDecodable {
+    case unknown
+    case unprepared
+    case ready
+}
+
+public struct WorkspaceToolchain: Decodable, Sendable, Identifiable {
+    public let id: String
+    public let requestedVersion: String
+    public let resolvedVersion: String
+}
+
+public struct PullRequestObservation: Decodable, Sendable {
+    public let status: PullRequestAvailability
+    public let account: String?
+    public let observedAt: Date?
+    public let lastAttemptAt: Date
+    public let stale: Bool
+    public let errorCode: String?
+    public let pullRequest: PullRequest?
+}
+
+public enum PullRequestAvailability: String, ForwardCompatibleDecodable {
+    case unknown
+    case found
+    case none
+    case unavailable
+}
+
+public struct PullRequest: Decodable, Sendable {
+    public let number: Int
+    public let title: String
+    public let url: String
+    public let state: PullRequestState
+    public let draft: Bool
+    public let mergeable: PullRequestMergeable
+    public let mergeState: PullRequestMergeState
+    public let reviewDecision: PullRequestReviewDecision
+    public let baseBranch: String
+    public let headBranch: String
+    public let headRevision: String
+    public let createdAt: Date
+    public let updatedAt: Date
+    public let closedAt: Date?
+    public let mergedAt: Date?
+    public let checks: PullRequestChecks
+}
+
+public enum PullRequestState: String, ForwardCompatibleDecodable {
+    case unknown
+    case open
+    case closed
+    case merged
+}
+
+public enum PullRequestMergeable: String, ForwardCompatibleDecodable {
+    case unknown
+    case mergeable
+    case conflicting
+    case notApplicable = "not_applicable"
+}
+
+public enum PullRequestMergeState: String, ForwardCompatibleDecodable {
+    case unknown
+    case clean
+    case blocked
+    case behind
+    case dirty
+    case hasHooks = "has_hooks"
+    case unstable
+    case notApplicable = "not_applicable"
+}
+
+public enum PullRequestReviewDecision: String, ForwardCompatibleDecodable {
+    case unknown
+    case approved
+    case changesRequested = "changes_requested"
+    case reviewRequired = "review_required"
+    case notApplicable = "not_applicable"
+}
+
+public struct PullRequestChecks: Decodable, Sendable {
+    public let state: PullRequestChecksState
+    public let total: Int
+    public let passing: Int
+    public let failing: Int
+    public let pending: Int
+    public let skipping: Int
+    public let cancelled: Int
+    public let items: [PullRequestCheck]
+}
+
+public enum PullRequestChecksState: String, ForwardCompatibleDecodable {
+    case unknown
+    case passing
+    case failing
+    case pending
+    case cancelled
+    case neutral
+    case none
+    case unavailable
+}
+
+public struct PullRequestCheck: Decodable, Identifiable, Sendable {
+    public var id: String { "\(workflow)-\(name)-\(url)" }
+    public let name: String
+    public let workflow: String
+    public let state: String
+    public let bucket: PullRequestCheckBucket
+    public let url: String
+    public let startedAt: Date?
+    public let completedAt: Date?
+}
+
+public enum PullRequestCheckBucket: String, ForwardCompatibleDecodable {
+    case unknown
+    case pass
+    case fail
+    case pending
+    case skipping
+    case cancel
 }
 
 public struct WorktreeState: Decodable, Sendable {
@@ -54,12 +224,45 @@ public struct WorktreeState: Decodable, Sendable {
     public let prunable: Bool
 }
 
+public struct LineChanges: Decodable, Sendable, Equatable {
+    public let additions: Int64
+    public let deletions: Int64
+    public let files: Int
+
+    public init(additions: Int64, deletions: Int64, files: Int) {
+        self.additions = additions
+        self.deletions = deletions
+        self.files = files
+    }
+}
+
+public struct ServiceLineChanges: Decodable, Identifiable, Sendable, Equatable {
+    public var id: String { serviceId }
+    public let serviceId: String
+    public let committed: LineChanges
+    public let uncommitted: LineChanges
+}
+
+public struct WorktreeChanges: Decodable, Sendable, Equatable {
+    public let baseRevision: String
+    public let committed: LineChanges
+    public let uncommitted: LineChanges
+    public let sharedCommitted: LineChanges
+    public let sharedUncommitted: LineChanges
+    public let services: [ServiceLineChanges]
+
+    public func service(_ id: String) -> ServiceLineChanges? {
+        services.first { $0.serviceId == id }
+    }
+}
+
 public struct Environment: Decodable, Identifiable, Sendable {
     public let id: String
     public let revision: Int64
     public let repositoryId: String
     public let worktreeId: String
     public let displayName: String
+    public let targetId: String?
     public let desiredState: DesiredState
     public let observedState: ObservedState
     public let health: Health
@@ -75,6 +278,8 @@ public enum DesiredState: String, ForwardCompatibleDecodable {
     case unknown
     case stopped
     case running
+    case failed
+    case orphaned
 }
 
 public enum ObservedState: String, ForwardCompatibleDecodable {
@@ -85,6 +290,9 @@ public enum ObservedState: String, ForwardCompatibleDecodable {
     case stopping
     case exited
     case failed
+    case orphaned
+    case degraded
+    case unverifiable
 }
 
 public enum Health: String, ForwardCompatibleDecodable {
@@ -102,6 +310,7 @@ public struct Service: Decodable, Identifiable, Sendable {
     public let kind: String
     public let desiredState: DesiredState
     public let observedState: ObservedState
+    public let observationCode: String?
     public let health: Health
     public let portLeaseIds: [String]
     public let run: ServiceRun?
@@ -114,6 +323,10 @@ public struct ServiceRun: Decodable, Identifiable, Sendable {
     public let processCount: Int
     public let cpuPercent: Double
     public let memoryBytes: Int64
+    public let sourceRevision: String?
+    public let sourceHasTrackedChanges: Bool?
+    public let sourceHasUntrackedFiles: Bool?
+    public let sourceObservedAt: Date?
 }
 
 public struct PortLease: Decodable, Identifiable, Sendable {
@@ -143,8 +356,10 @@ public struct ResourceUsage: Decodable, Sendable {
 
 public struct Operation: Decodable, Identifiable, Sendable {
     public let id: String
+    public let runId: String?
     public let kind: String
     public let state: OperationState
+    public let phase: String?
     public let environmentId: String?
     public let environmentRevision: Int64?
     public let createdAt: Date
@@ -196,6 +411,12 @@ public struct ContractError: Decodable, Error, Sendable {
     public let resourceId: String?
     public let currentState: String?
     public let requestedState: String?
+    public let phase: String?
+    public let step: String?
+    public let diagnostic: String?
+    public let logReference: String?
+    public let nextAction: String?
+    public let exitCode: Int?
 }
 
 public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
@@ -204,6 +425,8 @@ public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
     public let idempotencyKey: String
     public let expectedEnvironmentRevision: Int64?
     public let worktreeId: String
+    public let targetId: String
+    public let confirmedTargetId: String?
     public let serviceIds: [String]
 
     public init(
@@ -211,6 +434,8 @@ public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
         idempotencyKey: String,
         expectedEnvironmentRevision: Int64? = nil,
         worktreeId: String,
+        targetId: String = "testing",
+        confirmedTargetId: String? = nil,
         serviceIds: [String]
     ) {
         self.schemaVersion = contractSchemaVersion
@@ -218,6 +443,8 @@ public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
         self.idempotencyKey = idempotencyKey
         self.expectedEnvironmentRevision = expectedEnvironmentRevision
         self.worktreeId = worktreeId
+        self.targetId = targetId
+        self.confirmedTargetId = confirmedTargetId
         self.serviceIds = serviceIds
     }
 }
@@ -240,10 +467,63 @@ public struct StopEnvironmentRequest: Codable, Sendable, Equatable {
     }
 }
 
+public struct CreateWorktreeRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let repositoryId: String
+    public let branch: String
+    public let startPoint: String?
+
+    public init(requestId: String, idempotencyKey: String, repositoryId: String, branch: String, startPoint: String? = nil) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = nil
+        self.repositoryId = repositoryId
+        self.branch = branch
+        self.startPoint = startPoint
+    }
+}
+
+public struct ArchiveWorktreeRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let worktreeId: String
+
+    public init(requestId: String, idempotencyKey: String, worktreeId: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = nil
+        self.worktreeId = worktreeId
+    }
+}
+
+public struct AdoptWorktreeRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let worktreeId: String
+
+    public init(requestId: String, idempotencyKey: String, worktreeId: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = nil
+        self.worktreeId = worktreeId
+    }
+}
+
 public struct MutationReceipt: Decodable, Sendable, Equatable {
     public let schemaVersion: Int
     public let requestId: String
     public let operationId: String
+    public let runId: String?
     public let acceptedAt: Date
     public let environmentId: String?
 }
@@ -251,6 +531,9 @@ public struct MutationReceipt: Decodable, Sendable, Equatable {
 public struct EnvironmentContext: Decodable, Sendable {
     public let revision: Int64
     public let environmentId: String
+    public let runId: String?
+    public let sourceRevision: String?
+    public let sourceDirty: Bool?
     public let desiredState: DesiredState
     public let observedState: ObservedState
     public let health: Health

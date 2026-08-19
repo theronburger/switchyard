@@ -83,7 +83,9 @@ func (coordinator *Coordinator) reconcileStart(
 		}
 		result = EnvironmentResult{
 			EnvironmentID: operation.EnvironmentID, RunID: operation.RunID,
-			State: domain.EnvironmentStopped, UpdatedAt: coordinator.now().UTC(),
+			TargetID: operationTargetID(operation), State: domain.EnvironmentStopped,
+			Source:    cloneSource(operation.Source),
+			UpdatedAt: coordinator.now().UTC(),
 		}
 	} else {
 		if operation.EnvironmentState != domain.EnvironmentFailed {
@@ -138,10 +140,13 @@ func (coordinator *Coordinator) reconcileStop(
 }
 
 func environmentFromRollback(operation OperationRecord) EnvironmentResult {
+	targetID := operationTargetID(operation)
 	result := EnvironmentResult{
 		EnvironmentID: operation.EnvironmentID,
 		RunID:         operation.RunID,
+		TargetID:      targetID,
 		State:         operation.EnvironmentState,
+		Source:        cloneSource(operation.Source),
 	}
 	for _, entry := range operation.Rollback {
 		if !entry.Armed {
@@ -161,4 +166,11 @@ func environmentFromRollback(operation OperationRecord) EnvironmentResult {
 		}
 	}
 	return result
+}
+
+func operationTargetID(operation OperationRecord) string {
+	if operation.Intent == nil {
+		return ""
+	}
+	return operation.Intent.TargetID
 }

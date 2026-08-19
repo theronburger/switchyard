@@ -4,36 +4,95 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
-    runs-on: macos-15
+  test:
+    name: Test
+    runs-on: macos-26
     steps:
       - name: Check out source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Run production checks
+        run: scripts/ci.sh
 
-      - name: Select current Xcode
+  lint:
+    name: Lint
+    runs-on: macos-26
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.0
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Lint workflows
+        run: actionlint
+
+  vulnerabilities:
+    name: Vulnerability scan
+    runs-on: macos-26
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Scan reachable code
+        run: govulncheck ./...
+
+  secrets:
+    name: Secret and history scan
+    runs-on: macos-26
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan repository history
         run: |
-          set -euo pipefail
-          for candidate in /Applications/Xcode_26.3.app /Applications/Xcode_26.2.app; do
-            if [[ -d "$candidate" ]]; then
-              sudo xcode-select -s "${candidate}/Contents/Developer"
-              break
-            fi
-          done
-          xcodebuild -version
-          swift --version
+          "$(go env GOPATH)/bin/gitleaks" git . --redact --exit-code 1 --no-banner
 
-      - name: Check
-        run: make check
-
-      - name: Race tests
-        run: make race
+  package:
+    name: Package universal app
+    needs: [test, lint, vulnerabilities, secrets]
+    runs-on: macos-26
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install SBOM generator
+        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+      - name: Validate rendered Homebrew Cask
+        run: scripts/validate-homebrew-cask.sh
+      - name: Build universal dry run
+        run: scripts/build-release.sh dist

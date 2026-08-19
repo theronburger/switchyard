@@ -15,6 +15,40 @@
       "rootPath": "/Users/example/Developer/marketplace",
       "adapter": "marketplace",
       "remote": "example/marketplace",
+      "observation": {
+        "observedAt": "2026-08-14T09:59:50Z",
+        "lastAttemptAt": "2026-08-14T09:59:50Z",
+        "stale": false
+      },
+      "runtime": {
+        "defaultTargetId": "testing",
+        "targets": [
+          {"id": "development", "displayName": "Development", "risk": "standard", "warnOnStart": false},
+          {"id": "testing", "displayName": "Testing", "risk": "standard", "warnOnStart": false},
+          {"id": "demo", "displayName": "Demo", "risk": "elevated", "warnOnStart": true},
+          {"id": "production", "displayName": "Production", "risk": "production", "warnOnStart": true}
+        ],
+        "services": [
+          {"id": "api", "displayName": "API", "kind": "api", "available": true},
+          {"id": "app", "displayName": "App", "kind": "web", "available": true},
+          {"id": "auth-service", "displayName": "Auth Service", "kind": "api", "available": true},
+          {"id": "company-service", "displayName": "Company Service", "kind": "api", "available": true},
+          {"id": "donation-batch-service", "displayName": "Donation Batch Service", "kind": "api", "available": true},
+          {"id": "donation-service", "displayName": "Donation Service", "kind": "api", "available": true},
+          {"id": "email-service", "displayName": "Email Service", "kind": "api", "available": true},
+          {"id": "graph-service", "displayName": "Graph Service", "kind": "api", "available": true},
+          {"id": "logged-time-service", "displayName": "Logged Time Service", "kind": "api", "available": true},
+          {"id": "nonprofit-service", "displayName": "Nonprofit Service", "kind": "api", "available": true},
+          {"id": "notification-service", "displayName": "Notification Service", "kind": "api", "available": true},
+          {"id": "opportunity-service", "displayName": "Opportunity Service", "kind": "api", "available": true},
+          {"id": "organizer", "displayName": "Organizer", "kind": "web", "available": true},
+          {"id": "payroll-service", "displayName": "Payroll Service", "kind": "api", "available": true},
+          {"id": "report-service", "displayName": "Report Service", "kind": "api", "available": true},
+          {"id": "slack-service", "displayName": "Slack Service", "kind": "api", "available": true},
+          {"id": "time-off-service", "displayName": "Time Off Service", "kind": "api", "available": true},
+          {"id": "wallet", "displayName": "Wallet", "kind": "api", "available": true}
+        ]
+      },
       "worktrees": [
         {
           "id": "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX",
@@ -23,11 +57,96 @@
           "headRevision": "0123456789abcdef0123456789abcdef01234567",
           "isPrimary": false,
           "git": {
-            "hasTrackedChanges": false,
+            "hasTrackedChanges": true,
             "hasUntrackedFiles": false,
             "hasUnpushedCommits": false,
             "locked": false,
             "prunable": false
+          },
+          "changes": {
+            "baseRevision": "fedcba9876543210fedcba9876543210fedcba98",
+            "committed": { "additions": 2031, "deletions": 56, "files": 43 },
+            "uncommitted": { "additions": 12, "deletions": 3, "files": 2 },
+            "sharedCommitted": { "additions": 30, "deletions": 0, "files": 2 },
+            "sharedUncommitted": { "additions": 0, "deletions": 0, "files": 0 },
+            "services": [
+              {
+                "serviceId": "nonprofit-service",
+                "committed": { "additions": 1500, "deletions": 55, "files": 30 },
+                "uncommitted": { "additions": 12, "deletions": 3, "files": 2 }
+              },
+              {
+                "serviceId": "organizer",
+                "committed": { "additions": 501, "deletions": 1, "files": 11 },
+                "uncommitted": { "additions": 0, "deletions": 0, "files": 0 }
+              }
+            ]
+          },
+          "pullRequest": {
+            "status": "found",
+            "account": "demo-user",
+            "observedAt": "2026-08-14T09:59:45Z",
+            "lastAttemptAt": "2026-08-14T09:59:45Z",
+            "stale": false,
+            "pullRequest": {
+              "number": 42,
+              "title": "Demo: isolate local service routes",
+              "url": "https://github.com/example/marketplace/pull/42",
+              "state": "open",
+              "draft": false,
+              "mergeable": "mergeable",
+              "mergeState": "blocked",
+              "reviewDecision": "review_required",
+              "baseBranch": "main",
+              "headBranch": "feature/demo-environment",
+              "headRevision": "0123456789abcdef0123456789abcdef01234567",
+              "createdAt": "2026-08-14T08:20:00Z",
+              "updatedAt": "2026-08-14T09:58:00Z",
+              "checks": {
+                "state": "pending",
+                "total": 4,
+                "passing": 2,
+                "failing": 0,
+                "pending": 1,
+                "skipping": 1,
+                "cancelled": 0,
+                "items": [
+                  {
+                    "name": "lint",
+                    "workflow": "CI",
+                    "state": "success",
+                    "bucket": "pass",
+                    "url": "https://github.com/example/marketplace/actions/runs/1001",
+                    "startedAt": "2026-08-14T09:50:00Z",
+                    "completedAt": "2026-08-14T09:52:00Z"
+                  },
+                  {
+                    "name": "unit",
+                    "workflow": "CI",
+                    "state": "success",
+                    "bucket": "pass",
+                    "url": "https://github.com/example/marketplace/actions/runs/1002",
+                    "startedAt": "2026-08-14T09:50:00Z",
+                    "completedAt": "2026-08-14T09:55:00Z"
+                  },
+                  {
+                    "name": "integration",
+                    "workflow": "CI",
+                    "state": "in_progress",
+                    "bucket": "pending",
+                    "url": "https://github.com/example/marketplace/actions/runs/1003",
+                    "startedAt": "2026-08-14T09:50:00Z"
+                  },
+                  {
+                    "name": "optional coverage",
+                    "workflow": "CI",
+                    "state": "skipped",
+                    "bucket": "skipping",
+                    "url": "https://github.com/example/marketplace/actions/runs/1004"
+                  }
+                ]
+              }
+            }
           }
         }
       ]
@@ -40,6 +159,7 @@
       "repositoryId": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
       "worktreeId": "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX",
       "displayName": "Demo environment",
+      "targetId": "testing",
       "desiredState": "running",
       "observedState": "running",
       "health": "degraded",
@@ -58,7 +178,11 @@
             "restartCount": 0,
             "processCount": 7,
             "cpuPercent": 8.2,
-            "memoryBytes": 1400000000
+            "memoryBytes": 1400000000,
+            "sourceRevision": "0123456789abcdef0123456789abcdef01234567",
+            "sourceHasTrackedChanges": true,
+            "sourceHasUntrackedFiles": false,
+            "sourceObservedAt": "2026-08-14T09:53:00Z"
           }
         },
         {
@@ -70,12 +194,16 @@
           "health": "unhealthy",
           "portLeaseIds": ["port_nonprofit_http", "port_nonprofit_lambda"],
           "run": {
-            "id": "run_01J5EZ8A8YFEZ2F8AAYF26ME6B",
+            "id": "run_01J5EZ6XDJQ3RT09H42TJFWCNR",
             "startedAt": "2026-08-14T09:55:05Z",
             "restartCount": 2,
             "processCount": 0,
             "cpuPercent": 0,
-            "memoryBytes": 0
+            "memoryBytes": 0,
+            "sourceRevision": "0123456789abcdef0123456789abcdef01234567",
+            "sourceHasTrackedChanges": true,
+            "sourceHasUntrackedFiles": false,
+            "sourceObservedAt": "2026-08-14T09:53:00Z"
           }
         }
       ],
@@ -133,8 +261,10 @@
   "operations": [
     {
       "id": "operation_01J5EZB0N30N1AM9NZDW48XDB3",
+      "runId": "run_01J5EZ6XDJQ3RT09H42TJFWCNR",
       "kind": "startEnvironment",
       "state": "succeeded",
+      "phase": "complete",
       "environmentId": "env_01J5EZ5VXM3B4RYQ6WP8QH8T4A",
       "environmentRevision": 17,
       "createdAt": "2026-08-14T09:53:00Z",

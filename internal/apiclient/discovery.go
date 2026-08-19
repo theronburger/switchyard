@@ -107,7 +107,7 @@ func readPrivateFile(path string, maximumBytes int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	openedInfo, err := file.Stat()
 	if err != nil {
