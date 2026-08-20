@@ -410,3 +410,72 @@ func validCreateWorktreeRequest() contractv2.CreateWorktreeRequest {
 		RepositoryID: "repository_01", Branch: "feature/example",
 	}
 }
+
+// archiveRevalidationResolver accepts the first archive resolution and refuses
+// every later one, modelling an environment start accepted between the HTTP
+// request and the asynchronous mutation.
+type archiveRevalidationResolver struct {
+	fakeWorkspaceActionResolver
+	calls *atomic.Int32
+}
+
+func (resolver archiveRevalidationResolver) ResolveArchive(
+	ctx context.Context,
+	request contractv2.ArchiveWorktreeRequest,
+) (workspacecontrol.ArchiveManagedRequest, error) {
+	if resolver.calls.Add(1) > 1 {
+		return workspacecontrol.ArchiveManagedRequest{}, &ActionError{Status: 409, Contract: contractv2.ContractError{
+			Code: "WORKTREE_ENVIRONMENT_ACTIVE", Message: "Stop this worktree's environment before archiving it.",
+		}}
+	}
+	return resolver.fakeWorkspaceActionResolver.ResolveArchive(ctx, request)
+}
+
+// TestWorkspaceActionServiceRevalidatesArchiveImmediatelyBeforeMutation proves
+// that an environment that became active after the archive request was
+// accepted stops the removal: the backend is never invoked and the operation
+// fails with the revalidation's reason.
+func TestWorkspaceActionServiceRevalidatesArchiveImmediatelyBeforeMutation(t *testing.T) {
+	store := newFakeActionOperationStore()
+	var restarts, archives atomic.Int32
+	backend := fakeManagedWorkspaceBackend{
+		create: func(context.Context, workspacecontrol.CreateManagedRequest) (workspacecontrol.ManagedResult, error) {
+			return workspacecontrol.ManagedResult{}, nil
+		},
+		archive: func(context.Context, workspacecontrol.ArchiveManagedRequest) (workspacecontrol.ManagedResult, error) {
+			archives.Add(1)
+			return workspacecontrol.ManagedResult{}, nil
+		},
+	}
+	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
+		Lifecycle: context.Background(), Store: store, Backend: backend, Ensurer: noOpWorkspaceEnsurer(),
+		Resolver: archiveRevalidationResolver{calls: new(atomic.Int32)}, Restart: func() { restarts.Add(1) },
+		NewID: func(string) (string, error) { return "operation_01", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.ArchiveWorktree(context.Background(), contractv2.ArchiveWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "archive_01",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.CloseAndWait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.ReadOperation(context.Background(), receipt.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archives.Load() != 0 || restarts.Load() != 0 || operation.State != string(domain.OperationFailed) ||
+		operation.Error == nil || operation.Error.Code != "WORKTREE_ENVIRONMENT_ACTIVE" ||
+		operation.Error.ResourceKind != "worktree" || operation.Error.ResourceID != "worktree_01" {
+		t.Fatalf("archive was not revalidated: archives=%d restarts=%d operation=%+v", archives.Load(), restarts.Load(), operation)
+	}
+}

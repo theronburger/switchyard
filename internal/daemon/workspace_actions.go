@@ -110,7 +110,17 @@ func (service *WorkspaceActionService) ArchiveWorktree(
 		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceArchiveOperation, "worktree", request.WorktreeID, true, func(string) error {
-		_, err := service.backend.Archive(service.lifecycle, resolved)
+		// Revalidate immediately before mutation: an environment start may
+		// have been accepted for this worktree after the request was resolved,
+		// and the backend re-checks only Git state, not environment activity.
+		revalidated, err := service.resolver.ResolveArchive(service.lifecycle, request)
+		if err != nil {
+			return safeResolutionError(err)
+		}
+		if revalidated != resolved {
+			return invalidWorkspaceAction()
+		}
+		_, err = service.backend.Archive(service.lifecycle, revalidated)
 		return err
 	})
 }
@@ -254,7 +264,14 @@ func workspaceFailure(err error, resourceKind, resourceID string) contractv2.Con
 		Retryable: true, ResourceKind: resourceKind, ResourceID: resourceID,
 		NextAction: "inspect_workspace_diagnostics",
 	}
+	var actionError *ActionError
 	switch {
+	case errors.As(err, &actionError) && validActionError(actionError):
+		// A revalidation refused the mutation; publish its exact reason.
+		failure.Code = actionError.Contract.Code
+		failure.Message = actionError.Contract.Message
+		failure.Retryable = actionError.Contract.Retryable
+		failure.NextAction = "retry"
 	case errors.Is(err, workspacecontrol.ErrManagedDirty):
 		failure.Code = "WORKSPACE_DIRTY"
 		failure.Message = "The worktree has local changes and cannot be modified safely."
