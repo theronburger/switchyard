@@ -105,8 +105,8 @@ Durable state is bounded and pinned:
 - the atomic status snapshot is one row with a monotonic revision; history is never retained merely to update a timestamp;
 - event history keeps the most recent 10,000 events;
 - terminal operations keep the most recent 500 unless a current environment or workspace result still references them; incomplete operations are never pruned;
-- accepted configuration revisions keep the head, the most recent 16 revisions, and every revision whose repository digest is pinned by a current environment result or an incomplete environment operation;
-- every environment result and operation intent records the accepted repository-profile digest it was compiled from, so a restart after a later acceptance recovers the exact payload; a pinned digest whose payload is no longer retained fails boot closed rather than silently re-reading the head.
+- accepted configuration revisions keep the head, the most recent 16 revisions, and every revision whose repository digest is pinned by a live (non-stopped) environment result or an incomplete environment operation; staged-but-unaccepted candidates keep the most recent 16;
+- every environment result and operation intent records the accepted repository-profile digest it was compiled from, so a restart after a later acceptance recovers the exact payload; a live result or incomplete operation whose pinned payload is no longer retained, or whose environment no longer belongs to an accepted profile, fails boot closed rather than silently re-reading the head. A stopped result is finished history: it pins nothing and never blocks boot, so archiving a worktree or disabling a repository after its environments have stopped keeps the daemon bootable.
 
 Repository identity in the public contract is the private `profileKey`; the adapter concept does not exist in contract v2 or in persisted 0.2.0 state. Migration 10 rewrites 0.1.0 state to the new names in place.
 

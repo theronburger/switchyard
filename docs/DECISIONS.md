@@ -120,7 +120,7 @@ Switchyard 0.2.0 publishes contract v2. The public repository record carries `pr
 
 Pinned operation intent identifies the accepted repository-profile digest, not an adapter, and every environment result records that digest. A restarted daemon recovers the exact pinned payload from retained accepted configuration revisions even after later acceptances; a pinned digest without its payload fails boot closed. Existing 0.1.0 state is migrated in place by state migration 10 and is never guessed at when malformed.
 
-Durable state is bounded transactionally: one current snapshot row, 10,000 events, 500 terminal operations, and 16 unreferenced configuration revisions, with every referenced or incomplete record retained regardless of age.
+Durable state is bounded transactionally: one current snapshot row, 10,000 events, 500 terminal operations, 16 staged candidates, and 16 unreferenced configuration revisions, with every referenced or incomplete record retained regardless of age. Only live environment resources pin a revision; stopped results are history.
 
 ## Open
 
