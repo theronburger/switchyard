@@ -84,8 +84,9 @@ Worktrees may also include a `pullRequest` observation. `found` carries bounded 
 | `configuration.accepted` | the owner accepted one immutable configuration revision | `revision`, `digest` |
 | `occupancy.acquired` | a handoff lease was recorded | `leaseId`, `worktreeId`, `holderKind` |
 | `occupancy.released` | a handoff lease ended | `leaseId`, `worktreeId`, `holderKind` |
+| `cleanup.applied` | a claimed cleanup apply completed and consumed its plan | `planId`, `planRevision`, `attempts`, `requested`, `removed`, `skipped`, `interrupted` |
 
-Profile-action runs are operations, so their receipt is followed by the `operation.*` audit trail. Cleanup application is not yet audited through this feed.
+Profile-action runs are operations, so their receipt is followed by the `operation.*` audit trail. Cleanup application is audited once per claim: `cleanup.applied` is appended in the transaction that records the completed claim and consumes the plan, so an interrupted or still-resumable apply has no completion event, an identical replay of a completed request appends nothing, and a completion whose event cannot be appended is rolled back rather than committed unaudited. The payload counts outcomes (`removed` + `skipped` + `interrupted` = `requested`) and never names candidate IDs, paths, sizes, or profiles; `skipped` covers `not-in-plan` and `changed-or-protected`.
 
 ## Exact-version declaration
 
