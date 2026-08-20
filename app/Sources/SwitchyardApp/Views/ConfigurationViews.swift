@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 struct ConfigurationStatusCard: View {
     @Bindable var model: AppModel
     var showsAddRepository = true
+    var showsEntries = true
     @State private var presentsAddRepository = false
     @State private var showsCandidateDetail = false
 
@@ -26,7 +27,7 @@ struct ConfigurationStatusCard: View {
         .padding(16)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .sheet(isPresented: $presentsAddRepository) {
-            AddRepositorySheet(model: model, isPresented: $presentsAddRepository)
+            RepositoryEntrySheet(model: model, mode: .add, isPresented: $presentsAddRepository)
         }
         .alert(
             "Configuration action failed",
@@ -50,10 +51,14 @@ struct ConfigurationStatusCard: View {
                 Text(model.canReadConfiguration ? "Reading configuration state…" : "Configuration state is available once the daemon is reachable.")
                     .foregroundStyle(.secondary)
             }
-        case .loaded, .validating, .accepting, .failed:
+        case .loaded, .validating, .accepting, .editing, .failed:
             if let presentation = model.configurationPresentation {
                 Text(presentation.summary)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(presentation.desiredFileSummary)
+                    .font(.callout)
+                    .foregroundStyle(presentation.status.desired?.problem == nil ? Color.secondary : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 7) {
                     KeyValueRow(key: "Accepted revision", value: "\(presentation.status.acceptedRevision)", monospaced: true)
@@ -63,7 +68,7 @@ struct ConfigurationStatusCard: View {
                     if let candidate = presentation.status.candidate {
                         Divider()
                         KeyValueRow(key: "Pending candidate", value: candidate.digest, monospaced: true, copyable: true)
-                        KeyValueRow(key: "Desired file digest", value: candidate.sourceDigest, monospaced: true, copyable: true)
+                        KeyValueRow(key: "Candidate source digest", value: candidate.sourceDigest, monospaced: true, copyable: true)
                         KeyValueRow(key: "Compiler", value: candidate.compilerVersion, monospaced: true)
                         KeyValueRow(key: "Staged", value: candidate.stagedAt.formatted(date: .abbreviated, time: .standard))
                         FullWidthDisclosure(isExpanded: $showsCandidateDetail) {
@@ -77,6 +82,18 @@ struct ConfigurationStatusCard: View {
                     }
                 }
                 KeyValueRow(key: "Desired file", value: PrivateConfigurationLocation.standard().file.path, monospaced: true, copyable: true)
+                if let desired = presentation.status.desired, let digest = desired.sourceDigest {
+                    KeyValueRow(key: "Desired file digest", value: digest, monospaced: true, copyable: true)
+                }
+                if showsEntries, let desired = presentation.status.desired, !desired.repositories.isEmpty {
+                    Divider()
+                    Text("Repository entries")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(desired.repositories) { entry in
+                        DesiredRepositoryRow(model: model, entry: entry)
+                    }
+                }
             } else {
                 Text("The daemon has not answered a configuration read yet.")
                     .foregroundStyle(.secondary)
@@ -93,7 +110,8 @@ struct ConfigurationStatusCard: View {
                 } label: {
                     Label("Add Repository…", systemImage: "plus.rectangle.on.folder")
                 }
-                .disabled(!model.canReadConfiguration)
+                .disabled(!model.canEditRepositoryConfiguration)
+                .help("Describe a checkout; the daemon writes the entry into its private configuration.yaml and stages a candidate for acceptance")
             }
             RevealConfigurationButton()
             Spacer()
@@ -236,26 +254,137 @@ struct RevealConfigurationButton: View {
     }
 }
 
-/// Collects generic repository inputs, renders the exact YAML entry, and
-/// hands off to validation and acceptance. The app never writes into the
-/// selected checkout and, until the daemon offers a CAS write endpoint, does
-/// not edit configuration.yaml either.
-struct AddRepositorySheet: View {
+/// One desired-file entry with its acceptance state and lifecycle actions.
+/// Every action is a daemon mutation against the exact revision and file
+/// digest the app last observed; none of them touches the checkout.
+struct DesiredRepositoryRow: View {
     @Bindable var model: AppModel
+    let entry: ConfigurationRepositoryEntry
+    @State private var presentsEdit = false
+    @State private var confirmsRemoval = false
+
+    private var isPublished: Bool { model.publishedProfileKeys.contains(entry.key) }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(entry.displayName).font(.callout.weight(.medium))
+                    Text(entry.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    if !entry.enabled {
+                        Text("Disabled")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.16), in: Capsule())
+                            .foregroundStyle(.secondary)
+                    }
+                    RepositoryAcceptanceBadge(
+                        state: model.configurationPresentation?.repositoryState(profileKey: entry.key, isPublished: isPublished) ?? .unknown
+                    )
+                }
+                Text(entry.root)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 12)
+            RepositoryEntryActions(
+                model: model, entry: entry, presentsEdit: $presentsEdit, confirmsRemoval: $confirmsRemoval
+            )
+        }
+        .sheet(isPresented: $presentsEdit) {
+            RepositoryEntrySheet(model: model, mode: .edit(entry), isPresented: $presentsEdit)
+        }
+        .confirmationDialog(
+            "Remove \(entry.displayName) from the private configuration?",
+            isPresented: $confirmsRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Remove entry", role: .destructive) {
+                Task { await model.removeRepositoryConfiguration(key: entry.key) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The daemon removes only the repositories: \(entry.key) entry from configuration.yaml and stages a candidate you still have to accept. The checkout at \(entry.root) is not touched. Removal is refused until the disabled entry is accepted and no environment or managed worktree still belongs to it.")
+        }
+    }
+}
+
+struct RepositoryEntryActions: View {
+    @Bindable var model: AppModel
+    let entry: ConfigurationRepositoryEntry
+    @Binding var presentsEdit: Bool
+    @Binding var confirmsRemoval: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button("Edit…") { presentsEdit = true }
+                .help("Change display name, remote, default base, or managed worktrees root. The root is bound to the key; remove and add to repoint.")
+            Button(entry.enabled ? "Disable" : "Enable") {
+                Task { await model.setRepositoryEnabled(key: entry.key, enabled: !entry.enabled) }
+            }
+            .help(entry.enabled
+                ? "Stage a revision that keeps stop and cleanup for this repository but refuses new preparation and starts"
+                : "Stage a revision that allows preparation and starts for this repository again")
+            Button("Remove…", role: .destructive) { confirmsRemoval = true }
+                .disabled(entry.enabled)
+                .help(entry.enabled ? "Disable and accept that revision before removing" : "Remove the entry from configuration.yaml")
+        }
+        .controlSize(.small)
+        .disabled(!model.canEditRepositoryConfiguration)
+    }
+}
+
+/// Collects generic repository inputs and asks the daemon to write the entry.
+/// The app never writes into the selected checkout or into configuration.yaml;
+/// the daemon edits its private desired file under compare-and-swap and
+/// stages a candidate the owner accepts from the configuration card.
+struct RepositoryEntrySheet: View {
+    enum Mode: Equatable {
+        case add
+        case edit(ConfigurationRepositoryEntry)
+
+        var isEdit: Bool {
+            if case .edit = self { return true }
+            return false
+        }
+    }
+
+    @Bindable var model: AppModel
+    let mode: Mode
     @Binding var isPresented: Bool
-    @State private var draft = RepositoryConfigurationDraft()
-    @State private var copied = false
+    @State private var draft: RepositoryConfigurationDraft
+    @State private var showsPreview = false
+
+    init(model: AppModel, mode: Mode, isPresented: Binding<Bool>) {
+        self.model = model
+        self.mode = mode
+        self._isPresented = isPresented
+        switch mode {
+        case .add:
+            _draft = State(initialValue: RepositoryConfigurationDraft())
+        case .edit(let entry):
+            _draft = State(initialValue: RepositoryConfigurationDraft(entry: entry))
+        }
+    }
 
     private var problems: [RepositoryConfigurationDraft.Problem] {
-        draft.problems(existingKeys: model.configuredRepositoryKeys)
+        var existing = model.configuredRepositoryKeys
+        if case .edit(let entry) = mode { existing.remove(entry.key) }
+        return draft.problems(existingKeys: existing, requiresExistingRoot: !mode.isEdit)
     }
+
+    private var expectedRevision: Int64 { model.configurationPresentation?.expectedRevision ?? 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Add repository")
+                Text(mode.isEdit ? "Edit repository" : "Add repository")
                     .font(.title2.bold())
-                Text("Describe the checkout once. Switchyard stores repository behavior only in its private configuration and never adds files to the repository.")
+                Text(mode.isEdit
+                    ? "Change the generic identity fields of this entry. Services, commands, and values in configuration.yaml stay exactly as they are."
+                    : "Describe the checkout once. Switchyard stores repository behavior only in its private configuration and never adds files to the repository.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -263,10 +392,14 @@ struct AddRepositorySheet: View {
                 HStack {
                     TextField("Repository root", text: $draft.rootPath, prompt: Text("/absolute/path/to/checkout"))
                         .textFieldStyle(.roundedBorder)
-                    Button("Choose…") { chooseRoot() }
+                        .disabled(mode.isEdit)
+                    if !mode.isEdit {
+                        Button("Choose…") { chooseRoot() }
+                    }
                 }
                 TextField("Repository key", text: $draft.key, prompt: Text("stable-opaque-key"))
                     .textFieldStyle(.roundedBorder)
+                    .disabled(mode.isEdit)
                 TextField("Display name", text: $draft.displayName, prompt: Text("Shown in the sidebar"))
                     .textFieldStyle(.roundedBorder)
                 TextField("Remote", text: $draft.remote, prompt: Text("origin"))
@@ -279,6 +412,12 @@ struct AddRepositorySheet: View {
             }
             .formStyle(.grouped)
             .frame(maxHeight: 330)
+            if mode.isEdit {
+                Text("The key and root are bound together for the life of the entry. To point a key at a different checkout, remove it and add a new one.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if !problems.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
@@ -290,19 +429,25 @@ struct AddRepositorySheet: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(ConfigurationAcceptancePresentation.writeGap)
+                    Text(ConfigurationAcceptancePresentation.editFlow)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    ScrollView {
-                        Text(draft.yamlSnippet)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
+                    FullWidthDisclosure(isExpanded: $showsPreview) {
+                        Text("Entry the daemon will write")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                    } content: {
+                        ScrollView {
+                            Text(draft.yamlSnippet)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                        }
+                        .frame(height: 120)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
-                    .frame(height: 120)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
             }
 
@@ -311,28 +456,19 @@ struct AddRepositorySheet: View {
                 RevealConfigurationButton()
                 Spacer()
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(draft.yamlSnippet, forType: .string)
-                    copied = true
-                } label: {
-                    Label(copied ? "Copied entry" : "Copy entry", systemImage: copied ? "checkmark" : "doc.on.doc")
-                }
-                .disabled(!problems.isEmpty)
-                Button {
                     Task {
-                        await model.validateConfiguration()
-                        if model.configurationState.failureMessage == nil { isPresented = false }
+                        if await model.saveRepositoryConfiguration(draft) { isPresented = false }
                     }
                 } label: {
                     if model.configurationState.isBusy {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text("Validate configuration")
+                        Text(mode.isEdit ? "Stage changes" : "Add repository")
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!problems.isEmpty || !model.canMutateConfiguration)
-                .help("Validate configuration.yaml at revision \(model.configurationPresentation?.expectedRevision ?? 0), then accept the staged candidate from the overview")
+                .disabled(!problems.isEmpty || !model.canEditRepositoryConfiguration)
+                .help("Write the entry through the daemon at revision \(expectedRevision) and stage a candidate; accept it from the configuration card")
             }
         }
         .padding(24)
@@ -367,7 +503,7 @@ struct RepositorySettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 header
-                ConfigurationStatusCard(model: model, showsAddRepository: false)
+                ConfigurationStatusCard(model: model, showsAddRepository: false, showsEntries: false)
                 identity
                 runtimeCatalog
                 lifecycle
@@ -455,10 +591,18 @@ struct RepositorySettingsView: View {
     private var lifecycle: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Configuration lifecycle").font(.headline)
-            Text("Edit Configuration, Disable, and Remove change the private desired file. The daemon has no repository-level write endpoint yet, so edit the entry under repositories: \(repository.profileKey) in configuration.yaml, then validate and accept the new revision. A disabled repository keeps stop and cleanup but refuses new starts; removal is rejected while any resource still references the binding.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let entry = model.desiredEntry(for: repository) {
+                Text("Edit, Disable, Enable, and Remove ask the daemon to rewrite only the repositories: \(entry.key) entry in its private configuration.yaml, compared against the exact revision and file digest shown above, and stage a candidate you accept from the card. A disabled repository keeps stop and cleanup but refuses new preparation and starts. Removal is available once the disabled entry is accepted and no environment or managed worktree still belongs to the repository.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                DesiredRepositoryRow(model: model, entry: entry)
+            } else {
+                Text(model.configurationPresentation?.desiredFileSummary.appending(" This repository's entry is not editable here: the daemon publishes it from the accepted revision, but configuration.yaml does not currently contain a readable repositories: \(repository.profileKey) entry.") ?? "Repository edits are available once the daemon publishes the desired file state.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 10) {
                 RevealConfigurationButton()
                 Button {

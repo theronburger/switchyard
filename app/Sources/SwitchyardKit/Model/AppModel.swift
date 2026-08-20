@@ -96,19 +96,20 @@ public enum ConfigurationActionState: Sendable, Equatable {
     case loaded(ConfigurationStatus)
     case validating(ConfigurationStatus?)
     case accepting(ConfigurationStatus)
+    case editing(ConfigurationStatus?)
     case failed(message: String, last: ConfigurationStatus?)
 
     public var status: ConfigurationStatus? {
         switch self {
         case .idle, .loading: return nil
         case .loaded(let status), .accepting(let status): return status
-        case .validating(let status), .failed(_, let status): return status
+        case .validating(let status), .editing(let status), .failed(_, let status): return status
         }
     }
 
     public var isBusy: Bool {
         switch self {
-        case .loading, .validating, .accepting: return true
+        case .loading, .validating, .accepting, .editing: return true
         case .idle, .loaded, .failed: return false
         }
     }
@@ -644,13 +645,35 @@ public final class AppModel {
         Set(snapshot?.repositories.map(\.profileKey) ?? [])
     }
 
-    /// Profile keys that appear in accepted or candidate configuration.
+    /// Profile keys that appear in the desired file, the accepted revision,
+    /// or a staged candidate. Add Repository refuses to reuse any of them.
     public var configuredRepositoryKeys: Set<String> {
         var keys = publishedProfileKeys
         if let candidate = configurationState.status?.candidate {
             keys.formUnion(candidate.repositoryDigests.keys)
         }
+        if let desired = configurationState.status?.desired {
+            keys.formUnion(desired.repositories.map(\.key))
+        }
         return keys
+    }
+
+    /// The generic desired-file entry for a published repository, matched by
+    /// profile key. Nil when the desired file is absent, unreadable, or no
+    /// longer contains the entry.
+    public func desiredEntry(for repository: Repository) -> ConfigurationRepositoryEntry? {
+        desiredEntry(key: repository.profileKey)
+    }
+
+    public func desiredEntry(key: String) -> ConfigurationRepositoryEntry? {
+        configurationState.status?.desired?.repositories.first { $0.key == key }
+    }
+
+    /// Whether the daemon can edit the desired file right now: it must have
+    /// published a desired view that is either absent or readable.
+    public var canEditRepositoryConfiguration: Bool {
+        guard canMutateConfiguration, let desired = configurationState.status?.desired else { return false }
+        return !desired.present || desired.problem == nil
     }
 
     public func acceptanceState(for repository: Repository) -> RepositoryAcceptanceState {
@@ -698,6 +721,60 @@ public final class AppModel {
             await refresh()
         } catch {
             configurationState = .failed(message: Self.actionFailureMessage(error), last: status)
+        }
+    }
+
+    /// Adds or updates one generic repository entry through the daemon. The
+    /// request carries the exact accepted revision and desired-file digest the
+    /// app last observed, so a concurrent manual edit is refused rather than
+    /// overwritten. Success leaves a staged candidate awaiting acceptance.
+    @discardableResult
+    public func saveRepositoryConfiguration(_ draft: RepositoryConfigurationDraft) async -> Bool {
+        await mutateRepositoryConfiguration(.upsert, key: draft.normalized.key, entry: draft.normalized.entry)
+    }
+
+    @discardableResult
+    public func setRepositoryEnabled(key: String, enabled: Bool) async -> Bool {
+        guard let current = desiredEntry(key: key) else {
+            configurationState = .failed(
+                message: "configuration.yaml no longer contains an entry for \(key). Reload the configuration state and try again.",
+                last: configurationState.status
+            )
+            return false
+        }
+        let entry = ConfigurationRepositoryEntry(
+            key: current.key, enabled: enabled, displayName: current.displayName, root: current.root,
+            remote: current.remote, defaultBase: current.defaultBase, managedWorktreesRoot: current.managedWorktreesRoot
+        )
+        return await mutateRepositoryConfiguration(.upsert, key: key, entry: entry)
+    }
+
+    @discardableResult
+    public func removeRepositoryConfiguration(key: String) async -> Bool {
+        await mutateRepositoryConfiguration(.remove, key: key, entry: nil)
+    }
+
+    private func mutateRepositoryConfiguration(
+        _ operation: ConfigurationRepositoryMutationRequest.Operation,
+        key: String,
+        entry: ConfigurationRepositoryEntry?
+    ) async -> Bool {
+        guard canEditRepositoryConfiguration, let configurationActions, let status = configurationState.status else { return false }
+        configurationState = .editing(status)
+        do {
+            configurationState = .loaded(try await configurationActions.mutateRepositoryConfiguration(
+                ConfigurationRepositoryMutationRequest(
+                    expectedRevision: status.acceptedRevision,
+                    expectedSourceDigest: status.desired?.sourceDigest,
+                    operation: operation,
+                    key: key,
+                    entry: entry
+                )
+            ))
+            return true
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: status)
+            return false
         }
     }
 

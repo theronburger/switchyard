@@ -379,15 +379,24 @@ struct SwitchyardPresentationTests {
         renders.append((
             "add-repository-sheet-dark",
             try render(
-                AnyView(AddRepositorySheet(model: model, isPresented: .constant(true))),
+                AnyView(RepositoryEntrySheet(model: model, mode: .add, isPresented: .constant(true))),
                 size: CGSize(width: 640, height: 640),
                 appearance: .dark)
         ))
+        if let entry = model.desiredEntry(key: "sample") {
+            renders.append((
+                "edit-repository-sheet-light",
+                try render(
+                    AnyView(RepositoryEntrySheet(model: model, mode: .edit(entry), isPresented: .constant(true))),
+                    size: CGSize(width: 640, height: 640),
+                    appearance: .light)
+            ))
+        }
         renders.append((
             "configuration-status-light",
             try render(
                 AnyView(ConfigurationStatusCard(model: model).padding(20)),
-                size: CGSize(width: 900, height: 420),
+                size: CGSize(width: 900, height: 560),
                 appearance: .light)
         ))
         renders.append((

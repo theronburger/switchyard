@@ -672,6 +672,72 @@ public struct ConfigurationCandidate: Decodable, Sendable, Equatable {
     public let repositoryDigests: [String: String]
     public let executableDigests: [String: String]
     public let stagedAt: Date
+
+    public init(
+        schemaVersion: Int = contractSchemaVersion,
+        digest: String,
+        sourceDigest: String,
+        compilerVersion: String,
+        repositoryDigests: [String: String],
+        executableDigests: [String: String],
+        stagedAt: Date
+    ) {
+        self.schemaVersion = schemaVersion
+        self.digest = digest
+        self.sourceDigest = sourceDigest
+        self.compilerVersion = compilerVersion
+        self.repositoryDigests = repositoryDigests
+        self.executableDigests = executableDigests
+        self.stagedAt = stagedAt
+    }
+}
+
+/// Generic identity fields of one repository entry in the private desired
+/// file. Commands, services, and values never cross this boundary.
+public struct ConfigurationRepositoryEntry: Codable, Sendable, Equatable, Identifiable {
+    public let key: String
+    public let enabled: Bool
+    public let displayName: String
+    public let root: String
+    public let remote: String
+    public let defaultBase: String
+    public let managedWorktreesRoot: String
+
+    public var id: String { key }
+
+    public init(
+        key: String,
+        enabled: Bool,
+        displayName: String,
+        root: String,
+        remote: String,
+        defaultBase: String,
+        managedWorktreesRoot: String
+    ) {
+        self.key = key
+        self.enabled = enabled
+        self.displayName = displayName
+        self.root = root
+        self.remote = remote
+        self.defaultBase = defaultBase
+        self.managedWorktreesRoot = managedWorktreesRoot
+    }
+}
+
+/// Bounded daemon view of `configuration.yaml`. `sourceDigest` is the exact
+/// compare-and-swap token the next repository mutation must carry.
+public struct ConfigurationDesiredFile: Decodable, Sendable, Equatable {
+    public let present: Bool
+    public let sourceDigest: String?
+    public let problem: String?
+    public let repositories: [ConfigurationRepositoryEntry]
+
+    public init(present: Bool, sourceDigest: String?, problem: String?, repositories: [ConfigurationRepositoryEntry]) {
+        self.present = present
+        self.sourceDigest = sourceDigest
+        self.problem = problem
+        self.repositories = repositories
+    }
 }
 
 /// Daemon-published configuration acceptance state (D-025).
@@ -681,6 +747,55 @@ public struct ConfigurationStatus: Decodable, Sendable, Equatable {
     public let acceptedRevision: Int64
     public let acceptedDigest: String?
     public let candidate: ConfigurationCandidate?
+    public let desired: ConfigurationDesiredFile?
+
+    public init(
+        schemaVersion: Int = contractSchemaVersion,
+        state: ConfigurationState,
+        acceptedRevision: Int64,
+        acceptedDigest: String? = nil,
+        candidate: ConfigurationCandidate? = nil,
+        desired: ConfigurationDesiredFile? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.state = state
+        self.acceptedRevision = acceptedRevision
+        self.acceptedDigest = acceptedDigest
+        self.candidate = candidate
+        self.desired = desired
+    }
+}
+
+/// Edits one generic repository entry through the daemon. The daemon compares
+/// both the accepted revision and the desired-file digest before writing and
+/// answers with a staged candidate that still requires acceptance.
+public struct ConfigurationRepositoryMutationRequest: Encodable, Sendable, Equatable {
+    public enum Operation: String, Codable, Sendable {
+        case upsert
+        case remove
+    }
+
+    public let schemaVersion: Int
+    public let expectedRevision: Int64
+    public let expectedSourceDigest: String?
+    public let operation: Operation
+    public let key: String
+    public let entry: ConfigurationRepositoryEntry?
+
+    public init(
+        expectedRevision: Int64,
+        expectedSourceDigest: String?,
+        operation: Operation,
+        key: String,
+        entry: ConfigurationRepositoryEntry?
+    ) {
+        self.schemaVersion = contractSchemaVersion
+        self.expectedRevision = expectedRevision
+        self.expectedSourceDigest = expectedSourceDigest.flatMap { $0.isEmpty ? nil : $0 }
+        self.operation = operation
+        self.key = key
+        self.entry = entry
+    }
 }
 
 public struct ConfigurationValidationRequest: Codable, Sendable, Equatable {

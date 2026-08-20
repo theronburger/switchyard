@@ -7,6 +7,7 @@ public protocol ConfigurationActionSubmitting: Sendable {
     func configuration() async throws -> ConfigurationStatus
     func validateConfiguration(_ request: ConfigurationValidationRequest) async throws -> ConfigurationStatus
     func acceptConfiguration(_ request: ConfigurationAcceptanceRequest) async throws -> ConfigurationStatus
+    func mutateRepositoryConfiguration(_ request: ConfigurationRepositoryMutationRequest) async throws -> ConfigurationStatus
 }
 
 public struct LiveConfigurationActionClient: ConfigurationActionSubmitting {
@@ -26,6 +27,10 @@ public struct LiveConfigurationActionClient: ConfigurationActionSubmitting {
 
     public func acceptConfiguration(_ request: ConfigurationAcceptanceRequest) async throws -> ConfigurationStatus {
         try await verifiedClient().acceptConfiguration(request)
+    }
+
+    public func mutateRepositoryConfiguration(_ request: ConfigurationRepositoryMutationRequest) async throws -> ConfigurationStatus {
+        try await verifiedClient().mutateRepositoryConfiguration(request)
     }
 
     private func verifiedClient() async throws -> DaemonClient {

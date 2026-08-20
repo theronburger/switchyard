@@ -263,6 +263,24 @@ public struct DaemonClient: Sendable {
         return status
     }
 
+    public func mutateRepositoryConfiguration(_ request: ConfigurationRepositoryMutationRequest) async throws -> ConfigurationStatus {
+        guard request.schemaVersion == contractSchemaVersion, request.expectedRevision >= 0,
+              request.expectedSourceDigest.map(Self.validDigest) ?? true,
+              Self.validRepositoryKey(request.key),
+              request.operation == .remove ? request.entry == nil : request.entry?.key == request.key else {
+            throw DaemonClientError.invalidRequest("configuration repository mutation is invalid")
+        }
+        let status = try await post(
+            ConfigurationStatus.self,
+            pathComponents: ["v1", "configuration", "repositories"],
+            body: request,
+            requestId: "configuration_\(UUID().uuidString.lowercased())",
+            successStatus: 200
+        )
+        try Self.validate(status)
+        return status
+    }
+
     public func planCleanup(_ request: CleanupPlanRequest) async throws -> CleanupPlan {
         guard request.schemaVersion == contractSchemaVersion,
               request.scope.kind == "global" && request.scope.id == nil ||
@@ -479,6 +497,14 @@ public struct DaemonClient: Sendable {
         if status.state == .pending, status.candidate == nil {
             throw DaemonClientError.malformedResponse("pending configuration candidate is required")
         }
+        if let desired = status.desired {
+            guard desired.sourceDigest.map(validDigest) ?? true,
+                  desired.present || (desired.sourceDigest == nil && desired.repositories.isEmpty),
+                  Set(desired.repositories.map(\.key)).count == desired.repositories.count,
+                  desired.repositories.allSatisfy({ validRepositoryKey($0.key) && $0.root.hasPrefix("/") && $0.managedWorktreesRoot.hasPrefix("/") }) else {
+                throw DaemonClientError.malformedResponse("configuration desired file is invalid")
+            }
+        }
         if let candidate = status.candidate {
             guard candidate.schemaVersion == contractSchemaVersion,
                   validDigest(candidate.digest), validDigest(candidate.sourceDigest),
@@ -488,6 +514,26 @@ public struct DaemonClient: Sendable {
                 throw DaemonClientError.malformedResponse("configuration candidate is invalid")
             }
         }
+    }
+
+    /// Repository keys are stable opaque identifiers: lowercase, digits, and
+    /// single hyphens, starting with a letter.
+    public static func validRepositoryKey(_ value: String) -> Bool {
+        guard let first = value.unicodeScalars.first, value.utf8.count <= 64,
+              ("a"..."z").contains(first) else { return false }
+        var previousHyphen = false
+        for scalar in value.unicodeScalars {
+            let lower = ("a"..."z").contains(scalar), digit = ("0"..."9").contains(scalar)
+            if scalar == "-" {
+                if previousHyphen { return false }
+                previousHyphen = true
+            } else if lower || digit {
+                previousHyphen = false
+            } else {
+                return false
+            }
+        }
+        return !previousHyphen
     }
 
     /// `sha256:` followed by exactly 64 lowercase hexadecimal digits.

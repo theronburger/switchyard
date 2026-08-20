@@ -193,6 +193,70 @@ struct ConfigurationDaemonClientTests {
     }
 
     @Test
+    func `repository mutation posts the exact CAS body and refuses malformed requests locally`() async throws {
+        let transport = RecordingTransport { request in
+            switch request.url?.path {
+            case "/v1/configuration/repositories": return (200, FixtureConfigurationActionClient.canonicalPendingJSON)
+            default: return (404, "{}")
+            }
+        }
+        let client = try client(transport)
+        let entry = ConfigurationRepositoryEntry(
+            key: "aurora-console", enabled: true, displayName: "Aurora", root: "/Users/example/Developer/aurora",
+            remote: "origin", defaultBase: "origin/main", managedWorktreesRoot: "/Users/example/Developer/aurora-worktrees"
+        )
+        let status = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+            expectedRevision: 4, expectedSourceDigest: Self.digest, operation: .upsert, key: "aurora-console", entry: entry
+        ))
+        #expect(status.desired?.repositories.map(\.key) == ["sample", "second-sample"])
+        #expect(status.desired?.sourceDigest == "sha256:" + String(repeating: "3", count: 64))
+        let request = try #require(transport.requests.first)
+        #expect(request.httpMethod == "POST")
+        let requestBody = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+        #expect(body["expectedRevision"] as? Int == 4)
+        #expect(body["expectedSourceDigest"] as? String == Self.digest)
+        #expect(body["operation"] as? String == "upsert")
+        #expect(body["key"] as? String == "aurora-console")
+        #expect((body["entry"] as? [String: Any])?["managedWorktreesRoot"] as? String == "/Users/example/Developer/aurora-worktrees")
+
+        // An absent desired file is signalled by omitting the digest entirely.
+        _ = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+            expectedRevision: 0, expectedSourceDigest: "", operation: .upsert, key: "aurora-console", entry: entry
+        ))
+        let freshBody = try #require(transport.requests.last?.httpBody)
+        let fresh = try #require(JSONSerialization.jsonObject(with: freshBody) as? [String: Any])
+        #expect(fresh["expectedSourceDigest"] == nil)
+
+        for request in [
+            ConfigurationRepositoryMutationRequest(expectedRevision: 4, expectedSourceDigest: "abc", operation: .remove, key: "sample", entry: nil),
+            ConfigurationRepositoryMutationRequest(expectedRevision: 4, expectedSourceDigest: nil, operation: .remove, key: "Sample", entry: nil),
+            ConfigurationRepositoryMutationRequest(expectedRevision: 4, expectedSourceDigest: nil, operation: .remove, key: "sample", entry: entry),
+            ConfigurationRepositoryMutationRequest(expectedRevision: 4, expectedSourceDigest: nil, operation: .upsert, key: "sample", entry: nil),
+            ConfigurationRepositoryMutationRequest(expectedRevision: 4, expectedSourceDigest: nil, operation: .upsert, key: "other", entry: entry),
+            ConfigurationRepositoryMutationRequest(expectedRevision: -1, expectedSourceDigest: nil, operation: .remove, key: "sample", entry: nil),
+        ] {
+            await #expect(throws: DaemonClientError.self) {
+                _ = try await client.mutateRepositoryConfiguration(request)
+            }
+        }
+        #expect(transport.requests.count == 2)
+    }
+
+    @Test
+    func `client refuses a desired view that contradicts itself`() async throws {
+        let transport = RecordingTransport { _ in
+            (200, """
+            {"schemaVersion":2,"state":"missing","acceptedRevision":0,
+             "desired":{"present":false,"sourceDigest":"sha256:\(String(repeating: "1", count: 64))","repositories":[]}}
+            """)
+        }
+        await #expect(throws: DaemonClientError.self) {
+            _ = try await client(transport).configuration()
+        }
+    }
+
+    @Test
     func `client refuses malformed digests and malformed configuration status`() async throws {
         let transport = RecordingTransport { _ in
             (200, """
@@ -285,6 +349,29 @@ private actor RecordingConfigurationActions: ConfigurationActionSubmitting {
     }
 
     func setFailNextAccept(_ value: Bool) { failNextAccept = value }
+
+    private(set) var mutations: [ConfigurationRepositoryMutationRequest] = []
+    var failNextMutation: ContractError?
+
+    func setFailNextMutation(_ error: ContractError?) { failNextMutation = error }
+
+    func mutateRepositoryConfiguration(_ request: ConfigurationRepositoryMutationRequest) async throws -> ConfigurationStatus {
+        mutations.append(request)
+        if let failure = failNextMutation {
+            failNextMutation = nil
+            throw DaemonClientError.contract(failure)
+        }
+        current = try ContractDecoder().decode(ConfigurationStatus.self, from: Data(FixtureConfigurationActionClient.canonicalPendingJSON.utf8))
+        return current
+    }
+}
+
+private func contractError(_ code: String, _ message: String) -> ContractError {
+    ContractError(
+        code: code, message: message, retryable: false,
+        resourceKind: nil, resourceId: nil, currentState: nil, requestedState: nil,
+        phase: nil, step: nil, diagnostic: nil, logReference: nil, nextAction: nil, exitCode: nil
+    )
 }
 
 private struct StubLifecycleController: DaemonLifecycleControlling {
@@ -357,6 +444,137 @@ struct ConfigurationAppModelTests {
         model.dismissConfigurationFailure()
         #expect(model.configurationState.status?.state == .pending)
         #expect(model.canMutateConfiguration)
+    }
+
+    @Test
+    func `repository edits carry the observed revision and desired digest and surface daemon refusals`() async throws {
+        let accepted = try ContractDecoder().decode(ConfigurationStatus.self, from: Data("""
+        {"schemaVersion":2,"state":"accepted","acceptedRevision":5,
+         "acceptedDigest":"sha256:\(String(repeating: "2", count: 64))",
+         "desired":{"present":true,"sourceDigest":"sha256:\(String(repeating: "9", count: 64))","repositories":[
+           {"key":"sample","enabled":true,"displayName":"Sample","root":"/Users/example/Developer/sample",
+            "remote":"origin","defaultBase":"origin/main","managedWorktreesRoot":"/Users/example/Developer/sample-worktrees"}]}}
+        """.utf8))
+        let actions = RecordingConfigurationActions(current: accepted)
+        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL, configurationActions: actions)
+        await model.refresh()
+        #expect(model.canEditRepositoryConfiguration)
+        #expect(model.configuredRepositoryKeys == ["sample"])
+        let repository = try #require(model.snapshot?.repositories.first)
+        #expect(model.desiredEntry(for: repository)?.key == "sample")
+
+        // Disable rewrites the known entry with only the flag changed.
+        #expect(await model.setRepositoryEnabled(key: "sample", enabled: false))
+        var mutation = try #require(await actions.mutations.last)
+        #expect(mutation.operation == .upsert)
+        #expect(mutation.expectedRevision == 5)
+        #expect(mutation.expectedSourceDigest == "sha256:" + String(repeating: "9", count: 64))
+        #expect(mutation.entry?.enabled == false)
+        #expect(mutation.entry?.root == "/Users/example/Developer/sample")
+        #expect(model.configurationPresentation?.status.state == .pending)
+
+        // After the daemon answered, the next edit uses the new digest.
+        let draft = RepositoryConfigurationDraft(
+            key: "second-sample", displayName: "Second", rootPath: "/Users/example/Developer/second-sample",
+            managedWorktreesRoot: "/Users/example/Developer/second-sample-worktrees"
+        )
+        #expect(await model.saveRepositoryConfiguration(draft))
+        mutation = try #require(await actions.mutations.last)
+        #expect(mutation.expectedRevision == 4)
+        #expect(mutation.expectedSourceDigest == "sha256:" + String(repeating: "3", count: 64))
+        #expect(mutation.entry?.key == "second-sample")
+
+        // A daemon refusal keeps the last good state and shows the code.
+        await actions.setFailNextMutation(contractError("CONFIGURATION_DESIRED_CHANGED", "configuration.yaml changed since it was last read; reload and retry"))
+        #expect(!(await model.removeRepositoryConfiguration(key: "second-sample")))
+        mutation = try #require(await actions.mutations.last)
+        #expect(mutation.operation == .remove)
+        #expect(mutation.entry == nil)
+        #expect(model.configurationState.failureMessage?.contains("CONFIGURATION_DESIRED_CHANGED") == true)
+        model.dismissConfigurationFailure()
+        #expect(model.configurationState.status?.state == .pending)
+        #expect(model.canEditRepositoryConfiguration)
+
+        // Flipping a key the desired file no longer lists never reaches the daemon.
+        let before = await actions.mutations.count
+        #expect(!(await model.setRepositoryEnabled(key: "vanished", enabled: true)))
+        #expect(await actions.mutations.count == before)
+        #expect(model.configurationState.failureMessage?.contains("vanished") == true)
+    }
+
+    @Test
+    func `edits are unavailable while the desired file is unreadable or unknown`() async throws {
+        let broken = try ContractDecoder().decode(ConfigurationStatus.self, from: Data("""
+        {"schemaVersion":2,"state":"accepted","acceptedRevision":5,
+         "acceptedDigest":"sha256:\(String(repeating: "2", count: 64))",
+         "desired":{"present":true,"sourceDigest":"sha256:\(String(repeating: "9", count: 64))",
+                    "problem":"decode YAML: line 3: did not find expected key","repositories":[]}}
+        """.utf8))
+        let actions = RecordingConfigurationActions(current: broken)
+        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL, configurationActions: actions)
+        await model.refresh()
+        #expect(model.canMutateConfiguration)
+        #expect(!model.canEditRepositoryConfiguration)
+        #expect(model.configurationPresentation?.desiredFileSummary.contains("did not find expected key") == true)
+        #expect(!(await model.saveRepositoryConfiguration(RepositoryConfigurationDraft.suggested(forRootPath: "/tmp"))))
+        #expect(await actions.mutations.isEmpty)
+
+        let legacy = try ContractDecoder().decode(ConfigurationStatus.self, from: Data(FixtureConfigurationActionClient.canonicalAcceptedJSON.utf8))
+        let legacyModel = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL, configurationActions: RecordingConfigurationActions(current: legacy))
+        await legacyModel.refresh()
+        #expect(!legacyModel.canEditRepositoryConfiguration)
+    }
+
+    @Test
+    func `fixture client enforces the daemon's add edit disable remove rules`() async throws {
+        let client = FixtureConfigurationActionClient(scenario: .empty)
+        let initial = try await client.configuration()
+        #expect(initial.desired?.present == false)
+        let entry = ConfigurationRepositoryEntry(
+            key: "alpha", enabled: true, displayName: "Alpha", root: "/tmp/alpha",
+            remote: "origin", defaultBase: "origin/main", managedWorktreesRoot: "/tmp/alpha-worktrees"
+        )
+        let added = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+            expectedRevision: 0, expectedSourceDigest: nil, operation: .upsert, key: "alpha", entry: entry
+        ))
+        #expect(added.state == .pending)
+        #expect(added.desired?.repositories.map(\.key) == ["alpha"])
+        let digest = try #require(added.desired?.sourceDigest)
+
+        // Stale digest, repointed root, and removing an enabled entry are refused.
+        await #expect(throws: FixtureError.self) {
+            _ = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+                expectedRevision: 0, expectedSourceDigest: nil, operation: .upsert, key: "alpha", entry: entry
+            ))
+        }
+        let repointed = ConfigurationRepositoryEntry(
+            key: "alpha", enabled: true, displayName: "Alpha", root: "/tmp/elsewhere",
+            remote: "origin", defaultBase: "origin/main", managedWorktreesRoot: "/tmp/alpha-worktrees"
+        )
+        await #expect(throws: FixtureError.self) {
+            _ = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+                expectedRevision: 0, expectedSourceDigest: digest, operation: .upsert, key: "alpha", entry: repointed
+            ))
+        }
+        await #expect(throws: FixtureError.self) {
+            _ = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+                expectedRevision: 0, expectedSourceDigest: digest, operation: .remove, key: "alpha", entry: nil
+            ))
+        }
+        let disabled = ConfigurationRepositoryEntry(
+            key: "alpha", enabled: false, displayName: "Alpha", root: "/tmp/alpha",
+            remote: "origin", defaultBase: "origin/main", managedWorktreesRoot: "/tmp/alpha-worktrees"
+        )
+        let paused = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+            expectedRevision: 0, expectedSourceDigest: digest, operation: .upsert, key: "alpha", entry: disabled
+        ))
+        let pausedDigest = try #require(paused.candidate?.digest)
+        let accepted = try await client.acceptConfiguration(ConfigurationAcceptanceRequest(expectedRevision: 0, digest: pausedDigest))
+        #expect(accepted.acceptedRevision == 1)
+        let removed = try await client.mutateRepositoryConfiguration(ConfigurationRepositoryMutationRequest(
+            expectedRevision: 1, expectedSourceDigest: accepted.desired?.sourceDigest, operation: .remove, key: "alpha", entry: nil
+        ))
+        #expect(removed.desired?.repositories.isEmpty == true)
     }
 
     @Test

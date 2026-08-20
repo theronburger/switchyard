@@ -30,6 +30,33 @@ public struct RepositoryConfigurationDraft: Sendable, Equatable {
         self.enabled = enabled
     }
 
+    /// A draft prefilled from the daemon's desired-file view, used by Edit.
+    public init(entry: ConfigurationRepositoryEntry) {
+        self.init(
+            key: entry.key,
+            displayName: entry.displayName,
+            rootPath: entry.root,
+            remote: entry.remote,
+            defaultBase: entry.defaultBase,
+            managedWorktreesRoot: entry.managedWorktreesRoot,
+            enabled: entry.enabled
+        )
+    }
+
+    /// The generic entry the daemon writes for this draft.
+    public var entry: ConfigurationRepositoryEntry {
+        let draft = normalized
+        return ConfigurationRepositoryEntry(
+            key: draft.key,
+            enabled: draft.enabled,
+            displayName: draft.displayName,
+            root: draft.rootPath,
+            remote: draft.remote,
+            defaultBase: draft.defaultBase,
+            managedWorktreesRoot: draft.managedWorktreesRoot
+        )
+    }
+
     public enum Problem: Sendable, Equatable, CustomStringConvertible {
         case keyInvalid
         case displayNameMissing
@@ -99,8 +126,12 @@ public struct RepositoryConfigurationDraft: Sendable, Equatable {
         )
     }
 
+    /// Validation problems. `requiresExistingRoot` is false when editing an
+    /// entry whose root is already bound: the daemon, not this machine's view
+    /// of the filesystem, owns that binding.
     public func problems(
         existingKeys: Set<String> = [],
+        requiresExistingRoot: Bool = true,
         fileManager: FileManager = .default
     ) -> [Problem] {
         let draft = normalized
@@ -110,7 +141,7 @@ public struct RepositoryConfigurationDraft: Sendable, Equatable {
         if draft.displayName.isEmpty { problems.append(.displayNameMissing) }
         if !draft.rootPath.hasPrefix("/") {
             problems.append(.rootNotAbsolute)
-        } else {
+        } else if requiresExistingRoot {
             var isDirectory: ObjCBool = false
             if !fileManager.fileExists(atPath: draft.rootPath, isDirectory: &isDirectory) || !isDirectory.boolValue {
                 problems.append(.rootIsNotDirectory)
@@ -128,8 +159,9 @@ public struct RepositoryConfigurationDraft: Sendable, Equatable {
         return problems
     }
 
-    /// The exact YAML fragment to add under `repositories:` in the private
-    /// `configuration.yaml`. Every scalar is double-quoted so paths and names
+    /// A preview of the entry the daemon will add under `repositories:` in the
+    /// private `configuration.yaml`. The daemon writes the file; this rendering
+    /// is only for review. Every scalar is double-quoted so paths and names
     /// never change meaning under YAML's implicit typing.
     public var yamlSnippet: String {
         let draft = normalized
@@ -194,8 +226,7 @@ public struct RepositoryConfigurationDraft: Sendable, Equatable {
 }
 
 /// Where the private configuration lives for the resolved channel. The app
-/// reveals and describes this file; it never writes it (see
-/// `ConfigurationAcceptancePresentation.writeGap`).
+/// reveals and describes this file; only the daemon writes it.
 public struct PrivateConfigurationLocation: Sendable, Equatable {
     public let directory: URL
     public let file: URL
@@ -301,30 +332,64 @@ public struct ConfigurationAcceptancePresentation: Sendable, Equatable {
         }
     }
 
-    /// The daemon has no compare-and-swap write endpoint for repository
-    /// entries yet, so the app stages an exact snippet for the owner to place
-    /// in the desired file and then drives validation and acceptance.
-    public static let writeGap =
-        "Switchyard's daemon currently exposes validate and accept for the private configuration but no write endpoint, so the app does not edit configuration.yaml. Paste the generated entry under repositories:, then validate and accept here."
+    /// How every repository edit reaches disk: the daemon, never the app or
+    /// the checkout, writes the private desired file, and the result is a
+    /// staged candidate the owner still has to accept.
+    public static let editFlow =
+        "Switchyard's daemon writes this entry into its private configuration.yaml under Application Support, compares it against the exact revision and file digest shown here so a concurrent edit is refused, and stages a candidate. Nothing runs until you accept that candidate's digest. The repository itself is never modified."
+
+    /// What the desired-file view tells the owner about editability.
+    public var desiredFileSummary: String {
+        guard let desired = status.desired else {
+            return "The daemon has not published the desired file state, so repository edits are unavailable."
+        }
+        if !desired.present {
+            return "No configuration.yaml exists yet. Adding the first repository creates it as an owner-only file."
+        }
+        if let problem = desired.problem {
+            return "configuration.yaml cannot be edited until it is fixed: \(problem)"
+        }
+        let count = desired.repositories.count
+        return "configuration.yaml lists \(count) repository \(count == 1 ? "entry" : "entries")."
+    }
 }
 
-/// Scenario-scoped configuration status for fixture builds and tests.
-public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
+/// Scenario-scoped configuration status for fixture builds and tests. The
+/// fixture keeps an in-memory desired file per scenario so the add, edit,
+/// disable, and remove flows can be exercised without a daemon, applying the
+/// same compare-and-swap rules the daemon enforces.
+public final class FixtureConfigurationActionClient: ConfigurationActionSubmitting, @unchecked Sendable {
     public let scenario: FixtureScenario
+    private let lock = NSLock()
+    private var status: ConfigurationStatus?
 
     public init(scenario: FixtureScenario) {
         self.scenario = scenario
     }
 
     public func configuration() async throws -> ConfigurationStatus {
-        switch scenario {
-        case .canonical:
-            return try ContractDecoder().decode(ConfigurationStatus.self, from: Data(Self.canonicalPendingJSON.utf8))
-        case .empty:
-            return try ContractDecoder().decode(ConfigurationStatus.self, from: Data(Self.missingJSON.utf8))
-        case .failure:
-            throw FixtureError.simulatedDaemonUnavailable
+        try currentStatus()
+    }
+
+    private func currentStatus() throws -> ConfigurationStatus {
+        try lock.withLock {
+            if let status { return status }
+            let initial: ConfigurationStatus
+            switch scenario {
+            case .canonical:
+                initial = try ContractDecoder().decode(ConfigurationStatus.self, from: Data(Self.canonicalPendingJSON.utf8))
+            case .empty:
+                initial = try ContractDecoder().decode(ConfigurationStatus.self, from: Data(Self.missingJSON.utf8))
+            case .failure:
+                throw FixtureError.simulatedDaemonUnavailable
+            }
+            status = initial
+            return initial
         }
+    }
+
+    private func store(_ next: ConfigurationStatus) {
+        lock.withLock { status = next }
     }
 
     public func validateConfiguration(_ request: ConfigurationValidationRequest) async throws -> ConfigurationStatus {
@@ -337,7 +402,57 @@ public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
               request.digest == current.candidate?.digest else {
             throw FixtureError.simulatedDaemonUnavailable
         }
-        return try ContractDecoder().decode(ConfigurationStatus.self, from: Data(Self.canonicalAcceptedJSON.utf8))
+        let accepted = ConfigurationStatus(
+            state: .accepted, acceptedRevision: current.acceptedRevision + 1,
+            acceptedDigest: current.candidate?.digest, candidate: nil, desired: current.desired
+        )
+        store(accepted)
+        return accepted
+    }
+
+    public func mutateRepositoryConfiguration(_ request: ConfigurationRepositoryMutationRequest) async throws -> ConfigurationStatus {
+        let current = try await configuration()
+        let desired = current.desired ?? ConfigurationDesiredFile(present: false, sourceDigest: nil, problem: nil, repositories: [])
+        guard request.expectedRevision == current.acceptedRevision,
+              request.expectedSourceDigest == desired.sourceDigest,
+              desired.problem == nil else {
+            throw FixtureError.simulatedDaemonUnavailable
+        }
+        var repositories = desired.repositories
+        switch request.operation {
+        case .upsert:
+            guard let entry = request.entry else { throw FixtureError.simulatedDaemonUnavailable }
+            if let index = repositories.firstIndex(where: { $0.key == entry.key }) {
+                guard repositories[index].root == entry.root else { throw FixtureError.simulatedDaemonUnavailable }
+                repositories[index] = entry
+            } else {
+                repositories.append(entry)
+            }
+        case .remove:
+            guard let index = repositories.firstIndex(where: { $0.key == request.key }),
+                  !repositories[index].enabled else {
+                throw FixtureError.simulatedDaemonUnavailable
+            }
+            repositories.remove(at: index)
+        }
+        repositories.sort { $0.key < $1.key }
+        let sourceDigest = "sha256:" + String(repeating: String(UInt8(repositories.count % 10)), count: 64)
+        let candidate = ConfigurationCandidate(
+            schemaVersion: contractSchemaVersion,
+            digest: "sha256:" + String(repeating: "7", count: 64),
+            sourceDigest: sourceDigest,
+            compilerVersion: "profile-compiler/1",
+            repositoryDigests: Dictionary(uniqueKeysWithValues: repositories.map { ($0.key, "sha256:" + String(repeating: "8", count: 64)) }),
+            executableDigests: [:],
+            stagedAt: Date(timeIntervalSince1970: 1_786_000_000)
+        )
+        let staged = ConfigurationStatus(
+            state: .pending, acceptedRevision: current.acceptedRevision, acceptedDigest: current.acceptedDigest,
+            candidate: candidate,
+            desired: ConfigurationDesiredFile(present: true, sourceDigest: sourceDigest, problem: nil, repositories: repositories)
+        )
+        store(staged)
+        return staged
     }
 
     public static let canonicalPendingJSON = """
@@ -359,6 +474,30 @@ public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
           "/usr/bin/env": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
         },
         "stagedAt": "2026-08-14T08:01:00Z"
+      },
+      "desired": {
+        "present": true,
+        "sourceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "repositories": [
+          {
+            "key": "sample",
+            "enabled": true,
+            "displayName": "Sample",
+            "root": "/Users/example/Developer/sample",
+            "remote": "origin",
+            "defaultBase": "origin/main",
+            "managedWorktreesRoot": "/Users/example/Developer/sample-worktrees"
+          },
+          {
+            "key": "second-sample",
+            "enabled": false,
+            "displayName": "Second Sample",
+            "root": "/Users/example/Developer/second-sample",
+            "remote": "origin",
+            "defaultBase": "origin/main",
+            "managedWorktreesRoot": "/Users/example/Developer/second-sample-worktrees"
+          }
+        ]
       }
     }
     """
@@ -376,7 +515,8 @@ public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
     {
       "schemaVersion": 2,
       "state": "missing",
-      "acceptedRevision": 0
+      "acceptedRevision": 0,
+      "desired": { "present": false, "repositories": [] }
     }
     """
 }
