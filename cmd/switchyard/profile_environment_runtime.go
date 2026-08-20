@@ -57,16 +57,8 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		if err != nil {
 			return nil, err
 		}
-		current, err := journal.ListCurrent(ctx, "", 1)
-		if err != nil {
+		if err := requireNoLiveEnvironments(ctx, journal); err != nil {
 			return nil, err
-		}
-		incomplete, err := journal.Incomplete(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if len(current.Results) != 0 || current.HasMore || len(incomplete) != 0 {
-			return nil, errors.New("persisted environments cannot be recovered without an accepted repository profile")
 		}
 		return &environmentRuntime{}, nil
 	}
@@ -137,17 +129,9 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	if err != nil {
 		return nil, err
 	}
-	current, err := journal.ListCurrent(ctx, "", 1)
-	if err != nil {
-		return nil, err
-	}
-	incomplete, err := journal.Incomplete(ctx)
-	if err != nil {
-		return nil, err
-	}
 	if len(registrations) == 0 {
-		if len(current.Results) != 0 || current.HasMore || len(incomplete) != 0 {
-			return nil, errors.New("persisted environments cannot be recovered without an accepted repository profile")
+		if err := requireNoLiveEnvironments(ctx, journal); err != nil {
+			return nil, err
 		}
 		return &environmentRuntime{}, nil
 	}
@@ -399,6 +383,37 @@ func configuredServices(profile configuration.Repository, requested []string) ([
 	return ids, nil
 }
 
+// requireNoLiveEnvironments fails closed when the journal still holds a live
+// environment (any current result that is not stopped, or an incomplete
+// operation) and no accepted repository profile is available to own it.
+// Stopped results are finished history and never block boot.
+func requireNoLiveEnvironments(ctx context.Context, journal *state.EnvironmentJournal) error {
+	after := ""
+	for {
+		page, err := journal.ListCurrent(ctx, after, state.MaximumCurrentEnvironmentPageSize)
+		if err != nil {
+			return err
+		}
+		for _, result := range page.Results {
+			if result.State != domain.EnvironmentStopped {
+				return errors.New("persisted environments cannot be recovered without an accepted repository profile")
+			}
+		}
+		if !page.HasMore {
+			break
+		}
+		after = page.NextEnvironmentID
+	}
+	incomplete, err := journal.Incomplete(ctx)
+	if err != nil {
+		return err
+	}
+	if len(incomplete) != 0 {
+		return errors.New("persisted environments cannot be recovered without an accepted repository profile")
+	}
+	return nil
+}
+
 // pinnedProfileReference names one accepted repository-profile digest that a
 // durable environment resource still depends on.
 type pinnedProfileReference struct {
@@ -406,11 +421,18 @@ type pinnedProfileReference struct {
 	ProfileDigest string
 }
 
-// recoverPinnedProfiles finds every durable environment result or incomplete
+// recoverPinnedProfiles finds every live environment result or incomplete
 // operation pinned to a repository-profile digest other than the accepted head
 // and compiles a registration from the exact retained payload. A referenced
 // digest whose payload is no longer retained fails boot closed; the daemon never
 // substitutes the head for a pinned run.
+//
+// Only live resources pin a payload: results whose processes may still be
+// owned (starting, running, stopping, failed, orphaned) and incomplete
+// operations. A stopped result is a durable record of a finished run; it is
+// never observed, planned, or projected again, so a stopped environment whose
+// worktree was archived or whose repository was disabled must not keep the
+// daemon from booting.
 func recoverPinnedProfiles(
 	ctx context.Context,
 	store *state.Store,
@@ -434,6 +456,9 @@ func recoverPinnedProfiles(
 			return nil, nil, err
 		}
 		for _, result := range page.Results {
+			if result.State == domain.EnvironmentStopped {
+				continue
+			}
 			references[pinnedProfileReference{EnvironmentID: result.EnvironmentID, ProfileDigest: result.ProfileDigest}] = struct{}{}
 		}
 		if !page.HasMore {

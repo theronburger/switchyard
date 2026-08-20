@@ -278,3 +278,120 @@ func TestPinnedProfileRecoveryFailsClosedWhenRevisionIsMissing(t *testing.T) {
 		t.Fatalf("missing pinned revision must fail closed: %v", err)
 	}
 }
+
+// publishStoppedEnvironment persists a stopped environment result pinned to
+// profileDigest: a start that failed and rolled back, leaving a durable but
+// lifeless record behind.
+func publishStoppedEnvironment(t *testing.T, store *state.Store, journal *state.EnvironmentJournal, environmentID string, profileDigest string) {
+	t.Helper()
+	ctx := context.Background()
+	operationID := "operation_" + environmentID
+	fingerprint, err := state.FingerprintRequest(map[string]string{"operationId": operationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CreateOperation(ctx, state.NewOperation{
+		ID: operationID, RunID: "run_" + environmentID, RequestID: "request_" + environmentID, IdempotencyKey: "key_" + environmentID,
+		RequestFingerprint: fingerprint, Kind: string(environmentcontrol.OperationStart), EnvironmentID: environmentID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record := environmentcontrol.OperationRecord{
+		ID: operationID, EnvironmentID: environmentID, RunID: "run_" + environmentID,
+		Kind: environmentcontrol.OperationStart, State: domain.OperationPending,
+		EnvironmentState: domain.EnvironmentUnknown, Phase: environmentcontrol.PhasePending,
+		Rollback: []environmentcontrol.RollbackEntry{},
+		Intent:   &environmentcontrol.PlanIntent{ProfileDigest: profileDigest, TargetID: "local", ServiceIDs: []string{"worker"}},
+	}
+	if err := journal.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.State, record.EnvironmentState, record.Phase = domain.OperationRunning, domain.EnvironmentStarting, environmentcontrol.PhaseLaunchingServices
+	if err := journal.Update(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.EnvironmentState, record.Phase = domain.EnvironmentStopping, environmentcontrol.PhaseRollingBack
+	if err := journal.Update(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.State, record.EnvironmentState, record.Phase = domain.OperationFailed, domain.EnvironmentStopped, environmentcontrol.PhaseComplete
+	record.Failure = "worker exited before readiness"
+	result := environmentcontrol.EnvironmentResult{
+		EnvironmentID: environmentID, RunID: "run_" + environmentID, ProfileDigest: profileDigest,
+		State: domain.EnvironmentStopped, Ports: []portlease.Lease{}, Infrastructure: []containerhost.Goal{},
+		Services: []environmentcontrol.ServiceResult{}, UpdatedAt: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
+	}
+	if err := journal.Publish(ctx, record, result); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPinnedProfileRecoveryIgnoresStoppedResultsOfUnregisteredEnvironments
+// proves that a stopped environment whose worktree or repository is no longer
+// configured does not keep the daemon from booting: only live resources
+// (running results and incomplete operations) fail closed.
+func TestPinnedProfileRecoveryIgnoresStoppedResultsOfUnregisteredEnvironments(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := state.Open(ctx, state.Config{Path: filepath.Join(root, "state.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedRecoverySnapshot(t, store)
+	head := acceptRecoveryConfiguration(t, store, 0, root, pinnedRecoveryWorker)
+	headProfile := head.Document.Repositories["sample"]
+	headDigest := head.RepositoryDigests["sample"]
+	permissive := func(_ *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
+		return contractv2.Environment{
+			ID: result.EnvironmentID, RepositoryID: "repository_01", WorktreeID: "worktree_01", DisplayName: "env",
+			DesiredState: "stopped", ObservedState: "stopped", Health: "unknown",
+			Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
+			URLs: map[string]string{}, AttentionAlertIDs: []string{},
+		}, nil
+	}
+	journal, err := state.NewEnvironmentJournal(store, permissive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// environment_gone ran once from the head and stopped; its worktree was
+	// archived afterwards, so the restarted daemon has no registration for it.
+	publishStoppedEnvironment(t, store, journal, "environment_gone", headDigest)
+	// environment_old stopped while pinned to a digest that is no longer
+	// retained; a stopped result must not require that payload either.
+	publishStoppedEnvironment(t, store, journal, "environment_old", "sha256:"+strings.Repeat("e", 64))
+
+	registrations := []profilecontrol.Registration{recoveryRegistration(root, headDigest, headProfile)}
+	metadata := configuredEnvironment{
+		EnvironmentID: "environment_01", RepositoryID: "repository_01",
+		Worktree:   contractv2.Worktree{ID: "worktree_01", Path: root},
+		ProfileKey: "sample", ProfileDigest: headDigest, Profile: headProfile,
+	}
+	pinnedRegistrations, pinnedEnvironments, err := recoverPinnedProfiles(ctx, store, journal, registrations, []configuredEnvironment{metadata})
+	if err != nil {
+		t.Fatalf("stopped results of unregistered environments must not block boot: %v", err)
+	}
+	if len(pinnedRegistrations) != 0 || len(pinnedEnvironments) != 0 {
+		t.Fatalf("unexpected pinned recovery: %+v %+v", pinnedRegistrations, pinnedEnvironments)
+	}
+
+	// With no accepted profile at all, stopped history must not block boot.
+	if err := requireNoLiveEnvironments(ctx, journal); err != nil {
+		t.Fatalf("stopped results must not require a profile: %v", err)
+	}
+
+	// A running result for an unregistered environment still fails closed:
+	// the daemon never boots blind to processes it may own.
+	running, err := state.NewEnvironmentJournal(store, permissive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishPinnedRunningEnvironment(t, store, running, headDigest)
+	if _, _, err := recoverPinnedProfiles(ctx, store, running, registrations, nil); err == nil ||
+		!strings.Contains(err.Error(), "no longer belongs") {
+		t.Fatalf("running result of an unregistered environment must fail closed: %v", err)
+	}
+	if err := requireNoLiveEnvironments(ctx, running); err == nil {
+		t.Fatal("a running result must require an accepted profile")
+	}
+}
