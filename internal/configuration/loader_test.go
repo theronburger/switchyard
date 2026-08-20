@@ -162,6 +162,21 @@ func TestParseRejectsTrustedEnvironmentOverride(t *testing.T) {
 	}
 }
 
+func TestParseAllowsExplicitHostHomeReferenceOnly(t *testing.T) {
+	configured := strings.Replace(validConfiguration, "local: {}", `local:
+        environment:
+          HOME: {hostHome: true}`, 1)
+	if _, err := Parse([]byte(configured)); err != nil {
+		t.Fatal(err)
+	}
+	literal := strings.Replace(validConfiguration, "local: {}", `local:
+        environment:
+          HOME: {literal: /tmp/hostile}`, 1)
+	if _, err := Parse([]byte(literal)); err == nil {
+		t.Fatal("literal HOME override was accepted")
+	}
+}
+
 func TestParseRejectsUnknownNestedServiceField(t *testing.T) {
 	configured := strings.Replace(validConfiguration, "services: {}", `services:
       web:

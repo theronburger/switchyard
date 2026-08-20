@@ -23,6 +23,9 @@ func (neverReadyProber) Check(context.Context, health.ProbeSpec) (health.ProbeRe
 
 func TestProfilePlannerCompilesOnlyConfiguredBehavior(t *testing.T) {
 	registration := profileRegistration(t)
+	target := registration.Profile.Targets["local"]
+	target.Environment["HOME"] = configuration.ValueRef{HostHome: true}
+	registration.Profile.Targets["local"] = target
 	registry, err := NewRegistry([]Registration{registration})
 	if err != nil {
 		t.Fatal(err)
@@ -49,10 +52,17 @@ func TestProfilePlannerCompilesOnlyConfiguredBehavior(t *testing.T) {
 	if strings.HasPrefix(service.Process.Directory, registration.RuntimeRoot) {
 		t.Fatalf("service working directory left the configured worktree: %s", service.Process.Directory)
 	}
+	foundHostHome := false
 	for _, environment := range service.Process.Environment {
 		if strings.HasPrefix(environment, "PORT=") && environment != "PORT=31001" {
 			t.Fatalf("port environment: %s", environment)
 		}
+		if environment == "HOME="+registration.HostHomeDirectory {
+			foundHostHome = true
+		}
+	}
+	if !foundHostHome {
+		t.Fatalf("explicit host home was not compiled: %v", service.Process.Environment)
 	}
 }
 
@@ -217,6 +227,7 @@ func profileRegistration(t *testing.T) Registration {
 		ProfileKey: "sample", ProfileDigest: "sha256:" + strings.Repeat("a", 64),
 		RepositoryRoot: worktree, WorktreeRoot: worktree, RuntimeRoot: runtimeRoot, CacheRoot: filepath.Join(runtimeRoot, "caches"),
 		HomeDirectory: filepath.Join(runtimeRoot, "home"), TemporaryDirectory: filepath.Join(runtimeRoot, "tmp"),
-		ExecutablePath: "/usr/bin:/bin", DaemonInstanceID: "daemon_01", Values: map[string]string{}, Profile: profile,
+		HostHomeDirectory: filepath.Join(runtimeRoot, "host-home"),
+		ExecutablePath:    "/usr/bin:/bin", DaemonInstanceID: "daemon_01", Values: map[string]string{}, Profile: profile,
 	}
 }

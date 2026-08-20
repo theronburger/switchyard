@@ -114,7 +114,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 				EnvironmentID: environmentID, RepositoryID: repository.ID, WorktreeID: worktree.ID,
 				ProfileKey: profileKey, ProfileDigest: profileDigest, RepositoryRoot: repository.RootPath,
 				WorktreeRoot: worktree.Path, RuntimeRoot: runtimeRoot, CacheRoot: cacheRoot,
-				HomeDirectory: homeDirectory, TemporaryDirectory: temporaryDirectory,
+				HomeDirectory: homeDirectory, HostHomeDirectory: home, TemporaryDirectory: temporaryDirectory,
 				ExecutablePath: executablePath, DaemonInstanceID: instanceID,
 				Values: values, Profile: profile,
 			})

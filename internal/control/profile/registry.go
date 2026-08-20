@@ -25,6 +25,7 @@ type Registration struct {
 	RuntimeRoot        string
 	CacheRoot          string
 	HomeDirectory      string
+	HostHomeDirectory  string
 	TemporaryDirectory string
 	ExecutablePath     string
 	DaemonInstanceID   string
@@ -69,7 +70,7 @@ func validRegistration(registration Registration) bool {
 	}
 	for _, path := range []string{
 		registration.RepositoryRoot, registration.WorktreeRoot, registration.RuntimeRoot, registration.CacheRoot,
-		registration.HomeDirectory, registration.TemporaryDirectory,
+		registration.HomeDirectory, registration.HostHomeDirectory, registration.TemporaryDirectory,
 	} {
 		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
 			return false

@@ -66,7 +66,10 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	}
 	for _, serviceID := range serviceIDs {
 		service := profile.Services[serviceID]
-		resolvedEnvironment, err := resolveEnvironment(registration, runRoot, serviceID, target.Environment, leases, routeEnvironment, target.Environment, service.Environment)
+		resolvedEnvironment, err := resolveEnvironment(
+			registration, runRoot, serviceID, target.Environment, leases,
+			routeEnvironment, target.Environment, service.Environment, service.Command.Environment,
+		)
 		if err != nil {
 			return environmentcontrol.ExecutionPlan{}, err
 		}
@@ -88,11 +91,6 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 		if err != nil {
 			return environmentcontrol.ExecutionPlan{}, err
 		}
-		commandEnvironment, err := resolveEnvironment(registration, runRoot, serviceID, target.Environment, leases, service.Command.Environment)
-		if err != nil {
-			return environmentcontrol.ExecutionPlan{}, err
-		}
-		resolvedEnvironment = mergeEnvironment(resolvedEnvironment, commandEnvironment)
 		portKeys := make([]portlease.Key, 0, len(service.Ports))
 		infrastructurePorts := configuredInfrastructurePorts(profile, serviceID, service.Infrastructure)
 		for purpose := range service.Ports {
@@ -362,6 +360,8 @@ func resolveValue(registration Registration, runRoot, serviceID string, value co
 			return "", err
 		}
 		return strings.Join(segments, ""), nil
+	case value.HostHome:
+		return registration.HostHomeDirectory, nil
 	case value.Target != "":
 		target, found := targets[value.Target]
 		if !found || target.Target != "" {

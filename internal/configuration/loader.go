@@ -557,8 +557,9 @@ func validateCommand(command Command, repository Repository, kind string) error 
 }
 
 func validateValueEnvironment(environment map[string]ValueRef, _ string) error {
-	for name := range environment {
-		if !environmentNamePattern.MatchString(name) || name == "HOME" || name == "PATH" || name == "TMPDIR" {
+	for name, value := range environment {
+		if !environmentNamePattern.MatchString(name) || name == "PATH" || name == "TMPDIR" ||
+			(name == "HOME" && !value.HostHome) {
 			return errors.New("environment name is invalid")
 		}
 	}
@@ -590,6 +591,9 @@ func validateValueRefDepth(value ValueRef, repository Repository, depth int) err
 				return errors.New("value reference segment is invalid")
 			}
 		}
+	}
+	if value.HostHome {
+		count++
 	}
 	for _, reference := range []string{value.Target, value.Artifact, value.Cache, value.Value} {
 		if reference != "" {

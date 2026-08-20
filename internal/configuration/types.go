@@ -130,6 +130,7 @@ type Command struct {
 type ValueRef struct {
 	Literal      *string        `yaml:"literal" json:"literal,omitempty"`
 	Segments     []ValueRef     `yaml:"segments,omitempty" json:"segments,omitempty"`
+	HostHome     bool           `yaml:"hostHome,omitempty" json:"hostHome,omitempty"`
 	Target       string         `yaml:"target" json:"target,omitempty"`
 	Port         *PortReference `yaml:"port" json:"port,omitempty"`
 	URL          *URLReference  `yaml:"url" json:"url,omitempty"`
