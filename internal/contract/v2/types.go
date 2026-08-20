@@ -340,11 +340,48 @@ type ConfigurationCandidate struct {
 }
 
 type ConfigurationStatus struct {
-	SchemaVersion    int                     `json:"schemaVersion"`
-	State            string                  `json:"state"`
-	AcceptedRevision int64                   `json:"acceptedRevision"`
-	AcceptedDigest   string                  `json:"acceptedDigest,omitempty"`
-	Candidate        *ConfigurationCandidate `json:"candidate,omitempty"`
+	SchemaVersion    int                       `json:"schemaVersion"`
+	State            string                    `json:"state"`
+	AcceptedRevision int64                     `json:"acceptedRevision"`
+	AcceptedDigest   string                    `json:"acceptedDigest,omitempty"`
+	Candidate        *ConfigurationCandidate   `json:"candidate,omitempty"`
+	Desired          *ConfigurationDesiredFile `json:"desired,omitempty"`
+}
+
+// ConfigurationDesiredFile is a bounded view of the private desired file so
+// clients can edit generic repository entries through the daemon without
+// reading or writing configuration.yaml themselves. SourceDigest is the exact
+// compare-and-swap token for the next repository mutation.
+type ConfigurationDesiredFile struct {
+	Present      bool                           `json:"present"`
+	SourceDigest string                         `json:"sourceDigest,omitempty"`
+	Problem      string                         `json:"problem,omitempty"`
+	Repositories []ConfigurationRepositoryEntry `json:"repositories"`
+}
+
+// ConfigurationRepositoryEntry carries only the generic identity fields of one
+// repository profile. Commands, services, and values never cross this boundary.
+type ConfigurationRepositoryEntry struct {
+	Key                  string `json:"key"`
+	Enabled              bool   `json:"enabled"`
+	DisplayName          string `json:"displayName"`
+	Root                 string `json:"root"`
+	Remote               string `json:"remote"`
+	DefaultBase          string `json:"defaultBase"`
+	ManagedWorktreesRoot string `json:"managedWorktreesRoot"`
+}
+
+// ConfigurationRepositoryMutationRequest edits one generic repository entry in
+// the private desired file through the daemon. Both the accepted revision and
+// the desired file digest are compared before anything is written; the result
+// is a staged candidate that still requires explicit acceptance.
+type ConfigurationRepositoryMutationRequest struct {
+	SchemaVersion        int                           `json:"schemaVersion"`
+	ExpectedRevision     int64                         `json:"expectedRevision"`
+	ExpectedSourceDigest string                        `json:"expectedSourceDigest,omitempty"`
+	Operation            string                        `json:"operation"`
+	Key                  string                        `json:"key"`
+	Entry                *ConfigurationRepositoryEntry `json:"entry,omitempty"`
 }
 
 type CleanupScope struct {

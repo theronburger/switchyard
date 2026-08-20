@@ -39,43 +39,13 @@ func LoadFile(path string) (Loaded, error) {
 	return loaded, nil
 }
 
+// Parse validates and compiles one desired configuration into an immutable
+// revision identity, including executable fingerprints.
 func Parse(contents []byte) (Loaded, error) {
-	if len(contents) == 0 {
-		return Loaded{}, errors.New("configuration is empty")
-	}
-	if len(contents) > maximumConfigurationBytes {
-		return Loaded{}, fmt.Errorf("configuration exceeds %d bytes", maximumConfigurationBytes)
-	}
-	if bytes.IndexByte(contents, 0) >= 0 {
-		return Loaded{}, errors.New("configuration contains a NUL byte")
-	}
-
-	var root yaml.Node
-	decoder := yaml.NewDecoder(bytes.NewReader(contents))
-	if err := decoder.Decode(&root); err != nil {
-		return Loaded{}, fmt.Errorf("decode YAML: %w", err)
-	}
-	if err := validateYAMLNode(&root, 0); err != nil {
+	document, err := Inspect(contents)
+	if err != nil {
 		return Loaded{}, err
 	}
-	var trailing yaml.Node
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return Loaded{}, errors.New("configuration must contain exactly one YAML document")
-		}
-		return Loaded{}, fmt.Errorf("decode trailing YAML: %w", err)
-	}
-
-	var document Document
-	strict := yaml.NewDecoder(bytes.NewReader(contents))
-	strict.KnownFields(true)
-	if err := strict.Decode(&document); err != nil {
-		return Loaded{}, fmt.Errorf("decode schema: %w", err)
-	}
-	if err := validateDocument(document); err != nil {
-		return Loaded{}, err
-	}
-
 	payload, err := json.Marshal(document)
 	if err != nil {
 		return Loaded{}, fmt.Errorf("canonicalize configuration: %w", err)
@@ -110,6 +80,48 @@ func Parse(contents []byte) (Loaded, error) {
 		Document: document, CanonicalPayload: payload, Digest: digest(identity),
 		SourceDigest: digest(contents), RepositoryDigests: repositoryDigests, ExecutableDigests: executableDigests,
 	}, nil
+}
+
+// Inspect applies every structural and schema rule to one desired document
+// without fingerprinting executables. It is the cheap read used to publish
+// the desired-file view; Parse remains the only path to a revision identity.
+func Inspect(contents []byte) (Document, error) {
+	if len(contents) == 0 {
+		return Document{}, errors.New("configuration is empty")
+	}
+	if len(contents) > maximumConfigurationBytes {
+		return Document{}, fmt.Errorf("configuration exceeds %d bytes", maximumConfigurationBytes)
+	}
+	if bytes.IndexByte(contents, 0) >= 0 {
+		return Document{}, errors.New("configuration contains a NUL byte")
+	}
+
+	var root yaml.Node
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	if err := decoder.Decode(&root); err != nil {
+		return Document{}, fmt.Errorf("decode YAML: %w", err)
+	}
+	if err := validateYAMLNode(&root, 0); err != nil {
+		return Document{}, err
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Document{}, errors.New("configuration must contain exactly one YAML document")
+		}
+		return Document{}, fmt.Errorf("decode trailing YAML: %w", err)
+	}
+
+	var document Document
+	strict := yaml.NewDecoder(bytes.NewReader(contents))
+	strict.KnownFields(true)
+	if err := strict.Decode(&document); err != nil {
+		return Document{}, fmt.Errorf("decode schema: %w", err)
+	}
+	if err := validateDocument(document); err != nil {
+		return Document{}, err
+	}
+	return document, nil
 }
 
 func fingerprintExecutables(document Document) (map[string]string, map[string]map[string]string, error) {
@@ -233,6 +245,9 @@ func readPrivateRegularFile(path string) ([]byte, error) {
 	}
 	if int(metadata.Uid) != os.Getuid() {
 		return nil, errors.New("configuration file must be owned by the current user")
+	}
+	if metadata.Nlink != 1 {
+		return nil, errors.New("configuration file must not be hard-linked")
 	}
 	if metadata.Size > maximumConfigurationBytes {
 		return nil, fmt.Errorf("configuration exceeds %d bytes", maximumConfigurationBytes)

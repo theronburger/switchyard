@@ -43,6 +43,7 @@ type ConfigurationActions interface {
 	Status(context.Context) (contractv2.ConfigurationStatus, error)
 	Validate(context.Context, contractv2.ConfigurationValidationRequest) (contractv2.ConfigurationStatus, error)
 	Accept(context.Context, contractv2.ConfigurationAcceptanceRequest) (contractv2.ConfigurationStatus, error)
+	MutateRepository(context.Context, contractv2.ConfigurationRepositoryMutationRequest) (contractv2.ConfigurationStatus, error)
 }
 
 type CleanupActions interface {

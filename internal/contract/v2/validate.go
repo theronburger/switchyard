@@ -629,6 +629,83 @@ func (request ConfigurationAcceptanceRequest) Validate() error {
 	return nil
 }
 
+const (
+	ConfigurationRepositoryUpsert = "upsert"
+	ConfigurationRepositoryRemove = "remove"
+)
+
+var configurationRepositoryKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+
+func (entry ConfigurationRepositoryEntry) Validate() error {
+	if !configurationRepositoryKeyPattern.MatchString(entry.Key) || len(entry.Key) > 64 ||
+		strings.TrimSpace(entry.DisplayName) == "" || len(entry.DisplayName) > 120 ||
+		!validConfigurationAbsolutePath(entry.Root) || !validConfigurationAbsolutePath(entry.ManagedWorktreesRoot) ||
+		!validConfigurationRef(entry.Remote) || !validConfigurationRef(entry.DefaultBase) {
+		return fmt.Errorf("configuration repository entry is invalid")
+	}
+	return nil
+}
+
+func (request ConfigurationRepositoryMutationRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion || request.ExpectedRevision < 0 ||
+		(request.ExpectedSourceDigest != "" && !validDigest(request.ExpectedSourceDigest)) ||
+		!configurationRepositoryKeyPattern.MatchString(request.Key) || len(request.Key) > 64 {
+		return fmt.Errorf("configuration repository mutation is invalid")
+	}
+	switch request.Operation {
+	case ConfigurationRepositoryUpsert:
+		if request.Entry == nil || request.Entry.Key != request.Key {
+			return fmt.Errorf("configuration repository mutation entry is required")
+		}
+		return request.Entry.Validate()
+	case ConfigurationRepositoryRemove:
+		if request.Entry != nil {
+			return fmt.Errorf("configuration repository removal carries no entry")
+		}
+		return nil
+	default:
+		return fmt.Errorf("configuration repository operation is invalid")
+	}
+}
+
+func (desired ConfigurationDesiredFile) Validate() error {
+	if desired.Repositories == nil || len(desired.Problem) > 1024 ||
+		(desired.SourceDigest != "" && !validDigest(desired.SourceDigest)) ||
+		(!desired.Present && (desired.SourceDigest != "" || len(desired.Repositories) > 0)) {
+		return fmt.Errorf("configuration desired file is invalid")
+	}
+	seen := make(map[string]struct{}, len(desired.Repositories))
+	for _, entry := range desired.Repositories {
+		if err := entry.Validate(); err != nil {
+			return err
+		}
+		if _, duplicate := seen[entry.Key]; duplicate {
+			return fmt.Errorf("configuration desired file repeats %q", entry.Key)
+		}
+		seen[entry.Key] = struct{}{}
+	}
+	return nil
+}
+
+func validConfigurationAbsolutePath(path string) bool {
+	return path != "" && len(path) <= maximumCleanupPathBytes && strings.HasPrefix(path, "/") && path != "/" &&
+		!strings.ContainsAny(path, "\x00\r\n") && !strings.HasSuffix(path, "/") &&
+		!strings.Contains(path, "//") && !strings.Contains(path, "/./") && !strings.Contains(path, "/../") &&
+		!strings.HasSuffix(path, "/.") && !strings.HasSuffix(path, "/..")
+}
+
+func validConfigurationRef(value string) bool {
+	if value == "" || len(value) > 256 || strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, character := range value {
+		if character <= ' ' || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 func (candidate ConfigurationCandidate) Validate() error {
 	if candidate.SchemaVersion != SchemaVersion || !validDigest(candidate.Digest) ||
 		!validDigest(candidate.SourceDigest) || candidate.CompilerVersion == "" ||
@@ -663,6 +740,9 @@ func (status ConfigurationStatus) Validate() error {
 	}
 	if status.Candidate != nil && status.Candidate.Validate() != nil {
 		return fmt.Errorf("configuration status candidate is invalid")
+	}
+	if status.Desired != nil && status.Desired.Validate() != nil {
+		return fmt.Errorf("configuration status desired file is invalid")
 	}
 	if status.State == "pending" && status.Candidate == nil {
 		return fmt.Errorf("pending configuration candidate is required")

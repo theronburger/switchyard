@@ -45,6 +45,20 @@ func (c *Client) AcceptConfiguration(
 	return c.postConfiguration(ctx, "/v1/configuration/accept", request)
 }
 
+// MutateRepositoryConfiguration asks the daemon to add, update, enable,
+// disable, or remove one generic repository entry in the private desired file.
+// The daemon is the only writer; the result is a staged candidate that still
+// requires AcceptConfiguration with its exact digest.
+func (c *Client) MutateRepositoryConfiguration(
+	ctx context.Context,
+	request contractv2.ConfigurationRepositoryMutationRequest,
+) (contractv2.ConfigurationStatus, error) {
+	if request.Validate() != nil {
+		return contractv2.ConfigurationStatus{}, newCodedError(ErrorActionRequestInvalid, fmt.Errorf("configuration repository mutation is invalid"))
+	}
+	return c.postConfiguration(ctx, "/v1/configuration/repositories", request)
+}
+
 func (c *Client) postConfiguration(ctx context.Context, path string, value any) (contractv2.ConfigurationStatus, error) {
 	if _, err := c.Handshake(ctx); err != nil {
 		return contractv2.ConfigurationStatus{}, err
@@ -108,4 +122,12 @@ func (c Connector) AcceptConfiguration(ctx context.Context, request contractv2.C
 		return contractv2.ConfigurationStatus{}, err
 	}
 	return client.AcceptConfiguration(ctx, request)
+}
+
+func (c Connector) MutateRepositoryConfiguration(ctx context.Context, request contractv2.ConfigurationRepositoryMutationRequest) (contractv2.ConfigurationStatus, error) {
+	client, err := c.Client()
+	if err != nil {
+		return contractv2.ConfigurationStatus{}, err
+	}
+	return client.MutateRepositoryConfiguration(ctx, request)
 }

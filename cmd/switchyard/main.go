@@ -233,6 +233,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		OperationDiagnostics: operationDiagnostics,
 		Configuration: &daemon.ConfigurationService{
 			Store: store, Path: paths.configuration, CompilerVersion: version, Restart: restartDaemon,
+			References: store,
 		},
 		Cleanup: &daemon.CleanupService{
 			Store: store, Workspaces: cleanupJournal, RuntimeRoot: filepath.Join(paths.directory, "runtime"),
