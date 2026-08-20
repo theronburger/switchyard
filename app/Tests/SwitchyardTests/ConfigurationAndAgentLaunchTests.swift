@@ -88,7 +88,7 @@ struct ConfigurationAcceptancePresentationTests {
         #expect(presentation.repositoryState(profileKey: "second-sample", isPublished: false) == .pendingAddition)
         #expect(presentation.repositoryState(profileKey: "untouched", isPublished: true) == .accepted)
         #expect(presentation.summary.contains("2 repository entries"))
-        #expect(presentation.summary.contains("1 executable fingerprints"))
+        #expect(presentation.summary.contains("1 executable fingerprint)"))
         let candidate = try #require(presentation.status.candidate)
         #expect(presentation.changedRepositoryKeys(candidate) == ["sample", "second-sample"])
     }
@@ -718,4 +718,42 @@ struct CodexTaskLauncherTests {
 private actor LaunchRecorder {
     private(set) var plans: [CodexLaunchPlan] = []
     func record(_ plan: CodexLaunchPlan) { plans.append(plan) }
+}
+
+// MARK: - Sparkle availability by channel
+
+@MainActor
+struct AppUpdateControllerAvailabilityTests {
+    @Test
+    func `development and unbundled builds never start Sparkle from any entry point`() {
+        for controller in [
+            AppUpdateController(channel: .development, isPackagedBundle: true),
+            AppUpdateController(channel: .release, isPackagedBundle: false),
+            AppUpdateController(channel: .development, isPackagedBundle: false),
+        ] {
+            #expect(!controller.isAvailable)
+            controller.start()
+            // Each of these would lazily instantiate SPUStandardUpdaterController
+            // (and contact the release appcast) if the channel gate were missing.
+            #expect(!controller.canCheckForUpdates)
+            controller.checkForUpdates()
+            #expect(!controller.isChecking)
+            controller.setAutomaticUpdateChecks(true)
+            #expect(!controller.automaticallyChecksForUpdates)
+            #expect(controller.buttonTitle == "Check for Updates…")
+        }
+    }
+
+    @Test
+    func `only a packaged release bundle offers updates`() {
+        #expect(AppUpdateController(channel: .release, isPackagedBundle: true).isAvailable)
+    }
+
+    @Test
+    func `summary strings inflect singular counts`() {
+        #expect(pluralized(1, "worktree") == "1 worktree")
+        #expect(pluralized(2, "worktree") == "2 worktrees")
+        #expect(pluralized(1, "repository", "repositories") == "1 repository")
+        #expect(pluralized(0, "repository", "repositories") == "0 repositories")
+    }
 }
