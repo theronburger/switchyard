@@ -210,6 +210,26 @@ func fingerprintExecutable(path string) (string, error) {
 }
 
 func readPrivateRegularFile(path string) ([]byte, error) {
+	file, err := openPrivateRegularFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return file.ReadAll()
+}
+
+// privateRegularFile is an open, validated owner-only regular file together
+// with the metadata observed at validation time, so a later check can prove
+// the path still names the same unchanged inode.
+type privateRegularFile struct {
+	*os.File
+	metadata unix.Stat_t
+}
+
+// openPrivateRegularFile opens path without following symlinks and verifies
+// that it is a plain, owner-only, singly linked regular file inside a private
+// directory. The caller owns the returned handle.
+func openPrivateRegularFile(path string) (*privateRegularFile, error) {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) || clean != path {
 		return nil, errors.New("configuration path must be clean and absolute")
@@ -231,28 +251,31 @@ func readPrivateRegularFile(path string) ([]byte, error) {
 		_ = unix.Close(descriptor)
 		return nil, errors.New("open configuration file")
 	}
-	defer func() { _ = file.Close() }()
+	private := &privateRegularFile{File: file}
+	if err := private.revalidate(); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return private, nil
+}
 
+// revalidate re-reads the open file's metadata and applies the private-file
+// rules to it, recording the fresh metadata on success.
+func (file *privateRegularFile) revalidate() error {
 	var metadata unix.Stat_t
-	if err := unix.Fstat(descriptor, &metadata); err != nil {
-		return nil, fmt.Errorf("inspect configuration file: %w", err)
+	if err := unix.Fstat(int(file.Fd()), &metadata); err != nil {
+		return fmt.Errorf("inspect configuration file: %w", err)
 	}
-	if metadata.Mode&unix.S_IFMT != unix.S_IFREG {
-		return nil, errors.New("configuration must be a regular file")
+	if err := validatePrivateRegularMetadata(metadata); err != nil {
+		return err
 	}
-	if metadata.Mode&0o777 != 0o600 {
-		return nil, errors.New("configuration file must have mode 0600")
-	}
-	if int(metadata.Uid) != os.Getuid() {
-		return nil, errors.New("configuration file must be owned by the current user")
-	}
-	if metadata.Nlink != 1 {
-		return nil, errors.New("configuration file must not be hard-linked")
-	}
-	if metadata.Size > maximumConfigurationBytes {
-		return nil, fmt.Errorf("configuration exceeds %d bytes", maximumConfigurationBytes)
-	}
-	contents, err := io.ReadAll(io.LimitReader(file, maximumConfigurationBytes+1))
+	file.metadata = metadata
+	return nil
+}
+
+// ReadAll returns the whole file from offset zero, bounded by the size limit.
+func (file *privateRegularFile) ReadAll() ([]byte, error) {
+	contents, err := io.ReadAll(io.NewSectionReader(file.File, 0, maximumConfigurationBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read configuration: %w", err)
 	}
@@ -260,6 +283,25 @@ func readPrivateRegularFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("configuration exceeds %d bytes", maximumConfigurationBytes)
 	}
 	return contents, nil
+}
+
+func validatePrivateRegularMetadata(metadata unix.Stat_t) error {
+	if metadata.Mode&unix.S_IFMT != unix.S_IFREG {
+		return errors.New("configuration must be a regular file")
+	}
+	if metadata.Mode&0o777 != 0o600 {
+		return errors.New("configuration file must have mode 0600")
+	}
+	if int(metadata.Uid) != os.Getuid() {
+		return errors.New("configuration file must be owned by the current user")
+	}
+	if metadata.Nlink != 1 {
+		return errors.New("configuration file must not be hard-linked")
+	}
+	if metadata.Size > maximumConfigurationBytes {
+		return fmt.Errorf("configuration exceeds %d bytes", maximumConfigurationBytes)
+	}
+	return nil
 }
 
 func validateYAMLNode(node *yaml.Node, depth int) error {

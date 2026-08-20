@@ -304,13 +304,35 @@ func emptyMapNode() *yaml.Node {
 	return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle}
 }
 
-// WriteDesired atomically replaces the desired file with contents. The parent
-// directory must already be (or is created as) an owner-only private
-// directory that is not a symlink; an existing destination must be a plain
-// owner-only singly linked regular file whose bytes still digest to
-// expectedSourceDigest (empty means the file must not exist). The write goes
-// through an exclusive 0600 temporary file, fsync, rename, and directory
-// fsync, so the original is preserved on every failure path.
+// Test hooks that interpose a concurrent editor inside the compare-and-swap
+// window. beforeDesiredCommit runs once the temporary file is durable, before
+// the destination is re-verified; beforeDesiredExchange runs after that
+// re-verification and immediately before the kernel exchange, so the
+// post-exchange proof and undo path can be driven deterministically.
+var (
+	beforeDesiredCommit   func(path string)
+	beforeDesiredExchange func(path string)
+)
+
+// WriteDesired atomically replaces the desired file with contents under a
+// compare-and-swap on the existing file. The parent directory must already be
+// (or is created as) an owner-only private directory that is not a symlink;
+// an existing destination must be a plain owner-only singly linked regular
+// file whose bytes still digest to expectedSourceDigest (empty means the file
+// must not exist). The write goes through an exclusive 0600 temporary file,
+// fsync, an atomic exchange, and directory fsync.
+//
+// The destination stays open from validation to commit so the commit can prove
+// it still names the same unchanged inode. A new file is linked with
+// RENAME_EXCL, so a file that appears concurrently is never overwritten. An
+// existing file is replaced with RENAME_SWAP, which moves the prior version to
+// the temporary path instead of destroying it; the prior version is then
+// re-verified through the held descriptor and, if a concurrent editor changed
+// or replaced it inside the window, the exchange is undone so the editor's
+// version stays at the destination. If that undo cannot be performed, the
+// editor's version is left on disk at the temporary path and named in the
+// error. Either way ErrDesiredChanged or an explicit error is returned and no
+// version of the file is lost.
 func WriteDesired(path string, contents []byte, expectedSourceDigest string) error {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) || clean != path {
@@ -323,6 +345,7 @@ func WriteDesired(path string, contents []byte, expectedSourceDigest string) err
 	if err := ensurePrivateDirectory(directory); err != nil {
 		return err
 	}
+	var current *privateRegularFile
 	if expectedSourceDigest == "" {
 		if _, err := os.Lstat(clean); err == nil {
 			return ErrDesiredChanged
@@ -330,16 +353,18 @@ func WriteDesired(path string, contents []byte, expectedSourceDigest string) err
 			return fmt.Errorf("inspect desired configuration: %w", err)
 		}
 	} else {
-		current, err := readPrivateRegularFile(clean)
+		opened, err := openPrivateRegularFile(clean)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return ErrDesiredChanged
 			}
 			return err
 		}
-		if digest(current) != expectedSourceDigest {
-			return ErrDesiredChanged
+		defer func() { _ = opened.Close() }()
+		if err := opened.unchangedSince(expectedSourceDigest, opened.metadata); err != nil {
+			return err
 		}
+		current = opened
 	}
 
 	var suffix [8]byte
@@ -352,9 +377,9 @@ func WriteDesired(path string, contents []byte, expectedSourceDigest string) err
 		return fmt.Errorf("create temporary configuration: %w", err)
 	}
 	file := os.NewFile(uintptr(descriptor), temporary)
-	committed := false
+	removeTemporary := true
 	defer func() {
-		if !committed {
+		if removeTemporary {
 			_ = file.Close()
 			_ = os.Remove(temporary)
 		}
@@ -371,11 +396,88 @@ func WriteDesired(path string, contents []byte, expectedSourceDigest string) err
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close temporary configuration: %w", err)
 	}
-	if err := os.Rename(temporary, clean); err != nil {
-		return fmt.Errorf("replace desired configuration: %w", err)
+	if beforeDesiredCommit != nil {
+		beforeDesiredCommit(clean)
 	}
-	committed = true
+
+	if current == nil {
+		err := unix.RenameatxNp(unix.AT_FDCWD, temporary, unix.AT_FDCWD, clean, unix.RENAME_EXCL)
+		if errors.Is(err, unix.EEXIST) {
+			return ErrDesiredChanged
+		}
+		if err != nil {
+			return fmt.Errorf("link desired configuration: %w", err)
+		}
+		removeTemporary = false
+		return syncDirectory(directory)
+	}
+
+	validated := current.metadata
+	if err := current.stillAt(clean, expectedSourceDigest, validated); err != nil {
+		return err
+	}
+	if beforeDesiredExchange != nil {
+		beforeDesiredExchange(clean)
+	}
+	err = unix.RenameatxNp(unix.AT_FDCWD, temporary, unix.AT_FDCWD, clean, unix.RENAME_SWAP)
+	if errors.Is(err, unix.ENOENT) {
+		return ErrDesiredChanged
+	}
+	if err != nil {
+		return fmt.Errorf("exchange desired configuration: %w", err)
+	}
+	// The prior version now lives at the temporary path. Prove it is exactly
+	// the inode and bytes validated above before letting it go.
+	if err := current.stillAt(temporary, expectedSourceDigest, validated); err != nil {
+		if undo := unix.RenameatxNp(unix.AT_FDCWD, temporary, unix.AT_FDCWD, clean, unix.RENAME_SWAP); undo != nil {
+			removeTemporary = false
+			return fmt.Errorf("%w; the concurrent version is preserved at %s because restoring it failed: %v", err, temporary, undo)
+		}
+		return err
+	}
+	removeTemporary = false
+	if err := os.Remove(temporary); err != nil {
+		return fmt.Errorf("discard superseded configuration: %w", err)
+	}
 	return syncDirectory(directory)
+}
+
+// stillAt proves that path names this very inode and that the inode still
+// passes the private-file rules with the same size, modification time, and
+// digest observed at validation. Any deviation is reported as ErrDesiredChanged.
+func (file *privateRegularFile) stillAt(path string, expectedDigest string, validated unix.Stat_t) error {
+	var named unix.Stat_t
+	if err := unix.Lstat(path, &named); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return ErrDesiredChanged
+		}
+		return fmt.Errorf("inspect desired configuration: %w", err)
+	}
+	if named.Dev != validated.Dev || named.Ino != validated.Ino {
+		return ErrDesiredChanged
+	}
+	return file.unchangedSince(expectedDigest, validated)
+}
+
+// unchangedSince re-validates the open inode and re-reads its bytes through
+// the held descriptor, refusing any change of identity, mode, owner, link
+// count, size, modification time, or digest since validated.
+func (file *privateRegularFile) unchangedSince(expectedDigest string, validated unix.Stat_t) error {
+	if err := file.revalidate(); err != nil {
+		return err
+	}
+	now := file.metadata
+	if now.Dev != validated.Dev || now.Ino != validated.Ino || now.Size != validated.Size || now.Mtim != validated.Mtim {
+		return ErrDesiredChanged
+	}
+	contents, err := file.ReadAll()
+	if err != nil {
+		return err
+	}
+	if digest(contents) != expectedDigest {
+		return ErrDesiredChanged
+	}
+	return nil
 }
 
 func ensurePrivateDirectory(directory string) error {

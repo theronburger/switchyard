@@ -300,3 +300,220 @@ func TestReadDesiredReportsMissingAndMalformedFiles(t *testing.T) {
 		t.Fatalf("malformed file must keep its digest and surface a problem: %+v", desired)
 	}
 }
+
+// TestWriteDesiredRefusesConcurrentEditorInsideCommitWindow drives a foreign
+// editor into the compare-and-swap window, both before the destination is
+// re-verified and between that re-verification and the kernel exchange, and
+// proves that the editor's version is what survives at the destination.
+func TestWriteDesiredRefusesConcurrentEditorInsideCommitWindow(t *testing.T) {
+	const foreign = "schemaVersion: 1\n# edited by hand while the daemon was writing\nrepositories: {}\n"
+	original := []byte(commentedConfiguration)
+	edited, err := UpsertRepository(original, sampleEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type editor struct {
+		name  string
+		apply func(t *testing.T, path string)
+		check func(t *testing.T, path string)
+		// unsafe marks editors that turn the destination into a file the
+		// private-file rules reject outright, which is reported as that
+		// specific refusal rather than as ErrDesiredChanged.
+		unsafe bool
+	}
+	foreignSurvives := func(t *testing.T, path string) {
+		t.Helper()
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("destination is not the editor's regular file: %v %v", info, err)
+		}
+		if current, _ := os.ReadFile(path); string(current) != foreign {
+			t.Fatalf("editor's version was overwritten:\n%s", current)
+		}
+	}
+	editors := []editor{
+		{
+			name: "replaced by rename",
+			apply: func(t *testing.T, path string) {
+				replacement := filepath.Join(filepath.Dir(path), "manual.yaml")
+				if err := os.WriteFile(replacement, []byte(foreign), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: foreignSurvives,
+		},
+		{
+			name: "rewritten in place with the original timestamp",
+			apply: func(t *testing.T, path string) {
+				before, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(foreign), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// Defeat the size and mtime checks so only the byte digest can
+				// prove the change.
+				padded := []byte(foreign)
+				if delta := int(before.Size()) - len(padded); delta > 0 {
+					padded = append(padded, []byte(strings.Repeat("#", delta))...)
+				}
+				if err := os.WriteFile(path, padded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, path string) {
+				t.Helper()
+				current, err := os.ReadFile(path)
+				if err != nil || !strings.HasPrefix(string(current), foreign) {
+					t.Fatalf("editor's in-place version was overwritten: %v\n%s", err, current)
+				}
+			},
+		},
+		{
+			name: "deleted",
+			apply: func(t *testing.T, path string) {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, path string) {
+				t.Helper()
+				if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("a deleted destination must not be recreated: %v", err)
+				}
+			},
+		},
+		{
+			name: "replaced by a symlink",
+			apply: func(t *testing.T, path string) {
+				target := filepath.Join(filepath.Dir(path), "target.yaml")
+				if err := os.WriteFile(target, []byte(foreign), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, path string) {
+				t.Helper()
+				if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("symlink was replaced: %v %v", info, err)
+				}
+				if current, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "target.yaml")); string(current) != foreign {
+					t.Fatal("symlink target was modified")
+				}
+			},
+		},
+		{
+			name:   "hard-linked elsewhere",
+			unsafe: true,
+			apply: func(t *testing.T, path string) {
+				if err := os.Link(path, filepath.Join(filepath.Dir(path), "linked.yaml")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, path string) {
+				t.Helper()
+				if current, _ := os.ReadFile(path); string(current) != commentedConfiguration {
+					t.Fatal("hard-linked destination was rewritten")
+				}
+			},
+		},
+	}
+	hooks := []struct {
+		name string
+		set  func(func(string))
+	}{
+		{"before re-verification", func(hook func(string)) { beforeDesiredCommit = hook }},
+		{"between re-verification and exchange", func(hook func(string)) { beforeDesiredExchange = hook }},
+	}
+
+	for _, hook := range hooks {
+		for _, editor := range editors {
+			t.Run(hook.name+"/"+editor.name, func(t *testing.T) {
+				directory := privateDirectory(t)
+				path := filepath.Join(directory, "configuration.yaml")
+				if err := WriteDesired(path, original, ""); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				hook.set(func(hooked string) {
+					calls++
+					if hooked != path {
+						t.Fatalf("hook received %q, want %q", hooked, path)
+					}
+					editor.apply(t, path)
+				})
+				t.Cleanup(func() { beforeDesiredCommit, beforeDesiredExchange = nil, nil })
+
+				err := WriteDesired(path, edited, digest(original))
+				switch {
+				case err == nil:
+					t.Fatal("concurrent edit must be refused")
+				case editor.unsafe && errors.Is(err, ErrDesiredChanged):
+					t.Fatalf("unsafe destination must be reported specifically, got %v", err)
+				case !editor.unsafe && !errors.Is(err, ErrDesiredChanged):
+					t.Fatalf("concurrent edit must be refused with ErrDesiredChanged, got %v", err)
+				}
+				if calls != 1 {
+					t.Fatalf("hook ran %d times", calls)
+				}
+				editor.check(t, path)
+				leftovers, _ := filepath.Glob(filepath.Join(directory, ".configuration.*"))
+				if len(leftovers) != 0 {
+					t.Fatalf("temporary files were left behind: %v", leftovers)
+				}
+			})
+		}
+	}
+
+	t.Run("file created while a new file is being linked", func(t *testing.T) {
+		directory := privateDirectory(t)
+		path := filepath.Join(directory, "configuration.yaml")
+		beforeDesiredCommit = func(string) {
+			if err := os.WriteFile(path, []byte(foreign), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() { beforeDesiredCommit = nil })
+		if err := WriteDesired(path, original, ""); !errors.Is(err, ErrDesiredChanged) {
+			t.Fatalf("creating over a file that appeared concurrently must fail closed, got %v", err)
+		}
+		foreignSurvives(t, path)
+		leftovers, _ := filepath.Glob(filepath.Join(directory, ".configuration.*"))
+		if len(leftovers) != 0 {
+			t.Fatalf("temporary files were left behind: %v", leftovers)
+		}
+	})
+
+	t.Run("untouched destination still commits", func(t *testing.T) {
+		directory := privateDirectory(t)
+		path := filepath.Join(directory, "configuration.yaml")
+		if err := WriteDesired(path, original, ""); err != nil {
+			t.Fatal(err)
+		}
+		beforeDesiredExchange = func(string) {}
+		t.Cleanup(func() { beforeDesiredExchange = nil })
+		if err := WriteDesired(path, edited, digest(original)); err != nil {
+			t.Fatal(err)
+		}
+		if current, _ := os.ReadFile(path); string(current) != string(edited) {
+			t.Fatal("edited contents did not land")
+		}
+		leftovers, _ := filepath.Glob(filepath.Join(directory, ".configuration.*"))
+		if len(leftovers) != 0 {
+			t.Fatalf("temporary files were left behind: %v", leftovers)
+		}
+	})
+}
