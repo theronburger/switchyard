@@ -2,7 +2,7 @@
 
 ## Release trust
 
-Switchyard has no Apple Developer account. Release bundles use the persistent self-signed publisher identity `Theron Burger Apps Release`, so they cannot be notarized. The stable identity provides continuity across releases; Sparkle separately authenticates every update archive and appcast with a dedicated Ed25519 key before extraction.
+Switchyard has no Apple Developer account. Release bundles use the persistent self-signed publisher identity `Theron Burger Apps Release`, so they cannot be notarized. The stable identity provides continuity across releases; Sparkle separately authenticates every update archive with a dedicated Ed25519 key, carried as an item signature in the appcast, before extraction.
 
 The frontend alone carries `com.apple.security.cs.disable-library-validation`. This narrowly addresses Sparkle framework loading when a self-signed app has no Team ID. Never apply it to `SwitchyardDaemon`, the CLI surface, or any future privileged helper.
 
@@ -49,14 +49,34 @@ Create an offline backup before rewriting. Remove the historical `design-qa/` ca
 
 History-rewrite replacement maps and scanner JSON reports may themselves retain private source values or author metadata. Keep them outside the repository while the rewrite is active, then securely dispose of every temporary copy before the visibility change; ignored `dist/` files are not an acceptable archive.
 
+## Version ownership
+
+Release Please is the only writer of release versions. One release pull request updates, in lockstep:
+
+- `VERSION` (the `simple` strategy's version file);
+- `.release-please-manifest.json`;
+- `CHANGELOG.md`, where it inserts `## [X.Y.Z](compare-link) (date)` above the newest version heading;
+- the two lines in `packaging/Switchyard-Info.plist` annotated with `<!-- x-release-please-version -->`. The generic updater rewrites only annotated lines; removing an annotation silently freezes the plist and `scripts/check-version.sh` then blocks the release.
+
+Everything else derives from `VERSION` at build time: the Go `-ldflags` version, the bundle's `CFBundleShortVersionString`/`CFBundleVersion`, the archive name, the Cask `version`, and the appcast `sparkle:version`. The app refuses to install a bundled daemon whose `version` output differs from its own `CFBundleShortVersionString`, and every client requires an exact daemon version match, so a drift anywhere surfaces as a handshake error instead of a silent mismatch.
+
+Rules that follow from this:
+
+- Never edit `VERSION`, the manifest, or the plist version lines by hand. Never add an `Unreleased` section to `CHANGELOG.md`; Release Please would insert the new version below it.
+- Commits that reach `main` must be Conventional Commits. A non-conventional commit (for example a `wip:` subject) is invisible to Release Please and neither bumps the version nor appears in the notes. Add its notes by editing the release pull request body before merge.
+- Before 1.0.0, `bump-minor-pre-major` keeps a `feat!:` or `BREAKING CHANGE` footer at a minor bump. Cutting 1.0.0 is a deliberate `Release-As: 1.0.0` footer, not a side effect.
+- `scripts/release-checks.sh` (`make release-checks`) verifies all of the above plus the Cask template, entitlements, Sparkle plist keys, Release Please configuration, and workflow wiring. It runs inside `scripts/ci.sh`, so CI and the release workflow both execute it before any secret is imported.
+
 ## Cut a release
 
-1. Merge conventional commits to `main`. Release Please maintains the version, changelog, and plist in one release pull request.
+1. Merge conventional commits to `main`. Release Please maintains the version, changelog, manifest, and plist in one release pull request.
 2. Approve and merge the green Release Please pull request. Native `GITHUB_TOKEN` pull requests may require the repository's configured Actions approval before their checks run.
 3. The merge creates the version tag and draft release, then calls the protected reusable release workflow. Approve the `release` environment only after its tag and generated files match the reviewed release pull request.
 4. The release workflow reruns `make check`, `make race`, the exact linters, vulnerability scan, and release dry run on macOS.
-   Render the candidate Cask and validate it with the current Homebrew: Ruby parsing, `brew install --cask --dry-run`, and `brew fetch --cask`. Run `brew audit` as well; if this work Mac cannot fetch Homebrew's portable Ruby because of its known RubyGems TLS failure, record that environmental failure separately from successful Cask parse and fetch checks.
+   Render the candidate Cask and validate it with the current Homebrew: `scripts/validate-homebrew-cask.sh` performs Ruby parsing, a trusted `brew install --cask --dry-run`, and `brew style`; then `brew fetch --cask` once the asset exists. Run `brew audit` as well; if this work Mac cannot fetch Homebrew's portable Ruby because of its known RubyGems TLS failure, set `SWITCHYARD_SKIP_BREW_STYLE=1` locally and record that environmental failure separately from successful Cask parse and dry-run checks. The release workflow still runs `brew style` on the runner.
 5. Run the secret, history, configuration, binary-artifact, and hostile Fable reviews before merging the release pull request.
+
+The release workflow is reusable: the Release Please workflow calls it after creating the tag and draft release, and a manually pushed `v*` tag triggers it directly. A called workflow cannot request more permissions than its caller grants, so `release-please.yml` must grant every permission `release.yml` declares, including `artifact-metadata: write` for provenance attestations; `scripts/release-checks.sh` asserts this.
 
 The tag workflow reruns production checks, imports the publisher identity into an ephemeral runner Keychain, builds Intel and Apple Silicon binaries, creates a universal app, signs nested Sparkle components and the daemon in strict order, verifies entitlements and architectures, derives the Sparkle public key from the private seed, performs a real signed launch, produces checksums and a CycloneDX SBOM for the Go runtime dependency graph, signs the appcast, attests the artifacts, publishes the GitHub Release, and updates the Homebrew Cask with a downgrade guard. Swift packages remain pinned in `app/Package.resolved`.
 
@@ -74,13 +94,42 @@ xattr -dr com.apple.quarantine "/Applications/Switchyard.app"
 open -a "Switchyard"
 ```
 
+`scripts/verify-appcast.sh` runs in the release workflow against the generated `appcast.xml` and can be run against a published feed as well; it proves the single item advertises the exact version, the tagged GitHub asset URL, an Ed25519 signature, and the app's minimum system version.
+
 Confirm that the app installs the bundled daemon, the generated LaunchAgent includes `AssociatedBundleIdentifiers = [com.theronburger.switchyard]`, Connection Doctor can inspect and repair detected agents, `sy doctor` passes, the Cask renders the expected release URL and checksum, and **Check for Updates…** reads the signed appcast. A changed LaunchAgent plist must boot out and bootstrap only `com.theronburger.switchyard.daemon`; a helper-only update uses the scoped kickstart path.
 
 On `ssh m4`, verify the published install with read-only `sfltool dumpbtm` output and the visible Login Items settings pane. Never use `sfltool resetbtm`. Because the self-signed publisher has no Team Identifier, treat this on-machine attribution check as required rather than inferring attribution from signing metadata.
 
+## Roll back a bad release
+
+Rollback never deletes or rewrites a tag, release, or asset. It moves the `latest` pointer and the Cask:
+
+```bash
+scripts/release-rollback.sh 0.1.0          # prints the complete plan
+scripts/release-rollback.sh 0.1.0 --apply  # re-points GitHub "latest" after checking the release's assets
+```
+
+What each layer does during and after a rollback:
+
+- **Sparkle.** `SUFeedURL` resolves `releases/latest/download/appcast.xml`, so re-pointing `latest` immediately stops every installed app from being offered the bad version. Sparkle never downgrades: machines that already installed the bad version stay there until a higher fix-forward version ships. Do not try to ship a "rollback" appcast with a lower version.
+- **Homebrew.** The release workflow's downgrade guard (`scripts/homebrew-cask-version-guard.sh`) refuses to write an older version into the tap, so a tap rollback is a deliberate, reviewed `git revert` pushed to `theronburger/homebrew-tap`. Because the Cask sets `auto_updates true`, `brew upgrade` does not touch Sparkle-updated installs unless `--greedy` is used.
+- **Daemon.** The app installs its bundled daemon by content digest, not by version ordering, and reloads only its own LaunchAgent. Reinstalling an older app therefore restores the matching older daemon on next launch; nothing else on the machine is touched.
+- **Visibility.** Mark the bad release as a pre-release and annotate its notes instead of deleting it so checksums, the SBOM, and the provenance attestation stay auditable.
+
+## Uninstall ownership
+
+`brew uninstall --cask switchyard` removes only Switchyard-owned items, in Homebrew's fixed directive order:
+
+1. `early_script` quits the app through an inline JXA script that terminates every running instance of `com.theronburger.switchyard` and waits for exit. It runs before `launchctl` because the running app owns daemon installation and would re-register the LaunchAgent. The script is inline so uninstall still works when the bundle was moved or deleted by hand.
+2. `launchctl` boots out `com.theronburger.switchyard.daemon` and removes its plist.
+3. `quit` is a second, idempotent stop for the app.
+4. `delete` removes the app-installed daemon binary under `~/Library/Application Support/Switchyard/bin/switchyard` and the LaunchAgent plist, so nothing can recreate the job mid-uninstall.
+
+`--zap` additionally trashes `~/Library/Application Support/Switchyard` (which contains the accepted private profiles and runtime state) and the app's preferences. Worktrees, repositories, Docker resources, the Homebrew `sy` symlink's target bundle, MCP registrations, and managed skills are never touched by the Cask. `scripts/release-checks.sh` fails if the rendered Cask references any path outside that ownership set or adds a flight hook.
+
 ## Uninstall verification
 
-Homebrew uninstall must stop the running app before unregistering `com.theronburger.switchyard.daemon`, then remove the installed daemon binary and LaunchAgent plist so the app cannot recreate the job mid-uninstall. MCP removal remains explicit because agent hosts own their configuration:
+MCP removal remains explicit because agent hosts own their configuration:
 
 ```bash
 codex mcp remove switchyard

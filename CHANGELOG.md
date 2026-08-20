@@ -2,11 +2,7 @@
 
 All notable changes are documented here. The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- Restart-tolerant `prepare --wait`, current-worktree `start`, and idempotent `stop --if-running --wait` lifecycle commands.
+Release Please generates each version section from Conventional Commits when it opens the release pull request. Do not add an Unreleased section; notes for non-conventional commits are added by editing the release pull request body before merge.
 
 ## [v0.1.0] - 2026-08-19
 

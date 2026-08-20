@@ -53,8 +53,10 @@ jobs:
         run: |
           expected_tag="v$(tr -d '[:space:]' < VERSION)"
           test "$RELEASE_TAG" = "$expected_tag"
-          grep -Fq "## [$RELEASE_TAG]" CHANGELOG.md
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          scripts/check-version.sh "${RELEASE_TAG#v}"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor HEAD origin/main
+          scripts/release-checks.sh
       - name: Run production checks
         run: scripts/ci.sh
       - name: Import self-signed release identity
@@ -159,8 +161,9 @@ jobs:
               -o dist/appcast.xml \
               dist
           xmllint --noout dist/appcast.xml
-          grep -Fq '<!-- sparkle-signatures:' dist/appcast.xml
           grep -Fq 'sparkle:edSignature=' dist/appcast.xml
+          minimum_system=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/Switchyard.app/Contents/Info.plist)
+          scripts/verify-appcast.sh dist/appcast.xml "$version" "switchyard_${version}_macos_universal.zip" "$minimum_system"
           (
             cd dist
             shasum -a 256 *.zip *.sbom.cdx.json appcast.xml > checksums.txt
@@ -229,17 +232,7 @@ jobs:
           git clone git@github.com:theronburger/homebrew-tap.git "$tap_directory"
           mkdir -p "$tap_directory/Casks"
           cask_path="$tap_directory/Casks/switchyard.rb"
-          current_version=$(sed -n 's/^  version "\([^"]*\)"/\1/p' "$cask_path" 2>/dev/null || true)
-          if [ -e "$cask_path" ]; then
-            if [ -z "$current_version" ]; then
-              echo "Refusing to replace an existing Cask with an unreadable version" >&2
-              exit 1
-            fi
-            if ! ruby -e 'require "rubygems"; exit(Gem::Version.new(ARGV[0]) > Gem::Version.new(ARGV[1]) ? 0 : 1)' "$version" "$current_version"; then
-              echo "Refusing to replace Homebrew Cask $current_version with non-newer release $version" >&2
-              exit 1
-            fi
-          fi
+          scripts/homebrew-cask-version-guard.sh "$version" "$cask_path"
           scripts/render-homebrew-cask.sh "$version" "$archive_sha" > "$cask_path"
           ruby -c "$cask_path"
           brew style "$cask_path"

@@ -8,6 +8,8 @@
       "include-component-in-tag": false,
       "include-v-in-tag": true,
       "include-v-in-release-name": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "draft": true,
       "force-tag-creation": true,
       "changelog-sections": [

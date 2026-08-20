@@ -19,9 +19,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.1.0</string> <!-- x-release-please-version -->
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>0.1.0</string> <!-- x-release-please-version -->
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>NSHighResolutionCapable</key>
@@ -42,8 +42,6 @@
     <key>SUAutomaticallyUpdate</key>
     <false/>
     <key>SUVerifyUpdateBeforeExtraction</key>
-    <true/>
-    <key>SURequireSignedFeed</key>
     <true/>
     <key>SwitchyardChannel</key>
     <string>release</string>

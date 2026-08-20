@@ -79,7 +79,7 @@ Read the [architecture](docs/ARCHITECTURE.md), [private profile model](docs/PRIV
 
 ## Updates
 
-The app checks its signed Sparkle feed once per day. **Check for Updates…** in the app menu or Settings downloads, verifies, installs, and relaunches an available version. Automatic checks can be disabled in Settings. A successful app update replaces an outdated bundled daemon and reloads Switchyard's own LaunchAgent when its generated registration changes; helper-only changes use a scoped `launchctl kickstart -k` before reconnecting.
+The app checks its Sparkle appcast once per day and accepts only updates whose Ed25519 signature verifies against the key embedded in the app. **Check for Updates…** in the app menu or Settings downloads, verifies, installs, and relaunches an available version. Automatic checks can be disabled in Settings. A successful app update replaces an outdated bundled daemon and reloads Switchyard's own LaunchAgent when its generated registration changes; helper-only changes use a scoped `launchctl kickstart -k` before reconnecting.
 
 ## Uninstall
 
@@ -105,6 +105,7 @@ Release archives are universal, hardened-runtime signed with a stable self-signe
 make check
 make race
 make ui-snapshots
+make release-checks
 make release-dry-run
 ```
 

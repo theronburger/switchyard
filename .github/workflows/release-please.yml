@@ -11,6 +11,9 @@ permissions:
   pull-requests: write
   id-token: write
   attestations: write
+  # The reusable release workflow requests this for provenance attestations.
+  # A called workflow may not request more than its caller grants.
+  artifact-metadata: write
 
 concurrency:
   group: release-please-${{ github.ref }}
