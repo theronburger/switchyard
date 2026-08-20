@@ -118,3 +118,46 @@ func TestParseRejectsInvalidRepositoryReferences(t *testing.T) {
 		t.Fatal("missing default target was accepted")
 	}
 }
+
+func TestParseAcceptsGenericPreparationWithoutRepositoryCode(t *testing.T) {
+	configured := strings.Replace(validConfiguration, "preparation: {}", `preparation:
+      fingerprint:
+        files: [lockfile]
+        globs: []
+      steps:
+        - id: install
+          executable: /usr/bin/true
+          arguments: [--version]
+          workingDirectory: .
+          environment:
+            CACHE_MODE: shared
+          timeout: 30s
+      verify:
+        - id: dependencies
+          kind: directory
+          path: dependencies`, 1)
+	loaded, err := Parse([]byte(configured))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Document.Repositories["sample-one"].Preparation.Steps[0].Executable; got != "/usr/bin/true" {
+		t.Fatalf("executable: got %q", got)
+	}
+}
+
+func TestParseRejectsTrustedEnvironmentOverride(t *testing.T) {
+	configured := strings.Replace(validConfiguration, "preparation: {}", `preparation:
+      fingerprint: {files: [lockfile], globs: []}
+      steps:
+        - id: install
+          executable: /usr/bin/true
+          arguments: [--version]
+          workingDirectory: .
+          environment: {HOME: /tmp/hostile}
+          timeout: 30s
+      verify:
+        - {id: dependencies, kind: directory, path: dependencies}`, 1)
+	if _, err := Parse([]byte(configured)); err == nil {
+		t.Fatal("trusted environment override was accepted")
+	}
+}

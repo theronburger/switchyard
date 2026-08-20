@@ -32,6 +32,7 @@ type repositoryInventory struct {
 	Configurations map[string]controlconfig.RepositoryConfiguration
 	Profiles       map[string]configuration.Repository
 	ProfileKeys    map[string]string
+	ProfileDigests map[string]string
 	Complete       bool
 	AttemptedAt    time.Time
 }

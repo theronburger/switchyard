@@ -43,7 +43,7 @@ type Repository struct {
 	Toolchains         map[string]any `yaml:"toolchains" json:"toolchains"`
 	Caches             map[string]any `yaml:"caches" json:"caches"`
 	EnvironmentSources map[string]any `yaml:"environmentSources" json:"environmentSources"`
-	Preparation        map[string]any `yaml:"preparation" json:"preparation"`
+	Preparation        Preparation    `yaml:"preparation" json:"preparation"`
 	Targets            map[string]any `yaml:"targets" json:"targets"`
 	DefaultTarget      string         `yaml:"defaultTarget" json:"defaultTarget"`
 	Services           map[string]any `yaml:"services" json:"services"`
@@ -51,6 +51,32 @@ type Repository struct {
 	Artifacts          map[string]any `yaml:"artifacts" json:"artifacts"`
 	Actions            map[string]any `yaml:"actions" json:"actions"`
 	Cleanup            map[string]any `yaml:"cleanup" json:"cleanup"`
+}
+
+type Preparation struct {
+	Fingerprint Fingerprint       `yaml:"fingerprint" json:"fingerprint"`
+	Steps       []PreparationStep `yaml:"steps" json:"steps"`
+	Verify      []Verification    `yaml:"verify" json:"verify"`
+}
+
+type Fingerprint struct {
+	Files []string `yaml:"files" json:"files"`
+	Globs []string `yaml:"globs" json:"globs"`
+}
+
+type PreparationStep struct {
+	ID               string            `yaml:"id" json:"id"`
+	Executable       string            `yaml:"executable" json:"executable"`
+	Arguments        []string          `yaml:"arguments" json:"arguments"`
+	WorkingDirectory string            `yaml:"workingDirectory" json:"workingDirectory"`
+	Environment      map[string]string `yaml:"environment" json:"environment"`
+	Timeout          string            `yaml:"timeout" json:"timeout"`
+}
+
+type Verification struct {
+	ID   string `yaml:"id" json:"id"`
+	Kind string `yaml:"kind" json:"kind"`
+	Path string `yaml:"path" json:"path"`
 }
 
 type Git struct {

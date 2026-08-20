@@ -137,14 +137,18 @@ func newManagedWorkspaceManager(
 ) (*workspacecontrol.ManagedManager, error) {
 	repositories := make([]workspacecontrol.ManagedRepository, 0, len(discovered.Repositories))
 	for _, repository := range discovered.Repositories {
-		configuration := discovered.Configurations[repository.ID]
-		managedRoot := configuration.Workspace.ManagedRoot
+		legacyConfiguration := discovered.Configurations[repository.ID]
+		managedRoot := legacyConfiguration.Workspace.ManagedRoot
+		defaultBase := legacyConfiguration.Workspace.DefaultBase
+		if profile, configured := discovered.Profiles[repository.ID]; configured {
+			managedRoot = profile.Git.ManagedWorktreesRoot
+			defaultBase = profile.Git.DefaultBase
+		}
 		if managedRoot == "" {
 			managedRoot = filepath.Join(
 				filepath.Dir(repository.RootPath), filepath.Base(repository.RootPath)+"-worktrees",
 			)
 		}
-		defaultBase := configuration.Workspace.DefaultBase
 		if defaultBase == "" {
 			defaultBase = "origin/main"
 		}

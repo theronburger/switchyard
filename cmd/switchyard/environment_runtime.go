@@ -71,6 +71,9 @@ func buildEnvironmentRuntime(
 	discovered repositoryInventory,
 	restart func(),
 ) (*environmentRuntime, error) {
+	if len(discovered.Profiles) > 0 {
+		return buildConfiguredWorkspaceRuntime(ctx, store, paths, discovered, restart)
+	}
 	environments, registrations, workspaceRegistrations, err := marketplaceRegistrations(
 		ctx, paths, instanceID, discovered.Repositories,
 	)
@@ -226,6 +229,77 @@ func buildEnvironmentRuntime(
 	return &environmentRuntime{
 		actions: actions, workspaceActions: workspaceActions, observerDone: observerDone,
 	}, nil
+}
+
+func buildConfiguredWorkspaceRuntime(
+	ctx context.Context,
+	store *state.Store,
+	paths applicationPaths,
+	discovered repositoryInventory,
+	restart func(),
+) (*environmentRuntime, error) {
+	managedManager, err := newManagedWorkspaceManager(paths, discovered)
+	if err != nil {
+		return nil, err
+	}
+	runtimeRoot := filepath.Join(paths.root, "runtime")
+	if paths.root == "" {
+		runtimeRoot = filepath.Join(filepath.Dir(paths.directory), "runtime")
+	}
+	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
+		return nil, err
+	}
+	registrations := make([]workspacecontrol.ProfileRegistration, 0)
+	for _, repository := range discovered.Repositories {
+		profile, configured := discovered.Profiles[repository.ID]
+		if !configured || len(profile.Preparation.Steps) == 0 {
+			continue
+		}
+		for _, worktree := range repository.Worktrees {
+			if worktree.Git.Prunable {
+				continue
+			}
+			ownership := workspacecontrol.OwnershipAdopted
+			if managedManager.Owns(repository.ID, worktree.Path) {
+				ownership = workspacecontrol.OwnershipManaged
+			}
+			registrations = append(registrations, workspacecontrol.ProfileRegistration{
+				WorktreeID: worktree.ID, WorktreeRoot: worktree.Path,
+				ProfileKey: discovered.ProfileKeys[repository.ID], ProfileDigest: discovered.ProfileDigests[repository.ID],
+				RuntimeRoot: runtimeRoot, Ownership: ownership, Preparation: profile.Preparation,
+			})
+		}
+	}
+	if len(registrations) == 0 {
+		return &environmentRuntime{}, nil
+	}
+	planner, err := workspacecontrol.NewProfilePlanBuilder(registrations)
+	if err != nil {
+		return nil, err
+	}
+	journal, err := state.NewWorkspaceJournal(store)
+	if err != nil {
+		return nil, err
+	}
+	coordinator, err := workspacecontrol.NewCoordinator(workspacecontrol.Config{
+		Journal: journal, Planner: planner,
+		Runner:   workspacecontrol.ExactStepRunner{RuntimeRoot: runtimeRoot},
+		Verifier: workspacecontrol.OSRequirementVerifier{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := coordinator.Reconcile(ctx); err != nil {
+		return nil, err
+	}
+	actions, err := daemon.NewWorkspaceActionService(daemon.WorkspaceActionServiceConfig{
+		Lifecycle: ctx, Store: store, Backend: managedManager, Ensurer: coordinator,
+		Resolver: newManagedWorkspaceResolver(store, discovered), Restart: restart,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &environmentRuntime{workspaceActions: actions}, nil
 }
 
 func (runtime *environmentRuntime) CloseAndWait(ctx context.Context) error {

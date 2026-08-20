@@ -28,7 +28,8 @@ func discoverAcceptedRepositoryInventory(
 			Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{},
 			Configurations: map[string]controlconfig.RepositoryConfiguration{},
 			Profiles:       map[string]configuration.Repository{}, ProfileKeys: map[string]string{},
-			Complete: true, AttemptedAt: observedAt.UTC(),
+			ProfileDigests: map[string]string{},
+			Complete:       true, AttemptedAt: observedAt.UTC(),
 		}, nil
 	}
 	if err != nil {
@@ -40,9 +41,13 @@ func discoverAcceptedRepositoryInventory(
 	if err := decoder.Decode(&document); err != nil {
 		return repositoryInventory{}, err
 	}
-	return discoverConfiguredRepositoryInventory(
+	discovered := discoverConfiguredRepositoryInventory(
 		ctx, observedAt, document, configuredGitExecutable(),
-	), nil
+	)
+	for repositoryID, key := range discovered.ProfileKeys {
+		discovered.ProfileDigests[repositoryID] = accepted.RepositoryDigests[key]
+	}
+	return discovered, nil
 }
 
 const maximumConcurrentRepositoryDiscoveries = 4
@@ -87,7 +92,8 @@ func discoverConfiguredRepositories(
 		Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{},
 		Configurations: map[string]controlconfig.RepositoryConfiguration{},
 		Profiles:       make(map[string]configuration.Repository), ProfileKeys: make(map[string]string),
-		Complete: true, AttemptedAt: observedAt.UTC(),
+		ProfileDigests: make(map[string]string),
+		Complete:       true, AttemptedAt: observedAt.UTC(),
 	}
 
 	keys := make([]string, 0, len(document.Repositories))

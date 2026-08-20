@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
@@ -24,6 +25,7 @@ const (
 )
 
 var identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func LoadFile(path string) (Loaded, error) {
 	contents, err := readPrivateRegularFile(path)
@@ -220,6 +222,62 @@ func validateDocument(document Document) error {
 			if _, exists := repository.Targets[repository.DefaultTarget]; !exists {
 				return fmt.Errorf("repository %q defaultTarget %q is not defined", key, repository.DefaultTarget)
 			}
+		}
+		if err := validatePreparation(key, repository.Preparation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePreparation(repositoryKey string, preparation Preparation) error {
+	if len(preparation.Steps) == 0 && len(preparation.Verify) == 0 &&
+		len(preparation.Fingerprint.Files) == 0 && len(preparation.Fingerprint.Globs) == 0 {
+		return nil
+	}
+	if len(preparation.Steps) == 0 || len(preparation.Verify) == 0 ||
+		len(preparation.Fingerprint.Files)+len(preparation.Fingerprint.Globs) == 0 {
+		return fmt.Errorf("repository %q preparation is incomplete", repositoryKey)
+	}
+	seen := make(map[string]struct{}, len(preparation.Steps))
+	for _, step := range preparation.Steps {
+		if !identifierPattern.MatchString(step.ID) || !filepath.IsAbs(step.Executable) ||
+			filepath.Clean(step.Executable) != step.Executable || step.WorkingDirectory == "" ||
+			filepath.IsAbs(step.WorkingDirectory) || filepath.Clean(step.WorkingDirectory) != step.WorkingDirectory {
+			return fmt.Errorf("repository %q preparation step is invalid", repositoryKey)
+		}
+		if _, duplicate := seen[step.ID]; duplicate {
+			return fmt.Errorf("repository %q preparation step %q is duplicated", repositoryKey, step.ID)
+		}
+		seen[step.ID] = struct{}{}
+		timeout, err := time.ParseDuration(step.Timeout)
+		if err != nil || timeout <= 0 || timeout > 30*time.Minute {
+			return fmt.Errorf("repository %q preparation step timeout is invalid", repositoryKey)
+		}
+		for name, value := range step.Environment {
+			if !environmentNamePattern.MatchString(name) || strings.ContainsRune(value, 0) {
+				return fmt.Errorf("repository %q preparation environment is invalid", repositoryKey)
+			}
+			if name == "HOME" || name == "PATH" || name == "TMPDIR" {
+				return fmt.Errorf("repository %q preparation environment overrides a trusted base value", repositoryKey)
+			}
+		}
+	}
+	for _, verification := range preparation.Verify {
+		if !identifierPattern.MatchString(verification.ID) ||
+			(verification.Kind != "directory" && verification.Kind != "regular-file" && verification.Kind != "executable") ||
+			verification.Path == "" || filepath.IsAbs(verification.Path) || filepath.Clean(verification.Path) != verification.Path {
+			return fmt.Errorf("repository %q preparation verification is invalid", repositoryKey)
+		}
+	}
+	for _, path := range preparation.Fingerprint.Files {
+		if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return fmt.Errorf("repository %q preparation fingerprint file is invalid", repositoryKey)
+		}
+	}
+	for _, pattern := range preparation.Fingerprint.Globs {
+		if pattern == "" || filepath.IsAbs(pattern) || filepath.Clean(pattern) != pattern || strings.Contains(pattern, "..") {
+			return fmt.Errorf("repository %q preparation fingerprint glob is invalid", repositoryKey)
 		}
 	}
 	return nil
