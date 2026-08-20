@@ -25,9 +25,18 @@ var (
 	ErrOperationDiagnosticsUnavailable = errors.New("operation has no available diagnostics")
 
 	logEnvironmentAssignment = regexp.MustCompile(`(?m)^\s*[A-Za-z_][A-Za-z0-9_]*=.*$`)
-	logSensitiveValue        = regexp.MustCompile(`(?i)\b(authorization|cookie|token|secret|password|api[_-]?key|access[_-]?key)\s*[:=]\s*\S+`)
-	logUserPath              = regexp.MustCompile(`/Users/[^/\s]+`)
-	logEmail                 = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
+	// An environment-style assignment anywhere in a line (after a timestamp,
+	// a logger prefix, or a bracketed stream name) loses its value.
+	logEmbeddedAssignment = regexp.MustCompile(`\b[A-Z][A-Z0-9_]{2,}=\S+`)
+	// A credential-looking name loses everything that follows it on the line:
+	// the value may be quoted, may carry a scheme such as "Bearer", and may
+	// be followed by more secret-bearing text. The name may be embedded in a
+	// longer identifier such as GITHUB_TOKEN or stripeSecretKey.
+	logSensitiveValue = regexp.MustCompile(`(?i)([A-Za-z0-9_.-]*(?:authorization|cookie|token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|private[_-]?key|credential|key)[A-Za-z0-9_.-]*)\s*[:=]\s*.*$`)
+	// URI userinfo is redacted whole; the password is never the only part kept.
+	logURICredential = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@`)
+	logUserPath      = regexp.MustCompile(`/Users/[^/\s]+`)
+	logEmail         = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
 )
 
 type OperationDiagnosticsStore interface {
@@ -180,6 +189,8 @@ func redactDiagnosticLog(contents string) (string, bool) {
 			continue
 		}
 		updated := logSensitiveValue.ReplaceAllString(line, "$1=[redacted]")
+		updated = logURICredential.ReplaceAllString(updated, "$1[redacted]@")
+		updated = logEmbeddedAssignment.ReplaceAllString(updated, "[environment assignment omitted]")
 		updated = logUserPath.ReplaceAllString(updated, "/Users/[redacted]")
 		updated = logEmail.ReplaceAllString(updated, "[redacted-email]")
 		if updated != line {

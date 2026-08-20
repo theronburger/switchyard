@@ -253,3 +253,42 @@ func TestOperationDiagnosticsReaderRefusesForeignProfileActionLogs(t *testing.T)
 		}
 	}
 }
+
+// TestRedactDiagnosticLogRemovesRealisticSecretShapes feeds the redactor the
+// shapes real child output takes: headers with a scheme, assignments behind
+// timestamps and stream prefixes, quoted values, embedded key names, and URI
+// userinfo. None of the secret bytes may survive, and the result must not
+// claim redaction while leaking.
+func TestRedactDiagnosticLogRemovesRealisticSecretShapes(t *testing.T) {
+	secrets := []string{
+		"sk-ant-api03-REALTOKENVALUE", "ghp_realvalue", "wJalrXUtnFEMI", "sk_live_51Abc", "p4ssw0rd",
+		"hunter2", "AKIAEXAMPLE", "xoxb-slackvalue", "-----BEGIN",
+	}
+	input := strings.Join([]string{
+		"> Authorization: Bearer sk-ant-api03-REALTOKENVALUE",
+		"2026-08-20 12:00:00 INFO  loaded GITHUB_TOKEN=ghp_realvalue",
+		"[worker-1] AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI",
+		"  STRIPE_KEY: 'sk_live_51Abc',",
+		`psql: connection string "postgresql://u:p4ssw0rd@h:5432/d"`,
+		"passwd=hunter2 retry=3",
+		"config.awsAccessKeyId = AKIAEXAMPLE",
+		"slack token:xoxb-slackvalue",
+		"privateKey=-----BEGIN RSA PRIVATE KEY-----",
+		"ordinary progress line 42/100",
+	}, "\n")
+	output, redacted := redactDiagnosticLog(input)
+	if !redacted {
+		t.Fatal("secret-bearing output was not marked redacted")
+	}
+	for _, secret := range secrets {
+		if strings.Contains(output, secret) {
+			t.Errorf("secret %q survived redaction:\n%s", secret, output)
+		}
+	}
+	if !strings.Contains(output, "ordinary progress line 42/100") {
+		t.Fatalf("ordinary line was damaged:\n%s", output)
+	}
+	if !strings.Contains(output, "postgresql://[redacted]@h:5432/d") {
+		t.Fatalf("URI userinfo was not redacted whole:\n%s", output)
+	}
+}
