@@ -394,14 +394,18 @@ private actor RecordingWorkspaceActions: WorkspaceActionSubmitting {
 }
 
 private actor RecordingOccupancyActions: OccupancyActionSubmitting {
-    enum Mode { case succeed, refuse }
+    enum Mode { case succeed, refuse, refuseRelease }
     let mode: Mode
     private(set) var acquires: [AcquireOccupancyRequest] = []
     private(set) var releases: [ReleaseOccupancyRequest] = []
+    /// Every call in arrival order, so tests can assert ordering against launches.
+    private(set) var calls: [String] = []
     init(mode: Mode = .succeed) { self.mode = mode }
+    func note(_ call: String) { calls.append(call) }
 
     func acquireOccupancy(_ request: AcquireOccupancyRequest) async throws -> OccupancyLease {
         acquires.append(request)
+        calls.append("acquire")
         if mode == .refuse {
             throw DaemonClientError.contract(try ContractDecoder().decode(ContractError.self, from: Data("""
             {"code":"OCCUPANCY_LIMIT","message":"This worktree already holds the maximum number of handoff leases.","retryable":false}
@@ -415,6 +419,12 @@ private actor RecordingOccupancyActions: OccupancyActionSubmitting {
 
     func releaseOccupancy(_ request: ReleaseOccupancyRequest) async throws -> OccupancyLease {
         releases.append(request)
+        calls.append("release")
+        if mode == .refuseRelease {
+            throw DaemonClientError.contract(try ContractDecoder().decode(ContractError.self, from: Data("""
+            {"code":"DAEMON_UNAVAILABLE","message":"The helper stopped responding.","retryable":true}
+            """.utf8)))
+        }
         return try ContractDecoder().decode(OccupancyLease.self, from: Data("""
         {"id":"\(request.leaseId)","worktreeId":"\(request.worktreeId)","holderKind":"agent-task",
          "holderLabel":"Codex task","state":"released","acquiredAt":"2026-08-21T09:05:00Z","releasedAt":"2026-08-21T09:45:00Z"}
@@ -711,7 +721,7 @@ struct OccupancyAppModelTests {
     }
 
     @Test
-    func `a refused lease is reported without undoing the launch and never blocks later handoffs`() async throws {
+    func `a refused lease is published and never blocks later handoffs`() async throws {
         let occupancy = RecordingOccupancyActions(mode: .refuse)
         let model = try Self.liveModel(occupancy: occupancy)
         await model.refresh()
@@ -731,6 +741,149 @@ struct OccupancyAppModelTests {
     }
 
     @Test
+    func `a handoff acquires the lease before launching and keeps it when the launch succeeds`() async throws {
+        let occupancy = RecordingOccupancyActions()
+        let model = try Self.liveModel(occupancy: occupancy)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+
+        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
+            await occupancy.note("launch")
+        }
+        guard case .launched(let lease) = outcome else {
+            Issue.record("expected a launched outcome, got \(outcome)")
+            return
+        }
+        #expect(lease.state == .held)
+        #expect(lease.holderKind == AppModel.agentTaskHolderKind)
+        #expect(outcome.failureMessage == nil)
+        #expect(await occupancy.calls == ["acquire", "launch"])
+        #expect(await occupancy.releases.isEmpty)
+        #expect(model.occupancyActionState == .idle)
+        // The owner's explicit release still ends the lease.
+        #expect(await model.releaseOccupancy(lease))
+        #expect(await occupancy.calls == ["acquire", "launch", "release"])
+    }
+
+    @Test
+    func `a refused lease never launches the task`() async throws {
+        let occupancy = RecordingOccupancyActions(mode: .refuse)
+        let model = try Self.liveModel(occupancy: occupancy)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+
+        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
+            await occupancy.note("launch")
+        }
+        guard case .leaseRefused(let message) = outcome else {
+            Issue.record("expected a refused lease, got \(outcome)")
+            return
+        }
+        #expect(message.contains("was not started"))
+        #expect(message.contains("OCCUPANCY_LIMIT"))
+        #expect(await occupancy.calls == ["acquire"], "a refused lease must not be followed by a launch")
+        #expect(model.occupancyActionState == .idle, "the refusal is reported through the outcome, not left wedged")
+        #expect(model.canRecordOccupancy)
+    }
+
+    @Test
+    func `an unavailable helper refuses the handoff before launching`() async throws {
+        let occupancy = RecordingOccupancyActions()
+        let model = AppModel(
+            liveController: StubLifecycleController(result: DaemonLifecycleResult(state: .unreachable(reason: "helper is down"), snapshot: nil, doctorReport: DoctorReport(checks: []))),
+            occupancyActions: occupancy,
+            configurationActions: nil,
+            agentConnections: nil,
+            pollingInterval: .seconds(60)
+        )
+        await model.refresh()
+        #expect(!model.canRecordOccupancy)
+        let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: Data(contentsOf: Self.fixtureURL))
+        let worktree = try #require(snapshot.repositories.first?.worktrees.first)
+
+        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
+            await occupancy.note("launch")
+        }
+        guard case .leaseRefused(let message) = outcome else {
+            Issue.record("expected a refused lease, got \(outcome)")
+            return
+        }
+        #expect(message.contains("not connected"))
+        #expect(await occupancy.calls.isEmpty)
+    }
+
+    @Test
+    func `a failed launch releases the lease it acquired`() async throws {
+        let occupancy = RecordingOccupancyActions()
+        let model = try Self.liveModel(occupancy: occupancy)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+
+        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
+            await occupancy.note("launch")
+            throw LaunchStubError.failed
+        }
+        guard case .launchFailed(let message) = outcome else {
+            Issue.record("expected a rolled-back launch, got \(outcome)")
+            return
+        }
+        #expect(message == LaunchStubError.failed.errorDescription)
+        #expect(await occupancy.calls == ["acquire", "launch", "release"])
+        let acquired = try #require(await occupancy.acquires.first)
+        let released = try #require(await occupancy.releases.first)
+        #expect(released.worktreeId == acquired.worktreeId)
+        #expect(released.leaseId == "occupancy_test")
+        #expect(model.occupancyActionState == .idle)
+        #expect(model.canRecordOccupancy, "a rolled-back handoff must not wedge later handoffs")
+    }
+
+    @Test
+    func `a failed launch whose rollback also fails keeps the protective lease and says so`() async throws {
+        let occupancy = RecordingOccupancyActions(mode: .refuseRelease)
+        let model = try Self.liveModel(occupancy: occupancy)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+
+        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
+            throw LaunchStubError.failed
+        }
+        guard case .launchFailedLeaseHeld(let message, let lease) = outcome else {
+            Issue.record("expected a held lease after a failed rollback, got \(outcome)")
+            return
+        }
+        #expect(lease.id == "occupancy_test")
+        #expect(lease.state == .held)
+        #expect(message.contains(LaunchStubError.failed.errorDescription ?? "?"))
+        #expect(message.contains("could not be released"))
+        #expect(message.contains("DAEMON_UNAVAILABLE"))
+        #expect(message.contains("still protects"))
+        #expect(message.contains("Handed off"))
+        #expect(await occupancy.calls == ["acquire", "release"])
+        // The release failure stays visible beside the owner's Release control.
+        guard case .failed(let worktreeId, let releaseMessage) = model.occupancyActionState else {
+            Issue.record("expected a published release failure, got \(model.occupancyActionState)")
+            return
+        }
+        #expect(worktreeId == worktree.id)
+        #expect(releaseMessage.contains("DAEMON_UNAVAILABLE"))
+        #expect(model.canRecordOccupancy, "the owner can still retry the release")
+    }
+
+    @Test
+    func `fixture mode launches without a lease`() async throws {
+        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+        let launched = Counter()
+        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") { await launched.increment() }
+        #expect(outcome == .launchedWithoutLease)
+        #expect(await launched.value == 1)
+        let failed = await model.handOffWorktree(worktree, holderLabel: "Codex task") { throw LaunchStubError.failed }
+        #expect(failed == .launchFailed(LaunchStubError.failed.errorDescription ?? ""))
+        #expect(model.occupancyActionState == .idle)
+    }
+
+    @Test
     func `fixture mode never records occupancy`() async throws {
         let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL)
         await model.refresh()
@@ -739,6 +892,16 @@ struct OccupancyAppModelTests {
         #expect(await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task") == nil)
         #expect(model.occupancyActionState == .idle)
     }
+}
+
+private enum LaunchStubError: LocalizedError {
+    case failed
+    var errorDescription: String? { "The stub host could not open a task." }
+}
+
+private actor Counter {
+    private(set) var value = 0
+    func increment() { value += 1 }
 }
 
 // MARK: - Codex launch

@@ -131,9 +131,33 @@ public enum AgentHandoffState: Sendable, Equatable {
     }
 }
 
-/// Progress of recording or releasing an explicit handoff lease. A failure
-/// here never undoes a launch that already happened; it is reported so the
-/// owner knows the worktree is not protected.
+/// Outcome of a transactional agent handoff: the lease is acquired before the
+/// task is opened, so a worktree is never handed to a task unprotected, and a
+/// failed launch releases the lease it no longer needs.
+public enum AgentHandoffOutcome: Sendable, Equatable {
+    /// The lease is held and the task was opened.
+    case launched(OccupancyLease)
+    /// Fixture builds have no daemon to protect; the task was opened with no lease.
+    case launchedWithoutLease
+    /// The daemon refused or could not record the lease. Nothing was launched.
+    case leaseRefused(String)
+    /// The launch failed and the lease it would have protected was released.
+    case launchFailed(String)
+    /// The launch failed and the lease could not be released. It still holds
+    /// and protects the worktree until the owner releases it.
+    case launchFailedLeaseHeld(String, OccupancyLease)
+
+    public var failureMessage: String? {
+        switch self {
+        case .launched, .launchedWithoutLease: nil
+        case .leaseRefused(let message), .launchFailed(let message), .launchFailedLeaseHeld(let message, _): message
+        }
+    }
+}
+
+/// Progress of recording or releasing an explicit handoff lease. A recording
+/// failure stops the handoff before any launch; a release failure is reported
+/// so the owner can retry it from the worktree's handoff section.
 public enum OccupancyActionState: Sendable, Equatable {
     case idle
     case recording(worktreeId: String)
@@ -858,12 +882,13 @@ public final class AppModel {
         !isFixtureMode && lifecycleState.isOperational && occupancyActions != nil && !occupancyActionState.isActive
     }
 
-    /// Records an explicit, conservative handoff lease after the app launched
-    /// a task into `worktree`. Call this only after the launch itself
-    /// succeeded: the lease is a statement about something the app did, not a
-    /// guess about what an agent host is doing. Returns the lease, or `nil`
-    /// when the daemon refused or is unavailable; the failure is published in
-    /// `occupancyActionState` so the owner knows the worktree is unprotected.
+    /// Records an explicit, conservative handoff lease for a task the app is
+    /// about to launch into `worktree`. `handOffWorktree` is the transactional
+    /// entry point: it acquires through this method before launching and
+    /// releases again if the launch fails. The lease is a statement about
+    /// something the app does, not a guess about what an agent host is doing.
+    /// Returns the lease, or `nil` when the daemon refused or is unavailable;
+    /// the failure is published in `occupancyActionState`.
     @discardableResult
     public func recordAgentHandoff(for worktree: Worktree, holderLabel: String) async -> OccupancyLease? {
         guard canRecordOccupancy, let occupancyActions else { return nil }
@@ -903,6 +928,63 @@ public final class AppModel {
             occupancyActionState = .failed(worktreeId: lease.worktreeId, Self.actionFailureMessage(error))
             return false
         }
+    }
+
+    /// Hands `worktree` to a task transactionally. The conservative lease is
+    /// recorded first so the worktree is protected before anything else can
+    /// observe the task; a refused lease means no launch. When `launch` throws,
+    /// the lease is released again because it no longer describes anything the
+    /// app did. When that rollback also fails, the lease is deliberately kept:
+    /// a stray protective lease is recoverable through the owner's Release
+    /// control, whereas an unprotected handoff is not. Fixture builds have no
+    /// daemon and launch without a lease.
+    public func handOffWorktree(
+        _ worktree: Worktree,
+        holderLabel: String,
+        launch: @Sendable () async throws -> Void
+    ) async -> AgentHandoffOutcome {
+        if isFixtureMode {
+            do {
+                try await launch()
+                return .launchedWithoutLease
+            } catch {
+                return .launchFailed(Self.launchFailureMessage(error))
+            }
+        }
+        guard let lease = await recordAgentHandoff(for: worktree, holderLabel: holderLabel) else {
+            let reason: String
+            if case .failed(_, let message) = occupancyActionState {
+                reason = message
+            } else {
+                reason = "Switchyard is not connected to its helper."
+            }
+            dismissOccupancyFailure()
+            return .leaseRefused("The task was not started because its handoff lease could not be recorded. \(reason)")
+        }
+        do {
+            try await launch()
+            return .launched(lease)
+        } catch {
+            let launchMessage = Self.launchFailureMessage(error)
+            if await releaseOccupancy(lease) {
+                return .launchFailed(launchMessage)
+            }
+            let releaseMessage: String
+            if case .failed(_, let message) = occupancyActionState {
+                releaseMessage = message
+            } else {
+                releaseMessage = "The helper did not confirm the release."
+            }
+            return .launchFailedLeaseHeld(
+                "\(launchMessage) The handoff lease recorded for this worktree could not be released (\(releaseMessage)). "
+                    + "It still protects the worktree from archive; release it from the worktree's Handed off section once you confirm no task is using it.",
+                lease
+            )
+        }
+    }
+
+    private static func launchFailureMessage(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? "The task could not be opened in this worktree."
     }
 
     public func dismissOccupancyFailure() {
