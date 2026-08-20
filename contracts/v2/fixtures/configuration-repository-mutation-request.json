@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "expectedRevision": 3,
+  "expectedSourceDigest": "sha256:ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+  "operation": "upsert",
+  "key": "sample",
+  "entry": {
+    "key": "sample",
+    "enabled": true,
+    "displayName": "Sample Repository",
+    "root": "/Users/example/Developer/sample",
+    "remote": "git@github.com:example/sample.git",
+    "defaultBase": "origin/main",
+    "managedWorktreesRoot": "/Users/example/Developer/sample-worktrees"
+  }
+}

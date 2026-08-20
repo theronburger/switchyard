@@ -420,6 +420,97 @@ runner.check("mutation fixtures decode across the Swift boundary") {
     try expect(receipt.environmentId == "environment_daad7f2bc132", "receipt environment changed")
 }
 
+runner.check("configuration, profile-action, and diagnostics fixtures decode across the Swift boundary") {
+    let fixtures = fixtureURL.deletingLastPathComponent()
+    let decoder = ContractDecoder()
+
+    let configuration = try decoder.decode(
+        ConfigurationStatus.self,
+        from: Data(contentsOf: fixtures.appending(path: "configuration-status.json"))
+    )
+    try expect(configuration.state == .pending, "configuration fixture state changed")
+    try expect(configuration.acceptedRevision == 3, "configuration fixture revision changed")
+    try expect(configuration.candidate?.repositoryDigests["sample"] != nil, "candidate repository digest missing")
+    try expect(configuration.desired?.repositories.map(\.key) == ["sample"], "desired repositories changed")
+    try expect(configuration.desired?.sourceDigest?.hasPrefix("sha256:") == true, "desired digest missing")
+
+    let actions = try decoder.decode(
+        ProfileActionList.self,
+        from: Data(contentsOf: fixtures.appending(path: "profile-action-list.json"))
+    )
+    try expect(actions.actions.count == 3, "profile action count changed")
+    try expect(actions.actions[0].kind == .lifecycle && actions.actions[0].lifecycle == .prepare, "lifecycle action changed")
+    try expect(actions.actions[1].kind == .command && actions.actions[1].lifecycle == nil, "command action changed")
+    try expect(actions.actions[2].risk == .remoteWrite && actions.actions[2].requiresConfirmation, "remote-write action changed")
+    try expect(actions.actions.allSatisfy { $0.scope != .unknown && $0.risk != .unknown }, "action vocabulary drifted")
+
+    let run = try decoder.decode(
+        RunProfileActionRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "run-profile-action-request.json"))
+    )
+    try expect(run.actionId == "publish-preview" && run.confirmedActionId == run.actionId, "run request confirmation changed")
+    try expect(run.worktreeId != nil && run.environmentId == nil && run.serviceId == nil, "run request scope changed")
+    let encodedRun = try JSONEncoder().encode(RunProfileActionRequest(
+        requestId: run.requestId, idempotencyKey: run.idempotencyKey, repositoryId: run.repositoryId,
+        actionId: run.actionId, worktreeId: run.worktreeId, confirmedActionId: run.confirmedActionId
+    ))
+    let reRun = try decoder.decode(RunProfileActionRequest.self, from: encodedRun)
+    try expect(reRun == run, "run request does not round-trip")
+
+    let diagnostics = try decoder.decode(
+        OperationDiagnostics.self,
+        from: Data(contentsOf: fixtures.appending(path: "operation-diagnostics.json"))
+    )
+    try expect(diagnostics.excerpts.map(\.stream) == ["stdout", "stderr"], "diagnostics streams changed")
+    try expect(diagnostics.excerpts[1].truncated && diagnostics.excerpts[1].redacted, "diagnostics flags changed")
+    try expect(!diagnostics.logReference.hasPrefix("/"), "log reference must stay opaque")
+}
+
+runner.check("occupancy and upgrade fixtures decode across the Swift boundary") {
+    let fixtures = fixtureURL.deletingLastPathComponent()
+    let decoder = ContractDecoder()
+    let lease = try decoder.decode(
+        OccupancyLease.self,
+        from: Data(contentsOf: fixtures.appending(path: "occupancy-lease.json"))
+    )
+    try expect(lease.state == .held && lease.releasedAt == nil, "occupancy lease fixture must be held")
+    let acquire = try decoder.decode(
+        AcquireOccupancyRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "acquire-occupancy-request.json"))
+    )
+    let release = try decoder.decode(
+        ReleaseOccupancyRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "release-occupancy-request.json"))
+    )
+    try expect(acquire.worktreeId == lease.worktreeId && release.leaseId == lease.id, "occupancy fixtures disagree")
+    try expect(acquire.holderKind == lease.holderKind && acquire.holderLabel == lease.holderLabel, "occupancy holder drifted")
+    let reAcquire = try decoder.decode(AcquireOccupancyRequest.self, from: JSONEncoder().encode(AcquireOccupancyRequest(
+        requestId: acquire.requestId, worktreeId: acquire.worktreeId, holderKind: acquire.holderKind, holderLabel: acquire.holderLabel
+    )))
+    try expect(reAcquire == acquire, "acquire request does not round-trip")
+
+    // The status fixture's worktree carries the lease once attached, and a
+    // worktree without the field reports no occupancy rather than failing.
+    var root = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
+    var repositories = root["repositories"] as! [[String: Any]]
+    var worktrees = repositories[0]["worktrees"] as! [[String: Any]]
+    worktrees[0]["occupancy"] = [try JSONSerialization.jsonObject(with: Data(contentsOf: fixtures.appending(path: "occupancy-lease.json")))]
+    repositories[0]["worktrees"] = worktrees
+    root["repositories"] = repositories
+    let occupied = try decoder.decode(StatusSnapshot.self, from: JSONSerialization.data(withJSONObject: root))
+    try expect(occupied.repositories[0].worktrees[0].heldOccupancy.map(\.id) == [lease.id], "occupancy did not attach to the worktree")
+    let plain = try decoder.decode(StatusSnapshot.self, from: fixtureData)
+    try expect(plain.repositories[0].worktrees[0].heldOccupancy.isEmpty, "absent occupancy must decode as empty")
+
+    let upgrade = try decoder.decode(
+        ContractErrorEnvelope.self,
+        from: Data(contentsOf: fixtures.appending(path: "upgrade-required-error.json"))
+    )
+    try expect(upgrade.error.code == DaemonClient.upgradeRequiredCode, "upgrade fixture code changed")
+    try expect(upgrade.error.currentState == "2" && upgrade.error.requestedState == "1", "upgrade fixture context changed")
+    try expect(upgrade.error.nextAction == "upgrade_client" && !upgrade.error.retryable, "upgrade fixture action changed")
+}
+
 runner.check("Swift mutation requests encode canonical non-null service arrays") {
     let request = StartEnvironmentRequest(
         requestId: "request_test",
@@ -1936,6 +2027,52 @@ runner.check("a descriptor from another contract generation routes to upgradeReq
     try machine.handle(.endpointUpgradeRequired(message: "update"))
     try expect(machine.state == .upgradeRequired(message: "update"), "descriptor mismatch should reach upgradeRequired")
     try expect(machine.state.needsUserAction && machine.state.canRepair, "upgradeRequired needs the user and offers repair")
+}
+
+await runner.checkAsync("daemon client acquires and releases occupancy through exact routes and refuses unsafe holders") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let paths = LockedRecorder<String>()
+    let transport = MockTransport { request in
+        paths.append("\(request.httpMethod ?? "") \(request.url?.path() ?? "")")
+        let body: String
+        if request.url?.path().hasSuffix("/release") == true {
+            body = """
+            {"id":"occupancy_01","worktreeId":"worktree_app","holderKind":"agent-task","holderLabel":"Codex task",
+             "state":"released","acquiredAt":"2026-08-21T09:05:00Z","releasedAt":"2026-08-21T09:45:00Z"}
+            """
+        } else {
+            body = """
+            {"id":"occupancy_01","worktreeId":"worktree_app","holderKind":"agent-task","holderLabel":"Codex task",
+             "state":"held","acquiredAt":"2026-08-21T09:05:00Z"}
+            """
+        }
+        return (Data(body.utf8), httpResponse(for: request, status: 200))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    let lease = try await client.acquireOccupancy(AcquireOccupancyRequest(
+        requestId: "request_occupancy", worktreeId: "worktree_app", holderKind: "agent-task", holderLabel: "Codex task"
+    ))
+    try expect(lease.state == .held, "acquired lease must be held")
+    let released = try await client.releaseOccupancy(ReleaseOccupancyRequest(
+        requestId: "request_release", worktreeId: "worktree_app", leaseId: lease.id
+    ))
+    try expect(released.state == .released, "released lease must be released")
+    try expect(
+        paths.values == ["POST /v1/worktrees/worktree_app/occupancy", "POST /v1/worktrees/worktree_app/occupancy/occupancy_01/release"],
+        "occupancy routes changed: \(paths.values)"
+    )
+
+    for (kind, label) in [("Codex Desktop", "Codex task"), ("agent-", "Codex task"), ("agent-task", "/Users/someone"), ("agent-task", "")] {
+        do {
+            _ = try await client.acquireOccupancy(AcquireOccupancyRequest(
+                requestId: "request_bad", worktreeId: "worktree_app", holderKind: kind, holderLabel: label
+            ))
+            throw CheckError("unsafe holder \(kind)/\(label) reached the daemon")
+        } catch let error as DaemonClientError {
+            guard case .invalidRequest = error else { throw CheckError("expected invalidRequest, got \(error)") }
+        }
+    }
+    try expect(paths.values.count == 2, "unsafe occupancy requests must not be sent")
 }
 
 await runner.checkAsync("daemon client surfaces contract errors") {
