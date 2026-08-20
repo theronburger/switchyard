@@ -85,3 +85,56 @@ func TestFailedRepositoryRefreshPreservesDataAndMarksObservationStale(t *testing
 		t.Fatalf("stale repository observation: %#v", got)
 	}
 }
+
+// TestRepositoryObserverRestartsOnTopologyChangeDespiteStoppedGhostEnvironment
+// proves that a stopped environment whose worktree has disappeared does not
+// suppress the restart that registers a newly discovered worktree, while a
+// live environment in the same situation still does.
+func TestRepositoryObserverRestartsOnTopologyChangeDespiteStoppedGhostEnvironment(t *testing.T) {
+	observedAt := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	for _, testCase := range []struct {
+		name          string
+		ghostState    string
+		expectRestart bool
+	}{
+		{name: "stopped ghost", ghostState: "stopped", expectRestart: true},
+		{name: "running ghost", ghostState: "running", expectRestart: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			previous := inventoryTestRepository("repo_test", "worktree_gone", "/tmp/sample-gone")
+			latest := inventoryTestRepository("repo_test", "worktree_new", "/tmp/sample-new")
+			latest.Observation = &contractv2.RepositoryObservation{ObservedAt: &observedAt, LastAttemptAt: observedAt}
+			ghost := contractv2.Environment{
+				ID: "environment_ghost", RepositoryID: "repo_test", WorktreeID: "worktree_gone",
+				ObservedState: testCase.ghostState, DesiredState: testCase.ghostState,
+			}
+			store := &fakeRepositoryObserverStore{snapshot: contractv2.StatusSnapshot{
+				Repositories: []contractv2.Repository{previous}, Environments: []contractv2.Environment{ghost},
+				Alerts: []contractv2.Alert{},
+			}}
+			restarts := 0
+			observer := &repositoryObserver{
+				store: store, interval: time.Second, now: func() time.Time { return observedAt },
+				discover: func(context.Context, time.Time) repositoryInventory {
+					return repositoryInventory{
+						Repositories: []contractv2.Repository{latest}, Alerts: []contractv2.Alert{},
+						Complete: true, AttemptedAt: observedAt,
+					}
+				},
+				annotate: func(applicationPaths, *repositoryInventory) error { return nil },
+				restore:  func(context.Context, *repositoryInventory) error { return nil },
+				restart:  func() { restarts++ },
+			}
+			if err := observer.RefreshOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if (restarts == 1) != testCase.expectRestart {
+				t.Fatalf("restarts=%d expectRestart=%v", restarts, testCase.expectRestart)
+			}
+			// The ghost worktree stays published so the environment remains addressable.
+			if len(store.snapshot.Repositories) != 1 || len(store.snapshot.Repositories[0].Worktrees) != 2 {
+				t.Fatalf("ghost worktree was dropped: %#v", store.snapshot.Repositories)
+			}
+		})
+	}
+}

@@ -98,11 +98,20 @@ func (observer *repositoryObserver) RefreshOnce(ctx context.Context) error {
 	return err
 }
 
+// inventoryContainsEnvironmentWorktrees reports whether every live environment
+// still maps to a discovered worktree. A restart re-registers environments from
+// the inventory, so restarting while a live environment's worktree is missing
+// would fail boot closed. Stopped environments are finished history: boot
+// tolerates them without a registration, so they never suppress the restart
+// that picks up a topology change.
 func inventoryContainsEnvironmentWorktrees(
 	repositories []contractv2.Repository,
 	environments []contractv2.Environment,
 ) bool {
 	for _, environment := range environments {
+		if environment.ObservedState == "stopped" {
+			continue
+		}
 		found := false
 		for _, repository := range repositories {
 			if repository.ID == environment.RepositoryID && repositoryContainsWorktree(repository, environment.WorktreeID) {
