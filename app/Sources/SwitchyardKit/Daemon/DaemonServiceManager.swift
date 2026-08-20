@@ -15,6 +15,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
     private let launchctlURL: URL
     private let userID: uid_t
     private let fileManager: FileManager
+    private let channel: SwitchyardChannel
     private var fingerprintCache = BoundedFileFingerprintCache()
 
     public init(
@@ -23,7 +24,8 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         paths: LaunchAgentPaths = .standard(),
         launchctlURL: URL = URL(fileURLWithPath: "/bin/launchctl"),
         userID: uid_t = getuid(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        channel: SwitchyardChannel = .release
     ) {
         self.binaryProvider = binaryProvider
         self.commandRunner = commandRunner
@@ -31,6 +33,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         self.launchctlURL = launchctlURL
         self.userID = userID
         self.fileManager = fileManager
+        self.channel = channel
     }
 
     public func inspect() async throws -> DaemonRegistrationStatus {
@@ -50,7 +53,8 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
             let plan = try LaunchAgentPlanBuilder.make(
                 binary: packagedBinary,
                 paths: paths,
-                userID: userID
+                userID: userID,
+                channel: channel
             )
             guard propertyListMatches(plan.propertyList),
                   try binariesMatch(packagedBinary.sourceURL, paths.installedBinaryURL) else {
@@ -105,12 +109,13 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         try LaunchAgentPlanBuilder.make(
             binary: binaryProvider.daemonBinary(),
             paths: paths,
-            userID: userID
+            userID: userID,
+            channel: channel
         )
     }
 
     private var serviceTarget: String {
-        "gui/\(userID)/\(LaunchAgentPlanBuilder.label)"
+        "gui/\(userID)/\(channel.launchAgentLabel)"
     }
 
     private struct MaterializedChanges {

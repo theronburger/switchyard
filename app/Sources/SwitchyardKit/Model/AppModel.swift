@@ -177,7 +177,7 @@ public final class AppModel {
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         workspaceActions: any WorkspaceActionSubmitting = LiveWorkspaceActionClient(),
-        agentConnections: any AgentConnectionManaging = AgentConnectionManager(),
+        agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
         pollingInterval: Duration = .seconds(5)
     ) {
         self.scenario = .canonical
@@ -208,7 +208,29 @@ public final class AppModel {
     ) {
         switch configuration {
         case .live:
-            self.init(liveController: DaemonLifecycleController(), pollingInterval: pollingInterval)
+            let channel = SwitchyardChannel.resolve()
+            let paths = LaunchAgentPaths.standard(channel: channel)
+            let location = DaemonEndpointLocation.standard(channel: channel)
+            let serviceManager = LaunchAgentServiceManager(paths: paths, channel: channel)
+            let connectionFactory = RuntimeConnectionFactory(location: location)
+            let lifecycle = DaemonLifecycleController(
+                serviceManager: serviceManager,
+                connectionFactory: connectionFactory,
+                doctor: LiveConnectionDoctor(
+                    serviceManager: serviceManager,
+                    connectionFactory: connectionFactory
+                )
+            )
+            let agentConnections: (any AgentConnectionManaging)? = channel.permitsAgentRepair
+                ? AgentConnectionManager()
+                : nil
+            self.init(
+                liveController: lifecycle,
+                environmentActions: LiveEnvironmentActionClient(connectionFactory: connectionFactory),
+                workspaceActions: LiveWorkspaceActionClient(connectionFactory: connectionFactory),
+                agentConnections: agentConnections,
+                pollingInterval: pollingInterval
+            )
         case .fixture(let scenario):
             self.init(scenario: scenario)
         }

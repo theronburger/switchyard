@@ -77,6 +77,15 @@ func contractWorkspaceStatus(result workspacecontrol.Result) *contractv1.Workspa
 
 func discoverRepositoryInventory(ctx context.Context, observedAt time.Time) repositoryInventory {
 	rootPath := os.Getenv(repositoryRootOverride)
+	if rootPath == "" && buildChannel == "development" {
+		return repositoryInventory{
+			Repositories:   []contractv1.Repository{},
+			Alerts:         []contractv1.Alert{},
+			Configurations: map[string]controlconfig.RepositoryConfiguration{},
+			Complete:       true,
+			AttemptedAt:    observedAt.UTC(),
+		}
+	}
 	if rootPath == "" {
 		userHome, err := os.UserHomeDir()
 		if err != nil {

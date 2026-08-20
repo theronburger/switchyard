@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import Sparkle
+import SwitchyardKit
 
 @MainActor
 @Observable
@@ -27,7 +28,8 @@ final class AppUpdateController: NSObject, SPUUpdaterDelegate {
     }
 
     func start() {
-        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        guard Bundle.main.bundleURL.pathExtension == "app",
+              SwitchyardChannel.resolve().permitsUpdates else { return }
         _ = controller
         automaticallyChecksForUpdates = controller.updater.automaticallyChecksForUpdates
     }

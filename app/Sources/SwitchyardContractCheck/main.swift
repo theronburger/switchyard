@@ -979,7 +979,10 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
         dictionary["AssociatedBundleIdentifiers"] as? [String] == ["com.theronburger.switchyard"],
         "LaunchAgent is not attributed to the main app bundle"
     )
-    try expect(dictionary["EnvironmentVariables"] == nil, "LaunchAgent must not carry environment secrets")
+    try expect(
+        dictionary["EnvironmentVariables"] as? [String: String] == ["SWITCHYARD_CHANNEL": "release"],
+        "LaunchAgent build channel is missing or unexpected"
+    )
     let plistText = String(decoding: plan.propertyList, as: UTF8.self).lowercased()
     try expect(!plistText.contains("token") && !plistText.contains("authorization"), "LaunchAgent plist contains credentials")
 
@@ -2187,6 +2190,47 @@ runner.check("app launch defaults live and fixtures require an explicit switch")
     try expect(
         AppLaunchConfiguration.resolve(arguments: ["Switchyard"], environment: ["SWITCHYARD_FIXTURE": "failure"]) == .fixture(.failure),
         "fixture environment switch was not honored"
+    )
+}
+
+runner.check("development channel is isolated from release paths and identity") {
+    try expect(
+        SwitchyardChannel.resolve(
+            infoDictionary: ["SwitchyardChannel": "development"],
+            environment: ["SWITCHYARD_CHANNEL": "release"]
+        ) == .development,
+        "a packaged development app could be redirected to the release channel"
+    )
+    try expect(
+        SwitchyardChannel.resolve(infoDictionary: nil, environment: ["SWITCHYARD_CHANNEL": "release"]) == .release,
+        "an unpackaged release-channel override was ignored"
+    )
+    let developmentPaths = LaunchAgentPaths.standard(channel: .development)
+    let releasePaths = LaunchAgentPaths.standard(channel: .release)
+    try expect(developmentPaths.installedBinaryURL != releasePaths.installedBinaryURL, "helper paths overlap")
+    try expect(developmentPaths.launchAgentURL != releasePaths.launchAgentURL, "LaunchAgent paths overlap")
+
+    let developmentLocation = DaemonEndpointLocation.standard(channel: .development)
+    let releaseLocation = DaemonEndpointLocation.standard(channel: .release)
+    try expect(developmentLocation != releaseLocation, "runtime connection paths overlap")
+
+    let plan = try LaunchAgentPlanBuilder.make(
+        binary: DaemonBinary(sourceURL: URL(fileURLWithPath: "/tmp/SwitchyardDevelopmentDaemon")),
+        paths: developmentPaths,
+        userID: 501,
+        channel: .development
+    )
+    let plist = try PropertyListSerialization.propertyList(from: plan.propertyList, options: [], format: nil)
+    guard let dictionary = plist as? [String: Any] else {
+        throw CheckError("development LaunchAgent plist is not a dictionary")
+    }
+    try expect(
+        dictionary["Label"] as? String == SwitchyardChannel.development.launchAgentLabel,
+        "development LaunchAgent uses the release label"
+    )
+    try expect(
+        dictionary["AssociatedBundleIdentifiers"] as? [String] == [SwitchyardChannel.development.appBundleIdentifier],
+        "development LaunchAgent is attributed to the release app"
     )
 }
 

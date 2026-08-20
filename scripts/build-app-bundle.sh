@@ -7,6 +7,15 @@ default_destination="$repository_root/dist/Switchyard.app"
 destination=${1:-"$default_destination"}
 prebuilt_binary=${2:-}
 release_version=$(tr -d '[:space:]' < "$repository_root/VERSION")
+build_channel=${SWITCHYARD_BUILD_CHANNEL:-development}
+
+case "$build_channel" in
+	development|release) ;;
+	*)
+		echo "unsupported Switchyard build channel: $build_channel" >&2
+		exit 2
+		;;
+esac
 
 if [ -e "$destination" ]; then
 	if [ "$destination" != "$default_destination" ]; then
@@ -28,6 +37,14 @@ mkdir -p "$contents/Resources/skills"
 cp -R "$repository_root/skills/switchyard" "$contents/Resources/skills/switchyard"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $release_version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $release_version" "$contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :SwitchyardChannel $build_channel" "$contents/Info.plist"
+if [ "$build_channel" = "development" ]; then
+	/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.theronburger.switchyard.development" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Switchyard Development" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleName Switchyard Development" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :SUAutomaticallyUpdate false" "$contents/Info.plist"
+fi
 
 swift_architecture_arguments=""
 if [ -n "$prebuilt_binary" ]; then

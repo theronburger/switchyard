@@ -45,5 +45,7 @@
     <true/>
     <key>SURequireSignedFeed</key>
     <true/>
+    <key>SwitchyardChannel</key>
+    <string>release</string>
 </dict>
 </plist>

@@ -21,16 +21,19 @@ public struct LaunchAgentPaths: Sendable, Equatable {
         self.standardErrorURL = standardErrorURL
     }
 
-    public static func standard(fileManager: FileManager = .default) -> LaunchAgentPaths {
+    public static func standard(
+        fileManager: FileManager = .default,
+        channel: SwitchyardChannel = .release
+    ) -> LaunchAgentPaths {
         let home = fileManager.homeDirectoryForCurrentUser
         let applicationSupport = fileManager
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? home.appending(path: "Library/Application Support")
-        let switchyardDirectory = applicationSupport.appending(path: "Switchyard")
+        let switchyardDirectory = applicationSupport.appending(path: channel.applicationSupportDirectoryName)
         let logsDirectory = switchyardDirectory.appending(path: "logs")
         return LaunchAgentPaths(
             installedBinaryURL: switchyardDirectory.appending(path: "bin/switchyard"),
-            launchAgentURL: home.appending(path: "Library/LaunchAgents/com.theronburger.switchyard.daemon.plist"),
+            launchAgentURL: home.appending(path: "Library/LaunchAgents/\(channel.launchAgentLabel).plist"),
             standardOutputURL: logsDirectory.appending(path: "daemon.stdout.log"),
             standardErrorURL: logsDirectory.appending(path: "daemon.stderr.log")
         )
@@ -69,16 +72,18 @@ public enum LaunchAgentPlanBuilder {
     public static func make(
         binary: DaemonBinary,
         paths: LaunchAgentPaths,
-        userID: uid_t
+        userID: uid_t,
+        channel: SwitchyardChannel = .release
     ) throws -> LaunchAgentInstallPlan {
         let userDomain = "gui/\(userID)"
-        let serviceTarget = "\(userDomain)/\(label)"
+        let serviceTarget = "\(userDomain)/\(channel.launchAgentLabel)"
         let propertyListObject: [String: Any] = [
-            "Label": label,
+            "Label": channel.launchAgentLabel,
             "ProgramArguments": [paths.installedBinaryURL.path, "daemon"],
             "RunAtLoad": true,
             "KeepAlive": true,
-            "AssociatedBundleIdentifiers": [appBundleIdentifier],
+            "AssociatedBundleIdentifiers": [channel.appBundleIdentifier],
+            "EnvironmentVariables": ["SWITCHYARD_CHANNEL": channel.rawValue],
             "StandardOutPath": paths.standardOutputURL.path,
             "StandardErrorPath": paths.standardErrorURL.path,
         ]
@@ -88,7 +93,7 @@ public enum LaunchAgentPlanBuilder {
             options: 0
         )
         return LaunchAgentInstallPlan(
-            label: label,
+            label: channel.launchAgentLabel,
             userDomain: userDomain,
             serviceTarget: serviceTarget,
             binary: binary,

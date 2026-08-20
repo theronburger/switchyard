@@ -27,7 +27,7 @@ func TestLocalPathsUsesApplicationSupportOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("localPaths: %v", err)
 	}
-	wantDirectory := filepath.Join(root, "Switchyard", "daemon")
+	wantDirectory := filepath.Join(root, "Switchyard Development", "daemon")
 	if paths.directory != wantDirectory {
 		t.Fatalf("directory: got %q, want %q", paths.directory, wantDirectory)
 	}
@@ -39,6 +39,28 @@ func TestLocalPathsUsesApplicationSupportOverride(t *testing.T) {
 	}
 	if paths.token != filepath.Join(wantDirectory, "token") {
 		t.Fatalf("token: got %q", paths.token)
+	}
+}
+
+func TestApplicationDirectoryNameSeparatesBuildChannels(t *testing.T) {
+	tests := []struct {
+		channel string
+		want    string
+	}{
+		{channel: "development", want: "Switchyard Development"},
+		{channel: "release", want: "Switchyard"},
+	}
+	for _, test := range tests {
+		got, err := applicationDirectoryName(test.channel)
+		if err != nil {
+			t.Fatalf("applicationDirectoryName(%q): %v", test.channel, err)
+		}
+		if got != test.want {
+			t.Fatalf("applicationDirectoryName(%q): got %q, want %q", test.channel, got, test.want)
+		}
+	}
+	if _, err := applicationDirectoryName("unknown"); err == nil {
+		t.Fatal("unsupported build channel was accepted")
 	}
 }
 

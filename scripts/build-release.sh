@@ -6,6 +6,7 @@ repository_root=$(dirname -- "$script_directory")
 output_directory=${1:-"$repository_root/dist"}
 release_version=$(tr -d '[:space:]' < "$repository_root/VERSION")
 release_stem="switchyard_${release_version}_macos_universal"
+export SWITCHYARD_BUILD_CHANNEL=release
 
 mkdir -p "$output_directory"
 output_directory=$(CDPATH= cd -- "$output_directory" && pwd)

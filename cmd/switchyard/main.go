@@ -22,6 +22,7 @@ import (
 )
 
 var version = "0.1.0-dev"
+var buildChannel = "development"
 
 const applicationSupportOverride = "SWITCHYARD_APPLICATION_SUPPORT"
 
@@ -112,13 +113,28 @@ func localPaths() (applicationPaths, error) {
 			return applicationPaths{}, err
 		}
 	}
-	directory := filepath.Join(configurationDirectory, "Switchyard", "daemon")
+	directoryName, err := applicationDirectoryName(buildChannel)
+	if err != nil {
+		return applicationPaths{}, err
+	}
+	directory := filepath.Join(configurationDirectory, directoryName, "daemon")
 	return applicationPaths{
 		directory:         directory,
 		database:          filepath.Join(directory, "state.sqlite"),
 		runtimeDescriptor: filepath.Join(directory, "runtime.json"),
 		token:             filepath.Join(directory, "token"),
 	}, nil
+}
+
+func applicationDirectoryName(channel string) (string, error) {
+	switch channel {
+	case "release":
+		return "Switchyard", nil
+	case "development":
+		return "Switchyard Development", nil
+	default:
+		return "", fmt.Errorf("unsupported build channel %q", channel)
+	}
 }
 
 func runDaemon(parent context.Context, paths applicationPaths) error {

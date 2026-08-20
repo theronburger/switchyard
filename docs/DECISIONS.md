@@ -106,6 +106,14 @@ Every accepted environment start captures the exact Git revision and working-tre
 
 The first public release uses a universal Homebrew Cask and signed Sparkle updates. The stable self-signed publisher identity is `Theron Burger Apps Release`; Switchyard has a distinct Ed25519 Sparkle key. Because no Apple Developer identity exists, the frontend alone carries the library-validation exception needed to load Sparkle, and the explicit installation flow removes quarantine only from `/Applications/Switchyard.app` after Homebrew installation. Release assets include checksums, a CycloneDX SBOM, and GitHub provenance attestations.
 
+### D-024: Private repository profiles supersede built-in adapters
+
+Repository behavior is accepted private configuration stored only under Switchyard's Application Support directory. One daemon manages multiple configured repositories concurrently. Product code, tests, fixtures, documentation, and bundled skills contain no consuming-repository identity or catalog. Repository-local manifests, projections, and ignore-file edits are removed.
+
+### D-025: Configuration acceptance authorizes compiled behavior
+
+The owner reviews and accepts one immutable configuration revision as a transaction. Its preview includes every resolved executable, argument shape, working directory, non-secret environment shape, private artifact digest, shell, interpreter, and generated wrapper. Routine execution of that accepted revision does not prompt again. A changed revision or executable fingerprint requires re-acceptance; explicitly high-risk targets and actions may still require per-run confirmation. MCP and unattended setup hooks can execute accepted behavior but cannot accept configuration.
+
 ## Open
 
 There are no open release-blocking identity or installation decisions. The bundle identifier is `com.theronburger.switchyard`.

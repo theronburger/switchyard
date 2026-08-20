@@ -1,6 +1,6 @@
 # Private repository profiles
 
-Status: proposed architecture for the next breaking release. This document is a plan, not an implemented contract.
+Status: accepted architecture and implementation plan for the next breaking release.
 
 ## Outcome
 
@@ -38,7 +38,7 @@ The existing coordinators, journals, process ownership, port leasing, container 
 3. An explicit `git worktree add` or `git worktree remove` operation may ask Git to update its own administrative data. Switchyard never edits that data directly.
 4. Repository tools may create their normal declared outputs, such as dependency directories or compiler output, when an approved profile command runs. Those are tool outputs, not Switchyard configuration or Switchyard-owned artifacts, and are retained by default.
 5. Consuming-repository logic never enters product code. Profiles compose supported generic commands, typed value sources, ports, probes, infrastructure, private artifacts, actions, and cleanup declarations. A genuine capability gap requires a repository-neutral primitive with independent tests, not a repository-specific branch.
-6. Commands are executable plus argv. There is no implicit shell. Every executable behavior requires exact first-use approval; shells, interpreters, and generated wrappers receive an additional executable-code warning.
+6. Commands are executable plus argv. There is no implicit shell. Accepting a configuration revision authorizes its compiled executable behavior as one reviewed transaction. The activation preview identifies exact executables, shells, interpreters, and generated wrappers; fingerprint drift or a changed revision requires re-acceptance. Per-run confirmation remains limited to explicitly high-risk targets and actions.
 7. The daemon remains the only runtime-state writer. Configuration mutations from the app or CLI use compare-and-swap through the daemon.
 8. Every workspace or environment operation is pinned to an immutable accepted configuration payload and digest. Reloading configuration cannot change a running process cluster in place, including after a daemon restart.
 9. Secret values are not stored in configuration, configuration history, SQLite, snapshots, logs, diagnostics, or agent context. Configuration contains secret references only.
@@ -254,11 +254,11 @@ Mutable infrastructure remains environment-scoped in v1. Only immutable content-
 
 Environment values should be passed directly to child processes. When a tool needs a file, the profile declares a private artifact and passes its private absolute path in argv or environment. Active references protect immutable artifacts from cleanup, and every loaded or executed artifact digest participates in the command fingerprint.
 
-A profile can also declare a private wrapper artifact when a third-party tool cannot consume an external configuration directly. Every command requires approval keyed by repository key, repository-profile digest, executable identity, argv, wrapper and referenced artifact digests, working directory, and non-secret environment shape. Shells, interpreters, and generated wrappers are additionally labelled executable profile code. Only the owner UI may approve or revoke behavior. Noninteractive CLI, MCP, and setup hooks return `APPROVAL_REQUIRED`; they cannot self-approve or expose the complete preview.
+A profile can also declare a private wrapper artifact when a third-party tool cannot consume an external configuration directly. The configuration activation preview fingerprints behavior by repository key, repository-profile digest, executable identity, argv, wrapper and referenced artifact digests, working directory, and non-secret environment shape. Shells, interpreters, and generated wrappers are additionally labelled executable profile code. The owner accepts or revokes the complete configuration revision through the app or human CLI. Noninteractive MCP and setup hooks may execute an accepted revision, but cannot accept a pending or changed revision; they return `CONFIGURATION_NOT_ACCEPTED` without exposing the complete preview.
 
 Declared effects make plans and cleanup boundaries inspectable; they do not sandbox a command or prove ownership of what it writes. Secret-tainted values cannot enter argv, persisted plans, or persistent artifacts. Secrets are normally injected daemon-side into the child environment immediately before spawn and redacted from captured output. An unavoidable secret file is run-scoped, mode `0600`, excluded from accepted payloads and SQLite, resolved immediately before launch, and removed during stop and recovery.
 
-Before the breaking release, a parity spike must prove that every currently required service can run without a Switchyard-owned file in its checkout. A tool that cannot meet this boundary remains unavailable with a precise reason; the boundary is not weakened.
+Before the breaking release, a parity spike must prove that every currently supported service can run without a Switchyard-owned file in its checkout. A failed parity case keeps the release incomplete; the boundary is not weakened.
 
 ## Multi-repository product model
 
@@ -342,7 +342,7 @@ Rollback stops only the new owned LaunchAgent, removes only paths proven by the 
 ## Implementation slices
 
 1. Add an explicit development channel so development builds cannot touch canonical installation paths, labels, state, repositories, or agent registrations.
-2. Run an isolated zero-footprint parity spike for every currently supported service and use it to inventory the required generic primitives. Any deliberate service removal becomes explicit release scope.
+2. Run an isolated zero-footprint parity spike for every currently supported service and use it to inventory the required generic primitives.
 3. Amend accepted decisions and agent invariants; freeze the private schema with synthetic fixtures and the spike evidence.
 4. Add the strict private configuration loader, crash-consistent immutable revision store, CAS API, approval store, and fail-closed desired/accepted behavior.
 5. Add bounded snapshot storage and migration planning before adding more observers.
@@ -363,9 +363,9 @@ Rollback stops only the new owned LaunchAgent, removes only paths proven by the 
 - No test or live run creates a Switchyard-owned path inside a checkout or Git directory.
 - Two unrelated configured repositories prepare and run concurrently.
 - A profile containing certificate, package-manager, toolchain, cache, target, service, and infrastructure details requires no application-code change.
-- Every service supported before the redesign passes the zero-footprint parity suite, unless its removal is explicitly accepted in release scope.
+- Every service supported before the redesign passes the zero-footprint parity suite.
 - Configuration reload cannot mutate a running environment and stop/cleanup still work after a profile is disabled.
-- Every executable behavior is previewed, approved by exact fingerprint, revocable, and tested through rejection and failure paths; executable profile code is additionally labelled.
+- Every executable behavior is included in the configuration-revision preview, authorized by the accepted revision digest, revocable as a revision, and tested through rejection and failure paths; executable profile code is additionally labelled.
 - Concurrent missing-toolchain preparation provisions once, resumes safely after restart, and re-resolves before workspace compilation.
 - Service dependency stages enforce readiness barriers and reverse-order rollback.
 - Foreign processes, ports, containers, files, worktrees, and caches survive every cleanup test.

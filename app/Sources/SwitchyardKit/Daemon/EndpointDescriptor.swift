@@ -196,11 +196,16 @@ public struct DaemonEndpointLocation: Sendable, Equatable {
     }
 
     /// `~/Library/Application Support/Switchyard/daemon/`.
-    public static func standard(fileManager: FileManager = .default) -> DaemonEndpointLocation {
+    public static func standard(
+        fileManager: FileManager = .default,
+        channel: SwitchyardChannel = .release
+    ) -> DaemonEndpointLocation {
         let base = fileManager
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? fileManager.homeDirectoryForCurrentUser.appending(path: "Library/Application Support")
-        let daemonDirectory = base.appending(path: "Switchyard/daemon")
+        let daemonDirectory = base
+            .appending(path: channel.applicationSupportDirectoryName)
+            .appending(path: "daemon")
         return DaemonEndpointLocation(
             descriptorURL: daemonDirectory.appending(path: "runtime.json"),
             tokenURL: daemonDirectory.appending(path: "token")

@@ -179,6 +179,14 @@ func TestRealMarketplaceInventoryProbe(t *testing.T) {
 	}
 }
 
+func TestDevelopmentInventoryDoesNotDiscoverARealRepositoryByDefault(t *testing.T) {
+	t.Setenv(repositoryRootOverride, "")
+	discovered := discoverRepositoryInventory(context.Background(), time.Now().UTC())
+	if !discovered.Complete || len(discovered.Repositories) != 0 || len(discovered.Alerts) != 0 {
+		t.Fatalf("development inventory was not isolated: %+v", discovered)
+	}
+}
+
 func inventoryTestRepository(id, worktreeID, root string) contractv1.Repository {
 	return contractv1.Repository{
 		ID: id, DisplayName: id, RootPath: root, Adapter: "marketplace", Remote: "owner/repository",
