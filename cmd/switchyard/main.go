@@ -98,8 +98,10 @@ func writeVersion() int {
 }
 
 type applicationPaths struct {
+	root              string
 	directory         string
 	database          string
+	configuration     string
 	runtimeDescriptor string
 	token             string
 }
@@ -117,10 +119,13 @@ func localPaths() (applicationPaths, error) {
 	if err != nil {
 		return applicationPaths{}, err
 	}
-	directory := filepath.Join(configurationDirectory, directoryName, "daemon")
+	root := filepath.Join(configurationDirectory, directoryName)
+	directory := filepath.Join(root, "daemon")
 	return applicationPaths{
+		root:              root,
 		directory:         directory,
-		database:          filepath.Join(directory, "state.sqlite"),
+		database:          filepath.Join(directory, "state-v2.sqlite"),
+		configuration:     filepath.Join(root, "configuration.yaml"),
 		runtimeDescriptor: filepath.Join(directory, "runtime.json"),
 		token:             filepath.Join(directory, "token"),
 	}, nil

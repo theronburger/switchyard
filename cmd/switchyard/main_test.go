@@ -28,11 +28,17 @@ func TestLocalPathsUsesApplicationSupportOverride(t *testing.T) {
 		t.Fatalf("localPaths: %v", err)
 	}
 	wantDirectory := filepath.Join(root, "Switchyard Development", "daemon")
+	if paths.root != filepath.Dir(wantDirectory) {
+		t.Fatalf("root: got %q, want %q", paths.root, filepath.Dir(wantDirectory))
+	}
 	if paths.directory != wantDirectory {
 		t.Fatalf("directory: got %q, want %q", paths.directory, wantDirectory)
 	}
-	if paths.database != filepath.Join(wantDirectory, "state.sqlite") {
+	if paths.database != filepath.Join(wantDirectory, "state-v2.sqlite") {
 		t.Fatalf("database: got %q", paths.database)
+	}
+	if paths.configuration != filepath.Join(root, "Switchyard Development", "configuration.yaml") {
+		t.Fatalf("configuration: got %q", paths.configuration)
 	}
 	if paths.runtimeDescriptor != filepath.Join(wantDirectory, "runtime.json") {
 		t.Fatalf("runtime descriptor: got %q", paths.runtimeDescriptor)
