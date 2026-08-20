@@ -52,6 +52,17 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 			return nil, err
 		}
 	}
+	// A preparation interrupted by the previous daemon is failed before any
+	// profile is consulted, so a worktree whose profile lost its preparation
+	// steps, or a boot with no accepted repository, cannot keep an incomplete
+	// record that would block the next preparation forever.
+	interruptedWorkspaces, err := state.NewWorkspaceJournal(store)
+	if err != nil {
+		return nil, err
+	}
+	if err := workspacecontrol.FailInterruptedPreparations(ctx, interruptedWorkspaces); err != nil {
+		return nil, err
+	}
 	if len(discovered.Repositories) == 0 {
 		journal, err := state.NewEnvironmentJournal(store, configuredEnvironmentProjector(nil))
 		if err != nil {

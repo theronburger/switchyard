@@ -116,7 +116,16 @@ func (coordinator *Coordinator) fail(record OperationRecord, code string, cause 
 }
 
 func (coordinator *Coordinator) Reconcile(ctx context.Context) error {
-	records, err := coordinator.journal.Incomplete(ctx)
+	return FailInterruptedPreparations(ctx, coordinator.journal)
+}
+
+// FailInterruptedPreparations marks every incomplete preparation record as
+// failed. It runs on every daemon boot, whether or not a coordinator exists
+// for the worktree: an incomplete record left behind would both wedge the
+// worktree (only one incomplete record per worktree may exist) and desync
+// from its public operation, which boot fails separately.
+func FailInterruptedPreparations(ctx context.Context, journal Journal) error {
+	records, err := journal.Incomplete(ctx)
 	if err != nil {
 		return err
 	}
@@ -124,7 +133,7 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) error {
 		record.State = StateFailed
 		record.Phase = PhaseComplete
 		record.FailureCode = "WORKSPACE_PREPARATION_INTERRUPTED"
-		if err := coordinator.journal.Update(ctx, record); err != nil {
+		if err := journal.Update(ctx, record); err != nil {
 			return err
 		}
 	}
