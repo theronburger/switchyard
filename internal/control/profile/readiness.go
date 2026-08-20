@@ -36,7 +36,19 @@ func (checker ReadinessChecker) WaitReady(ctx context.Context, target environmen
 	if err != nil {
 		return err
 	}
-	waitContext, cancel := context.WithTimeout(ctx, checker.maximumWait)
+	maximumWait := checker.maximumWait
+	registration, lookupErr := checker.registry.Lookup(target.EnvironmentID)
+	if lookupErr != nil {
+		return lookupErr
+	}
+	if configured := registration.Profile.Services[target.Service.ID].ReadinessTimeout; configured != "" {
+		parsed, parseErr := time.ParseDuration(configured)
+		if parseErr != nil {
+			return ErrProfileInvalid
+		}
+		maximumWait = parsed
+	}
+	waitContext, cancel := context.WithTimeout(ctx, maximumWait)
 	defer cancel()
 	for {
 		ready, err := checker.run(waitContext, probes)

@@ -354,7 +354,10 @@ func validateRepositoryRuntime(repositoryKey string, repository Repository) erro
 	for id, value := range repository.Values {
 		if !identifierPattern.MatchString(id) || value.Kind == "" ||
 			(value.Kind != "text-file" && value.Kind != "dotenv" && value.Kind != "json-pointer" && value.Kind != "yaml-scalar") ||
-			(value.Root != "repository" && value.Root != "worktree") || !safeRelativePath(value.Path) {
+			(value.Root != "repository" && value.Root != "worktree") || !safeRelativePath(value.Path) ||
+			len(value.Key) > 512 || strings.ContainsRune(value.Key, 0) || len(value.TrimPrefix) > 4096 || strings.ContainsRune(value.TrimPrefix, 0) ||
+			(value.Kind == "text-file" && value.Key != "") || (value.Kind != "text-file" && value.Key == "") ||
+			((value.Kind == "json-pointer" || value.Kind == "yaml-scalar") && !strings.HasPrefix(value.Key, "/")) {
 			return fmt.Errorf("repository %q value %q is invalid", repositoryKey, id)
 		}
 	}
@@ -508,6 +511,12 @@ func validateService(repositoryKey, id string, service Service, repository Repos
 			if accepted.Minimum < 100 || accepted.Maximum > 599 || accepted.Minimum > accepted.Maximum {
 				return fmt.Errorf("repository %q service %q probe status is invalid", repositoryKey, id)
 			}
+		}
+	}
+	if service.ReadinessTimeout != "" {
+		duration, err := time.ParseDuration(service.ReadinessTimeout)
+		if err != nil || duration <= 0 || duration > 15*time.Minute {
+			return fmt.Errorf("repository %q service %q readiness timeout is invalid", repositoryKey, id)
 		}
 	}
 	for _, infrastructure := range service.Infrastructure {

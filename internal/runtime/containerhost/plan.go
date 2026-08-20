@@ -110,8 +110,12 @@ func (planner Planner) actionsForCreate(goal Goal) []Action {
 	if goal.Kind != ResourceContainer {
 		return []Action{create}
 	}
+	pull := planner.newAction(ActionPull, resource, goal)
+	pull.PortBindings = nil
+	pull.Environment = nil
+	pull.Command = expectedCommand(planner.executable(), pull)
 	start := planner.newAction(ActionStart, resource, goal)
-	return []Action{create, start}
+	return []Action{pull, create, start}
 }
 
 func (planner Planner) newAction(kind ActionKind, resource Resource, goal Goal) Action {
@@ -266,6 +270,8 @@ type resourceNameKey struct {
 func expectedCommand(dockerBinary string, action Action) Command {
 	arguments := make([]string, 0, 16)
 	switch action.Kind {
+	case ActionPull:
+		arguments = []string{"image", "pull", "--", action.Image}
 	case ActionCreate:
 		arguments = append(arguments, string(action.ResourceKind), "create")
 		switch action.ResourceKind {

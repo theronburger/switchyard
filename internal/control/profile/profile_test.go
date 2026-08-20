@@ -2,15 +2,24 @@ package profile
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
+	"github.com/theronburger/switchyard/internal/runtime/health"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
 )
+
+type neverReadyProber struct{}
+
+func (neverReadyProber) Check(context.Context, health.ProbeSpec) (health.ProbeResult, error) {
+	return health.ProbeResult{Success: false}, nil
+}
 
 func TestProfilePlannerCompilesOnlyConfiguredBehavior(t *testing.T) {
 	registration := profileRegistration(t)
@@ -110,6 +119,34 @@ func TestConfiguredInfrastructurePortsAreNotProbedAsFreeBeforeServiceLaunch(t *t
 	ports := configuredInfrastructurePorts(profile, "web", []string{"queue"})
 	if _, found := ports["queue"]; !found || len(ports) != 1 {
 		t.Fatalf("infrastructure ports: %+v", ports)
+	}
+}
+
+func TestConfiguredReadinessTimeoutOverridesTheDefault(t *testing.T) {
+	registration := profileRegistration(t)
+	service := registration.Profile.Services["web"]
+	service.ReadinessTimeout = "5ms"
+	service.Readiness = []configuration.Probe{{Kind: "tcp", Port: "http"}}
+	registration.Profile.Services["web"] = service
+	registry, err := NewRegistry([]Registration{registration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker, err := NewReadinessChecker(registry, neverReadyProber{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker.maximumWait = time.Minute
+	checker.interval = time.Millisecond
+	target := environmentcontrol.ReadinessTarget{
+		EnvironmentID: registration.EnvironmentID, RunID: "run_01",
+		Service: environmentcontrol.ServiceResult{ID: "web", EnvironmentID: registration.EnvironmentID, RunID: "run_01"},
+		Ports:   []portlease.Lease{{Key: portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: "web", Purpose: "http"}, Host: "127.0.0.1", Port: 31001}},
+		Spec:    environmentcontrol.ReadinessSpec{ID: readinessID("web")},
+	}
+	err = checker.WaitReady(context.Background(), target)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || err.Error() != "service readiness timed out" {
+		t.Fatalf("readiness error: %v", err)
 	}
 }
 

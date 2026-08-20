@@ -78,6 +78,7 @@ type Goal struct {
 type ActionKind string
 
 const (
+	ActionPull   ActionKind = "pull"
 	ActionCreate ActionKind = "create"
 	ActionStart  ActionKind = "start"
 	ActionStop   ActionKind = "stop"

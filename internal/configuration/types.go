@@ -97,6 +97,7 @@ type Service struct {
 	Initialize        []Command           `yaml:"initialize" json:"initialize"`
 	Command           Command             `yaml:"command" json:"command"`
 	Readiness         []Probe             `yaml:"readiness" json:"readiness"`
+	ReadinessTimeout  string              `yaml:"readinessTimeout" json:"readinessTimeout"`
 	Health            []Probe             `yaml:"health" json:"health"`
 	Infrastructure    []string            `yaml:"infrastructure" json:"infrastructure"`
 	Artifacts         []string            `yaml:"artifacts" json:"artifacts"`

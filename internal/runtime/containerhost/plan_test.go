@@ -26,8 +26,11 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Actions) != 2 || plan.Actions[0].Kind != ActionCreate || plan.Actions[1].Kind != ActionStart {
+	if len(plan.Actions) != 3 || plan.Actions[0].Kind != ActionPull || plan.Actions[1].Kind != ActionCreate || plan.Actions[2].Kind != ActionStart {
 		t.Fatalf("actions: %+v", plan.Actions)
+	}
+	if got := plan.Actions[0].Command.Arguments; !slices.Equal(got, []string{"image", "pull", "--", "elasticmq:1.6.16"}) {
+		t.Fatalf("pull command: %v", got)
 	}
 	wantCreateArguments := []string{
 		"container", "create", "--name", "switchyard-create",
@@ -41,17 +44,17 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 		"--publish", "127.0.0.1:19325:9325/tcp",
 		"elasticmq:1.6.16",
 	}
-	if plan.Actions[0].Command.Executable != "docker-test" ||
-		!slices.Equal(plan.Actions[0].Command.Arguments, wantCreateArguments) {
-		t.Fatalf("create command: %+v", plan.Actions[0].Command)
+	if plan.Actions[1].Command.Executable != "docker-test" ||
+		!slices.Equal(plan.Actions[1].Command.Arguments, wantCreateArguments) {
+		t.Fatalf("create command: %+v", plan.Actions[1].Command)
 	}
-	if got := plan.Actions[1].Command.Arguments; !slices.Equal(got, []string{
+	if got := plan.Actions[2].Command.Arguments; !slices.Equal(got, []string{
 		"container", "start", "--", "switchyard-create",
 	}) {
 		t.Fatalf("start command: %v", got)
 	}
 	wantBindings := []PortBinding{requestedBindings[1], requestedBindings[0]}
-	for _, action := range plan.Actions {
+	for _, action := range plan.Actions[1:] {
 		if !slices.Equal(action.PortBindings, wantBindings) {
 			t.Fatalf("canonical action bindings: got %+v, want %+v", action.PortBindings, wantBindings)
 		}
@@ -109,7 +112,7 @@ func TestPlannerAllowsOneContainerPortOnMultipleIsolatedHostPorts(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Actions) != 2 || len(plan.Actions[0].PortBindings) != 2 {
+	if len(plan.Actions) != 3 || len(plan.Actions[1].PortBindings) != 2 {
 		t.Fatalf("shared target bindings were not preserved: %#v", plan.Actions)
 	}
 }
@@ -245,7 +248,7 @@ func TestPlannerProtectsForeignPartialAndSpoofedNameCollisions(t *testing.T) {
 		labels   map[string]string
 		wantCode ProtectionCode
 	}{
-		{name: "foreign", labels: map[string]string{"team": "marketplace"}, wantCode: ProtectionForeignCollision},
+		{name: "foreign", labels: map[string]string{"team": "sample"}, wantCode: ProtectionForeignCollision},
 		{name: "partial", labels: map[string]string{
 			LabelManagedBy: ManagedByValue, LabelEnvironmentID: identity.EnvironmentID,
 		}, wantCode: ProtectionUnsafeLabels},

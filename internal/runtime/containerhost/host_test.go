@@ -9,11 +9,11 @@ func TestHostDetectorReportsColimaAndDockerAvailability(t *testing.T) {
 	runner := &scriptedRunner{testing: t, runs: []scriptedRun{
 		{
 			command: Command{Executable: "docker-test", Arguments: []string{"context", "show"}},
-			output:  "colima-marketplace\n",
+			output:  "colima-sample\n",
 		},
 		{
-			command: Command{Executable: "colima-test", Arguments: []string{"status", "marketplace", "--json"}},
-			output:  `{"profile":"marketplace"}`,
+			command: Command{Executable: "colima-test", Arguments: []string{"status", "sample", "--json"}},
+			output:  `{"profile":"sample"}`,
 		},
 		{
 			command: Command{Executable: "docker-test", Arguments: []string{"info", "--format", "{{json .ServerVersion}}"}},
@@ -27,11 +27,11 @@ func TestHostDetectorReportsColimaAndDockerAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner.assertDone()
-	if !report.Colima.Installed || !report.Colima.Running || report.Colima.Profile != "marketplace" {
+	if !report.Colima.Installed || !report.Colima.Running || report.Colima.Profile != "sample" {
 		t.Fatalf("colima status: %+v", report.Colima)
 	}
 	if !report.Docker.CLIInstalled || !report.Docker.DaemonAvailable ||
-		report.Docker.Context != "colima-marketplace" || report.Docker.ServerVersion != "28.3.2" {
+		report.Docker.Context != "colima-sample" || report.Docker.ServerVersion != "28.3.2" {
 		t.Fatalf("docker status: %+v", report.Docker)
 	}
 }
