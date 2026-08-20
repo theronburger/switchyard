@@ -268,6 +268,14 @@ func (host *Host) stopLocked(ctx context.Context, ownershipPath string, ownershi
 		return host.persistStopped(ownershipPath, ownership, snapshots)
 	}
 
+	// Persisting the stable membership wrote and synced the ownership file;
+	// re-verify the group with nothing in between before the signal.
+	if snapshots, err = verifyOwnedGroup(ctx, host.inspector, ownership); err != nil {
+		return Observation{}, err
+	}
+	if activeProcessCount(snapshots) == 0 {
+		return host.persistStopped(ownershipPath, ownership, snapshots)
+	}
 	if err := host.signaler.SignalGroup(ownership.ProcessGroupID, syscall.SIGTERM); err != nil {
 		return Observation{}, err
 	}
@@ -281,6 +289,12 @@ func (host *Host) stopLocked(ctx context.Context, ownershipPath string, ownershi
 
 	remaining, err = host.persistStableMembership(ctx, ownershipPath, &ownership)
 	if err != nil {
+		return Observation{}, err
+	}
+	if activeProcessCount(remaining) == 0 {
+		return host.persistStopped(ownershipPath, ownership, remaining)
+	}
+	if remaining, err = verifyOwnedGroup(ctx, host.inspector, ownership); err != nil {
 		return Observation{}, err
 	}
 	if activeProcessCount(remaining) == 0 {

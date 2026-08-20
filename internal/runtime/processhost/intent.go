@@ -77,7 +77,7 @@ func validateLaunchIntent(path string, intent LaunchIntent) error {
 	}
 	if intent.CandidateLeader != nil {
 		candidate := *intent.CandidateLeader
-		if candidate.PID <= 1 || candidate.ProcessGroupID != candidate.PID || candidate.StartedAt.IsZero() ||
+		if candidate.PID <= 1 || candidate.ProcessGroupID != candidate.PID || unknownStartTime(candidate.StartedAt) ||
 			!validFingerprint(candidate.CommandFingerprint) {
 			return fmt.Errorf("%w: candidate leader identity is invalid", ErrLaunchIntentInvalid)
 		}
