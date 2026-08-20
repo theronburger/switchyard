@@ -615,10 +615,9 @@ func readSnapshotTransaction(ctx context.Context, transaction *sql.Tx) (contract
 	var revision int64
 	var payload []byte
 	err := transaction.QueryRowContext(ctx, `
-SELECT snapshot_head.revision, snapshot_revisions.payload_json
-FROM snapshot_head
-JOIN snapshot_revisions ON snapshot_revisions.revision = snapshot_head.revision
-WHERE snapshot_head.singleton = 1`).Scan(&revision, &payload)
+SELECT revision, payload_json
+FROM current_snapshot
+WHERE singleton = 1`).Scan(&revision, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contractv1.StatusSnapshot{}, ErrNoSnapshot
 	}

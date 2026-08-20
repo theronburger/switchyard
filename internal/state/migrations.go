@@ -128,6 +128,26 @@ ALTER TABLE operations ADD COLUMN phase TEXT NOT NULL DEFAULT '';
 ALTER TABLE operations ADD COLUMN run_id TEXT;
 `,
 	},
+	{
+		version: 6,
+		sql: `
+CREATE TABLE current_snapshot (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL,
+    payload_json BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+INSERT INTO current_snapshot(singleton, revision, payload_json, created_at)
+SELECT 1, snapshot_revisions.revision, snapshot_revisions.payload_json, snapshot_revisions.created_at
+FROM snapshot_head
+JOIN snapshot_revisions ON snapshot_revisions.revision = snapshot_head.revision
+WHERE snapshot_head.singleton = 1;
+
+DROP TABLE snapshot_head;
+DROP TABLE snapshot_revisions;
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {

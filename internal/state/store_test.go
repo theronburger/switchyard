@@ -93,6 +93,35 @@ func TestCommitSnapshotAdvancesRevisionAndSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestSnapshotStorageRemainsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	for revision := 0; revision < 2_000; revision++ {
+		snapshot := validSnapshot()
+		snapshot.Daemon.State = fmt.Sprintf("observation-%d", revision)
+		if _, err := store.CommitSnapshot(ctx, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var rowCount int
+	if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM current_snapshot").Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("current snapshot rows: got %d, want 1", rowCount)
+	}
+	for _, legacyTable := range []string{"snapshot_head", "snapshot_revisions"} {
+		var count int
+		if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", legacyTable).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("legacy snapshot table %q still exists", legacyTable)
+		}
+	}
+}
+
 func TestConcurrentSnapshotCommitsRemainAtomic(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
@@ -519,6 +548,26 @@ func TestEventsResumeFromCursor(t *testing.T) {
 	}
 	if got, want := secondPage.Events[0].ID, "event_3"; got != want {
 		t.Fatalf("resumed event: got %q, want %q", got, want)
+	}
+}
+
+func TestEventHistoryRemainsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	for index := 1; index <= retainedEventLimit+25; index++ {
+		if _, err := store.AppendEvent(ctx, events.NewEvent{
+			ID: fmt.Sprintf("bounded_event_%d", index), Kind: "observation", Revision: int64(index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var count int
+	if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != retainedEventLimit {
+		t.Fatalf("retained events: got %d, want %d", count, retainedEventLimit)
 	}
 }
 

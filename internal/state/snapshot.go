@@ -79,7 +79,7 @@ func (store *Store) commitSnapshotTransaction(
 	snapshot contractv1.StatusSnapshot,
 ) (contractv1.StatusSnapshot, error) {
 	var currentRevision int64
-	err := transaction.QueryRowContext(ctx, "SELECT revision FROM snapshot_head WHERE singleton = 1").Scan(&currentRevision)
+	err := transaction.QueryRowContext(ctx, "SELECT revision FROM current_snapshot WHERE singleton = 1").Scan(&currentRevision)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return contractv1.StatusSnapshot{}, fmt.Errorf("read status revision: %w", err)
 	}
@@ -96,18 +96,16 @@ func (store *Store) commitSnapshotTransaction(
 		return contractv1.StatusSnapshot{}, fmt.Errorf("encode status snapshot: %w", err)
 	}
 
-	if _, err := transaction.ExecContext(
-		ctx,
-		"INSERT INTO snapshot_revisions(revision, payload_json, created_at) VALUES (?, ?, ?)",
+	if _, err := transaction.ExecContext(ctx, `
+INSERT INTO current_snapshot(singleton, revision, payload_json, created_at) VALUES (1, ?, ?, ?)
+ON CONFLICT(singleton) DO UPDATE SET
+    revision = excluded.revision,
+    payload_json = excluded.payload_json,
+    created_at = excluded.created_at`,
 		snapshot.SnapshotRevision,
 		payload,
 		snapshot.GeneratedAt.Format(timeFormat),
 	); err != nil {
-		return contractv1.StatusSnapshot{}, fmt.Errorf("persist status snapshot: %w", err)
-	}
-	if _, err := transaction.ExecContext(ctx, `
-INSERT INTO snapshot_head(singleton, revision) VALUES (1, ?)
-ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision`, snapshot.SnapshotRevision); err != nil {
 		return contractv1.StatusSnapshot{}, fmt.Errorf("advance status snapshot: %w", err)
 	}
 	return snapshot, nil
@@ -117,10 +115,9 @@ func (store *Store) ReadSnapshot(ctx context.Context) (contractv1.StatusSnapshot
 	var revision int64
 	var payload []byte
 	err := store.database.QueryRowContext(ctx, `
-SELECT snapshot_head.revision, snapshot_revisions.payload_json
-FROM snapshot_head
-JOIN snapshot_revisions ON snapshot_revisions.revision = snapshot_head.revision
-WHERE snapshot_head.singleton = 1`).Scan(&revision, &payload)
+SELECT revision, payload_json
+FROM current_snapshot
+WHERE singleton = 1`).Scan(&revision, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contractv1.StatusSnapshot{}, ErrNoSnapshot
 	}
@@ -145,10 +142,9 @@ func (store *Store) commitOperationsSnapshot(ctx context.Context, transaction *s
 	var revision int64
 	var payload []byte
 	err := transaction.QueryRowContext(ctx, `
-SELECT snapshot_head.revision, snapshot_revisions.payload_json
-FROM snapshot_head
-JOIN snapshot_revisions ON snapshot_revisions.revision = snapshot_head.revision
-WHERE snapshot_head.singleton = 1`).Scan(&revision, &payload)
+SELECT revision, payload_json
+FROM current_snapshot
+WHERE singleton = 1`).Scan(&revision, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}

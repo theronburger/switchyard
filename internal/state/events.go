@@ -11,6 +11,8 @@ import (
 	"github.com/theronburger/switchyard/internal/events"
 )
 
+const retainedEventLimit = 10_000
+
 func (store *Store) AppendEvent(ctx context.Context, newEvent events.NewEvent) (events.Event, error) {
 	if newEvent.ID == "" {
 		return events.Event{}, errors.New("event id is required")
@@ -33,7 +35,13 @@ func (store *Store) AppendEvent(ctx context.Context, newEvent events.NewEvent) (
 		newEvent.OccurredAt = newEvent.OccurredAt.UTC()
 	}
 
-	result, err := store.database.ExecContext(ctx, `
+	transaction, err := store.database.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return events.Event{}, fmt.Errorf("begin event append: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	result, err := transaction.ExecContext(ctx, `
 INSERT INTO events(id, snapshot_revision, kind, environment_id, occurred_at, payload_json)
 VALUES (?, ?, ?, NULLIF(?, ''), ?, ?)`,
 		newEvent.ID,
@@ -46,9 +54,17 @@ VALUES (?, ?, ?, NULLIF(?, ''), ?, ?)`,
 	if err != nil {
 		return events.Event{}, fmt.Errorf("append event: %w", err)
 	}
+	if _, err := transaction.ExecContext(ctx, `
+DELETE FROM events
+WHERE sequence <= COALESCE((SELECT MAX(sequence) - ? FROM events), 0)`, retainedEventLimit); err != nil {
+		return events.Event{}, fmt.Errorf("prune event history: %w", err)
+	}
 	sequence, err := result.LastInsertId()
 	if err != nil {
 		return events.Event{}, fmt.Errorf("read event cursor: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return events.Event{}, fmt.Errorf("commit event append: %w", err)
 	}
 	return events.Event{
 		Cursor:        events.Cursor(sequence),
