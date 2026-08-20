@@ -52,43 +52,6 @@ sy doctor
 
 `sy status` resolves the containing known worktree, even from a child directory. `--all` is the deliberate machine-wide inventory. Environment and worktree mutations are also available through the app and the installed MCP server.
 
-### Codex local environments
-
-Codex-created worktrees remain Codex-owned and appear in Switchyard as `adopted`. Switchyard may prepare and run them, but it never archives or removes them. Put this in Codex's local-environment setup script:
-
-```bash
-sy prepare . --wait
-```
-
-For Marketplace, preparation reads the repository's `.nvmrc`, provisions that Node version through NVM when necessary, invokes the repository-pinned Yarn release with `install --immutable`, and verifies `node_modules` plus Yarn's install state. Switchyard fingerprints the relevant manifests and lockfile, so an unchanged prepared worktree is a verified no-op. The `--wait` flow tolerates discovery and daemon restarts, retries an interrupted automatic preparation, and applies one five-minute bound to the complete command. Do not add a separate `yarn install` command to the Codex setup script.
-
-Use this cleanup script so Codex waits for Switchyard's owned processes, ports, and infrastructure to stop before removing its worktree:
-
-```bash
-sy stop . --if-running --wait
-```
-
-Useful local-toolbar actions are:
-
-```bash
-# Open the command center to choose a target and services.
-open -a Switchyard
-
-# Inspect the exact worktree behind the current Codex task.
-sy status
-
-# Re-verify and hydrate the worktree without starting services.
-sy prepare . --wait
-
-# Example service-specific action; customize the service IDs for the task.
-sy start . app api --target testing --wait
-
-# Stop the current worktree without failing when it is already stopped.
-sy stop . --if-running --wait
-```
-
-Do not use `sy archive-worktree` in a Codex cleanup hook. Codex owns these checkouts and performs its own snapshot and deletion flow.
-
 Switchyard currently ships one rich repository adapter: Marketplace. The core lifecycle and contracts remain repository-neutral, but the product deliberately does not pretend a generic plugin framework exists before a second real repository needs one.
 
 ## Agent connections
