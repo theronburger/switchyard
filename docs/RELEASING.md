@@ -94,6 +94,8 @@ xattr -dr com.apple.quarantine "/Applications/Switchyard.app"
 open -a "Switchyard"
 ```
 
+`generate_appcast` only warns, and writes an unsigned item, when the supplied private key does not match the app's embedded `SUPublicEDKey`; it never emits a `sparkle-signatures` comment. The workflow therefore derives the public key from the seed and compares it with the bundle before generating the appcast, and `scripts/verify-appcast.sh` refuses an item without `sparkle:edSignature`.
+
 `scripts/verify-appcast.sh` runs in the release workflow against the generated `appcast.xml` and can be run against a published feed as well; it proves the single item advertises the exact version, the tagged GitHub asset URL, an Ed25519 signature, and the app's minimum system version.
 
 Confirm that the app installs the bundled daemon, the generated LaunchAgent includes `AssociatedBundleIdentifiers = [com.theronburger.switchyard]`, Connection Doctor can inspect and repair detected agents, `sy doctor` passes, the Cask renders the expected release URL and checksum, and **Check for Updates…** reads the signed appcast. A changed LaunchAgent plist must boot out and bootstrap only `com.theronburger.switchyard.daemon`; a helper-only update uses the scoped kickstart path.
