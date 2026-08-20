@@ -52,7 +52,7 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, grace time.Duration) Outcome 
 		cmd.WaitDelay = grace
 	}
 	pid := cmd.Process.Pid
-	exited, stop, err := watchExit(pid)
+	exited, stop, err := WatchExit(pid)
 	if err != nil {
 		// The watch could not be established and Wait has not run, so the
 		// child is still unreaped: stop it now rather than run unsupervised.
@@ -107,10 +107,12 @@ func waitExit(exited <-chan struct{}, grace time.Duration) bool {
 	}
 }
 
-// watchExit returns a channel that is closed once the process with pid has
-// exited (it may still be an unreaped zombie). A process that has already
-// exited yields an immediately closed channel.
-func watchExit(pid int) (<-chan struct{}, func(), error) {
+// WatchExit returns a channel that is closed once the process with pid has
+// exited (it may still be an unreaped zombie), plus a stop function that
+// releases the watch. A process that has already exited yields an immediately
+// closed channel. The caller must be the process's parent and must not have
+// reaped it, which is the only way the PID is guaranteed to denote it.
+func WatchExit(pid int) (<-chan struct{}, func(), error) {
 	exited := make(chan struct{})
 	queue, err := unix.Kqueue()
 	if err != nil {
