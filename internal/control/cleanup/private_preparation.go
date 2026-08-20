@@ -169,7 +169,9 @@ func (planner PrivatePreparationPlanner) Remove(ctx context.Context, candidate C
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !pathContained(filepath.Join(planner.RuntimeRoot, "repositories"), candidate.Path) {
+	if !cleanAbsoluteDirectory(planner.RuntimeRoot) ||
+		!pathContained(filepath.Join(planner.RuntimeRoot, "repositories"), candidate.Path) ||
+		!realDirectoryChain(planner.RuntimeRoot, candidate.Path) {
 		return ErrProtectedResource
 	}
 	inspected, err := inspectCandidate(candidate.Path, candidate.ProfileKey, candidate.WorktreeID, candidate.Fingerprint)
@@ -293,12 +295,42 @@ func validMarker(path, stepID string) bool {
 	return marker.SchemaVersion == 1 && marker.Kind == "preparation-step" && marker.StepID == stepID
 }
 
+// readOptionalDirectory lists a fixed-name component of the private runtime
+// tree. A missing component is empty; a component that is not a real
+// directory (a symlink in particular) is refused, because every path derived
+// from it would otherwise be reported, and later removed, as if it were
+// inside the runtime root.
 func readOptionalDirectory(path string) ([]fs.DirEntry, error) {
-	entries, err := os.ReadDir(path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []fs.DirEntry{}, nil
 	}
-	return entries, err
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, ErrProtectedResource
+	}
+	return os.ReadDir(path)
+}
+
+// realDirectoryChain proves that every component from root down to path is a
+// real directory, never a symlink, so a lexically contained path is also
+// physically contained.
+func realDirectoryChain(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	current := root
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func directoryEntrySafe(entry fs.DirEntry, path string) bool {

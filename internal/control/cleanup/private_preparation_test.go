@@ -103,3 +103,57 @@ func createOwnedPreparation(t *testing.T, root, profile, worktree, fingerprint, 
 	}
 	return filepath.Dir(directory)
 }
+
+// TestCleanupNeverFollowsSymlinkedFixedComponents proves that a symlink at one
+// of the fixed path components (repositories, preparation) neither produces a
+// candidate whose reported path lies about its location nor lets Remove delete
+// anything outside the runtime root.
+func TestCleanupNeverFollowsSymlinkedFixedComponents(t *testing.T) {
+	outside := t.TempDir()
+	fingerprint := strings.Repeat("e", 64)
+	decoy := createOwnedPreparation(t, outside, "sample", "worktree_01", fingerprint, "install")
+
+	// preparation -> outside directory holding a structurally valid decoy.
+	runtimeRoot := t.TempDir()
+	worktreeRoot := filepath.Join(runtimeRoot, "repositories", "sample", "worktree_01")
+	if err := os.MkdirAll(worktreeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Dir(decoy), filepath.Join(worktreeRoot, "preparation")); err != nil {
+		t.Fatal(err)
+	}
+	planner := PrivatePreparationPlanner{RuntimeRoot: runtimeRoot, CurrentFingerprints: map[string]string{}}
+	if _, err := planner.Inventory(context.Background(), Scope{Kind: "global"}); err == nil {
+		t.Fatal("inventory followed a symlinked preparation component")
+	}
+	// A plan that somehow named the decoy through the symlink is refused.
+	candidate := Candidate{
+		ID: "decoy", Kind: "private-preparation", Path: filepath.Join(worktreeRoot, "preparation", fingerprint),
+		ProfileKey: "sample", WorktreeID: "worktree_01", Fingerprint: fingerprint,
+	}
+	if err := planner.Remove(context.Background(), candidate); err == nil {
+		t.Fatal("remove followed a symlinked preparation component")
+	}
+	if _, err := os.Lstat(decoy); err != nil {
+		t.Fatalf("decoy outside the runtime root was removed: %v", err)
+	}
+
+	// repositories -> outside directory.
+	linkedRoot := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "repositories"), filepath.Join(linkedRoot, "repositories")); err != nil {
+		t.Fatal(err)
+	}
+	linked := PrivatePreparationPlanner{RuntimeRoot: linkedRoot, CurrentFingerprints: map[string]string{}}
+	if _, err := linked.Inventory(context.Background(), Scope{Kind: "global"}); err == nil {
+		t.Fatal("inventory followed a symlinked repositories component")
+	}
+	if err := linked.Remove(context.Background(), Candidate{
+		ID: "decoy", Kind: "private-preparation", Path: filepath.Join(linkedRoot, "repositories", "sample", "worktree_01", "preparation", fingerprint),
+		ProfileKey: "sample", WorktreeID: "worktree_01", Fingerprint: fingerprint,
+	}); err == nil {
+		t.Fatal("remove followed a symlinked repositories component")
+	}
+	if _, err := os.Lstat(decoy); err != nil {
+		t.Fatalf("decoy outside the runtime root was removed: %v", err)
+	}
+}
