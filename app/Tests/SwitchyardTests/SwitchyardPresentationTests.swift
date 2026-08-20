@@ -368,6 +368,22 @@ struct SwitchyardPresentationTests {
                 size: CGSize(width: 1_180, height: 760),
                 appearance: .dark)
         ))
+        let occupiedFixtureURL = try makeOccupiedWorktreeFixture()
+        defer { try? FileManager.default.removeItem(at: occupiedFixtureURL.deletingLastPathComponent()) }
+        let occupiedModel = AppModel(scenario: .canonical, canonicalFixtureURL: occupiedFixtureURL)
+        await occupiedModel.refresh()
+        let occupiedSnapshot = try #require(occupiedModel.snapshot)
+        let occupiedWorktree = try #require(occupiedSnapshot.repositories[0].worktrees.first)
+        #expect(occupiedWorktree.heldOccupancy.map(\.holderLabel) == ["Codex task"])
+        #expect(occupiedWorktree.heldOccupancy.first?.state == .held)
+        occupiedModel.selection = .worktree(repositoryId: occupiedSnapshot.repositories[0].id, worktreeId: occupiedWorktree.id)
+        renders.append((
+            "worktree-occupied-tall-light",
+            try render(
+                AnyView(CommandCenterView(model: occupiedModel)),
+                size: CGSize(width: 1_180, height: 1_500),
+                appearance: .light)
+        ))
         model.selection = .repository(snapshot.repositories[0].id)
         renders.append((
             "repository-settings-wide-dark",
@@ -523,6 +539,34 @@ struct SwitchyardPresentationTests {
         environment["services"] = services
         environments[0] = environment
         root["environments"] = environments
+
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fixture = directory.appending(path: "status.json", directoryHint: .notDirectory)
+        try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            .write(to: fixture, options: .atomic)
+        return fixture
+    }
+
+    /// The canonical fixture with one explicit handoff lease on its worktree,
+    /// so the Handed off section renders without claiming occupancy in the
+    /// shared fixture itself.
+    private func makeOccupiedWorktreeFixture() throws -> URL {
+        let source = try Data(contentsOf: Self.fixtureURL)
+        var root = try #require(JSONSerialization.jsonObject(with: source) as? [String: Any])
+        var repositories = try #require(root["repositories"] as? [[String: Any]])
+        var worktrees = try #require(repositories[0]["worktrees"] as? [[String: Any]])
+        worktrees[0]["occupancy"] = [[
+            "id": "occupancy_01K2A2D3G2WQ7V9ZB6T1N8R5MC",
+            "worktreeId": worktrees[0]["id"] as Any,
+            "holderKind": "agent-task",
+            "holderLabel": "Codex task",
+            "state": "held",
+            "acquiredAt": "2026-08-14T09:40:00Z",
+        ]]
+        repositories[0]["worktrees"] = worktrees
+        root["repositories"] = repositories
 
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
