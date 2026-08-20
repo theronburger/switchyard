@@ -155,6 +155,7 @@ func (coordinator *Coordinator) observeRunningEnvironment(
 		report, healthError := coordinator.readiness.CheckHealth(ctx, ReadinessTarget{
 			EnvironmentID: current.EnvironmentID,
 			RunID:         current.RunID,
+			ProfileDigest: current.ProfileDigest,
 			Service:       *cloneService(service),
 			Ports:         cloneLeases(current.Ports),
 			Spec:          service.Readiness,

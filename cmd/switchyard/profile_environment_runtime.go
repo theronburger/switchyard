@@ -132,7 +132,8 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 			}
 		}
 	}
-	journal, err := state.NewEnvironmentJournal(store, configuredEnvironmentProjector(environments))
+	projection := newConfiguredProjectionIndex(environments)
+	journal, err := state.NewEnvironmentJournal(store, projection.projector())
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +151,12 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		}
 		return &environmentRuntime{}, nil
 	}
-	registry, err := profilecontrol.NewRegistry(registrations)
+	pinnedRegistrations, pinnedEnvironments, err := recoverPinnedProfiles(ctx, store, journal, registrations, environments)
+	if err != nil {
+		return nil, err
+	}
+	projection.addPinned(pinnedEnvironments)
+	registry, err := profilecontrol.NewRegistry(registrations, pinnedRegistrations...)
 	if err != nil {
 		return nil, err
 	}
@@ -393,141 +399,276 @@ func configuredServices(profile configuration.Repository, requested []string) ([
 	return ids, nil
 }
 
-func configuredEnvironmentProjector(environments []configuredEnvironment) state.EnvironmentProjector {
-	byID := make(map[string]configuredEnvironment, len(environments))
-	for _, environment := range environments {
-		byID[environment.EnvironmentID] = environment
+// pinnedProfileReference names one accepted repository-profile digest that a
+// durable environment resource still depends on.
+type pinnedProfileReference struct {
+	EnvironmentID string
+	ProfileDigest string
+}
+
+// recoverPinnedProfiles finds every durable environment result or incomplete
+// operation pinned to a repository-profile digest other than the accepted head
+// and compiles a registration from the exact retained payload. A referenced
+// digest whose payload is no longer retained fails boot closed; the daemon never
+// substitutes the head for a pinned run.
+func recoverPinnedProfiles(
+	ctx context.Context,
+	store *state.Store,
+	journal *state.EnvironmentJournal,
+	registrations []profilecontrol.Registration,
+	environments []configuredEnvironment,
+) ([]profilecontrol.Registration, []configuredEnvironment, error) {
+	currentRegistrations := make(map[string]profilecontrol.Registration, len(registrations))
+	for _, registration := range registrations {
+		currentRegistrations[registration.EnvironmentID] = registration
 	}
+	currentEnvironments := make(map[string]configuredEnvironment, len(environments))
+	for _, environment := range environments {
+		currentEnvironments[environment.EnvironmentID] = environment
+	}
+	references := make(map[pinnedProfileReference]struct{})
+	after := ""
+	for {
+		page, err := journal.ListCurrent(ctx, after, state.MaximumCurrentEnvironmentPageSize)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, result := range page.Results {
+			references[pinnedProfileReference{EnvironmentID: result.EnvironmentID, ProfileDigest: result.ProfileDigest}] = struct{}{}
+		}
+		if !page.HasMore {
+			break
+		}
+		after = page.NextEnvironmentID
+	}
+	incomplete, err := journal.Incomplete(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, record := range incomplete {
+		if record.Intent != nil {
+			references[pinnedProfileReference{EnvironmentID: record.EnvironmentID, ProfileDigest: record.Intent.ProfileDigest}] = struct{}{}
+		}
+	}
+	ordered := make([]pinnedProfileReference, 0, len(references))
+	for reference := range references {
+		ordered = append(ordered, reference)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		if ordered[left].EnvironmentID != ordered[right].EnvironmentID {
+			return ordered[left].EnvironmentID < ordered[right].EnvironmentID
+		}
+		return ordered[left].ProfileDigest < ordered[right].ProfileDigest
+	})
+	pinnedRegistrations := make([]profilecontrol.Registration, 0)
+	pinnedEnvironments := make([]configuredEnvironment, 0)
+	for _, reference := range ordered {
+		registration, found := currentRegistrations[reference.EnvironmentID]
+		metadata, foundMetadata := currentEnvironments[reference.EnvironmentID]
+		if !found || !foundMetadata {
+			return nil, nil, errors.New("a persisted environment no longer belongs to an accepted repository profile")
+		}
+		if reference.ProfileDigest == "" || reference.ProfileDigest == registration.ProfileDigest {
+			continue
+		}
+		profile, err := store.PinnedRepositoryProfile(ctx, registration.ProfileKey, reference.ProfileDigest)
+		if err != nil {
+			return nil, nil, errors.New("a persisted environment is pinned to a configuration revision that is no longer retained")
+		}
+		values, err := profilecontrol.ReadValues(profile, registration.RepositoryRoot, registration.WorktreeRoot)
+		if err != nil {
+			return nil, nil, err
+		}
+		pinned := registration
+		pinned.ProfileDigest = reference.ProfileDigest
+		pinned.Profile = profile
+		pinned.Values = values
+		pinnedRegistrations = append(pinnedRegistrations, pinned)
+		pinnedMetadata := metadata
+		pinnedMetadata.ProfileDigest = reference.ProfileDigest
+		pinnedMetadata.Profile = profile
+		pinnedEnvironments = append(pinnedEnvironments, pinnedMetadata)
+	}
+	return pinnedRegistrations, pinnedEnvironments, nil
+}
+
+// configuredProjectionIndex resolves the profile metadata used to project a
+// persisted environment result into the public snapshot. A result pinned to an
+// older accepted digest projects through that exact profile, so a service
+// removed from the head revision still renders while its run is alive.
+type configuredProjectionIndex struct {
+	current map[string]configuredEnvironment
+	pinned  map[pinnedProfileReference]configuredEnvironment
+}
+
+func newConfiguredProjectionIndex(environments []configuredEnvironment) *configuredProjectionIndex {
+	index := &configuredProjectionIndex{
+		current: make(map[string]configuredEnvironment, len(environments)),
+		pinned:  make(map[pinnedProfileReference]configuredEnvironment),
+	}
+	for _, environment := range environments {
+		index.current[environment.EnvironmentID] = environment
+	}
+	return index
+}
+
+func (index *configuredProjectionIndex) addPinned(environments []configuredEnvironment) {
+	for _, environment := range environments {
+		index.pinned[pinnedProfileReference{EnvironmentID: environment.EnvironmentID, ProfileDigest: environment.ProfileDigest}] = environment
+	}
+}
+
+func (index *configuredProjectionIndex) lookup(environmentID, profileDigest string) (configuredEnvironment, bool) {
+	metadata, found := index.current[environmentID]
+	if !found {
+		return configuredEnvironment{}, false
+	}
+	if profileDigest == "" || profileDigest == metadata.ProfileDigest {
+		return metadata, true
+	}
+	pinned, found := index.pinned[pinnedProfileReference{EnvironmentID: environmentID, ProfileDigest: profileDigest}]
+	return pinned, found
+}
+
+func (index *configuredProjectionIndex) projector() state.EnvironmentProjector {
 	return func(current *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
-		metadata, found := byID[result.EnvironmentID]
-		if !found {
-			return contractv2.Environment{}, errors.New("environment metadata is unavailable")
-		}
-		desired, observed := projectedLifecycleStates(result.State)
-		projected := contractv2.Environment{
-			ID: result.EnvironmentID, RepositoryID: metadata.RepositoryID, WorktreeID: metadata.Worktree.ID,
-			DisplayName: environmentDisplayName(metadata.Worktree), TargetID: result.TargetID,
-			DesiredState: desired, ObservedState: observed, Health: "unknown",
-			Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
-			URLs: map[string]string{}, AttentionAlertIDs: []string{},
-		}
+		return projectConfiguredEnvironment(index, current, result)
+	}
+}
+
+func configuredEnvironmentProjector(environments []configuredEnvironment) state.EnvironmentProjector {
+	return newConfiguredProjectionIndex(environments).projector()
+}
+
+func projectConfiguredEnvironment(index *configuredProjectionIndex, current *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
+	metadata, found := index.lookup(result.EnvironmentID, result.ProfileDigest)
+	if !found {
+		return contractv2.Environment{}, errors.New("environment metadata is unavailable")
+	}
+	desired, observed := projectedLifecycleStates(result.State)
+	projected := contractv2.Environment{
+		ID: result.EnvironmentID, RepositoryID: metadata.RepositoryID, WorktreeID: metadata.Worktree.ID,
+		DisplayName: environmentDisplayName(metadata.Worktree), TargetID: result.TargetID,
+		DesiredState: desired, ObservedState: observed, Health: "unknown",
+		Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
+		URLs: map[string]string{}, AttentionAlertIDs: []string{},
+	}
+	if current != nil {
+		projected.AttentionAlertIDs = append([]string(nil), current.AttentionAlertIDs...)
+	}
+	leasesByService := make(map[string][]string)
+	for _, lease := range result.Ports {
+		leaseID := stablePortLeaseID(lease.Key)
+		acquiredAt := result.UpdatedAt
 		if current != nil {
-			projected.AttentionAlertIDs = append([]string(nil), current.AttentionAlertIDs...)
-		}
-		leasesByService := make(map[string][]string)
-		for _, lease := range result.Ports {
-			leaseID := stablePortLeaseID(lease.Key)
-			acquiredAt := result.UpdatedAt
-			if current != nil {
-				for _, previous := range current.PortLeases {
-					if previous.ID == leaseID {
-						acquiredAt = previous.AcquiredAt
-					}
+			for _, previous := range current.PortLeases {
+				if previous.ID == leaseID {
+					acquiredAt = previous.AcquiredAt
 				}
 			}
-			projected.PortLeases = append(projected.PortLeases, contractv2.PortLease{
-				ID: leaseID, ServiceID: lease.Key.ServiceID, Purpose: lease.Key.Purpose,
-				Host: lease.Host, Port: lease.Port, State: "leased", AcquiredAt: acquiredAt,
-			})
-			leasesByService[lease.Key.ServiceID] = append(leasesByService[lease.Key.ServiceID], leaseID)
-			for _, published := range metadata.Profile.Services[lease.Key.ServiceID].Ports[lease.Key.Purpose].Publish {
-				host := lease.Host
-				if published.Host == "localhost" {
-					host = "localhost"
-				}
-				projected.URLs[published.Name] = published.Scheme + "://" + host + ":" + strconv.Itoa(lease.Port) + published.Path
-			}
 		}
-		results := make(map[string]environmentcontrol.ServiceResult, len(result.Services))
-		serviceIDs := make(map[string]struct{})
-		for _, service := range result.Services {
-			results[service.ID] = service
+		projected.PortLeases = append(projected.PortLeases, contractv2.PortLease{
+			ID: leaseID, ServiceID: lease.Key.ServiceID, Purpose: lease.Key.Purpose,
+			Host: lease.Host, Port: lease.Port, State: "leased", AcquiredAt: acquiredAt,
+		})
+		leasesByService[lease.Key.ServiceID] = append(leasesByService[lease.Key.ServiceID], leaseID)
+		for _, published := range metadata.Profile.Services[lease.Key.ServiceID].Ports[lease.Key.Purpose].Publish {
+			host := lease.Host
+			if published.Host == "localhost" {
+				host = "localhost"
+			}
+			projected.URLs[published.Name] = published.Scheme + "://" + host + ":" + strconv.Itoa(lease.Port) + published.Path
+		}
+	}
+	results := make(map[string]environmentcontrol.ServiceResult, len(result.Services))
+	serviceIDs := make(map[string]struct{})
+	for _, service := range result.Services {
+		results[service.ID] = service
+		serviceIDs[service.ID] = struct{}{}
+	}
+	for serviceID := range leasesByService {
+		serviceIDs[serviceID] = struct{}{}
+	}
+	if len(serviceIDs) == 0 && current != nil {
+		for _, service := range current.Services {
 			serviceIDs[service.ID] = struct{}{}
 		}
-		for serviceID := range leasesByService {
-			serviceIDs[serviceID] = struct{}{}
-		}
-		if len(serviceIDs) == 0 && current != nil {
-			for _, service := range current.Services {
-				serviceIDs[service.ID] = struct{}{}
-			}
-		}
-		ids := make([]string, 0, len(serviceIDs))
-		for id := range serviceIDs {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		allHealthy := len(ids) > 0 && result.State == domain.EnvironmentRunning
-		anyUnhealthy, degraded := false, false
-		for _, id := range ids {
-			definition, found := metadata.Profile.Services[id]
-			if !found {
-				return contractv2.Environment{}, errors.New("service metadata is unavailable")
-			}
-			serviceResult, running := results[id]
-			service := contractv2.Service{
-				ID: id, DisplayName: definition.DisplayName, Kind: definition.Kind,
-				DesiredState: desired, ObservedState: observed, Health: "unknown", PortLeaseIDs: append([]string(nil), leasesByService[id]...),
-			}
-			if running {
-				if serviceResult.Observation.State != "" {
-					service.ObservedState = serviceResult.Observation.State
-				}
-				service.Health = serviceResult.Health.Health
-				if service.Health == "" {
-					service.Health = "unknown"
-				}
-				service.ObservationCode = serviceResult.Observation.Code
-				processCount := len(serviceResult.Process.Members)
-				if !serviceResult.Observation.ObservedAt.IsZero() {
-					processCount = serviceResult.Observation.ProcessCount
-				}
-				service.Run = &contractv2.ServiceRun{
-					ID: result.RunID, StartedAt: serviceResult.Process.StartedAt, ProcessCount: processCount,
-					CPUPercent: serviceResult.Observation.CPUPercent, MemoryBytes: serviceResult.Observation.MemoryBytes,
-				}
-				if result.Source != nil {
-					service.Run.SourceRevision = result.Source.Revision
-					service.Run.SourceHasTrackedChanges = result.Source.HasTrackedChanges
-					service.Run.SourceHasUntrackedFiles = result.Source.HasUntrackedFiles
-					service.Run.SourceObservedAt = result.Source.ObservedAt
-				}
-				projected.Resources.MemoryBytes = saturatingResourceAdd(projected.Resources.MemoryBytes, serviceResult.Observation.MemoryBytes)
-				projected.Resources.CPUPercent += serviceResult.Observation.CPUPercent
-				if service.ObservedState != string(domain.EnvironmentRunning) || service.ObservationCode != "" {
-					degraded = true
-				}
-			}
-			if service.Health != "healthy" {
-				allHealthy = false
-			}
-			if service.Health == "unhealthy" {
-				anyUnhealthy = true
-			}
-			projected.Services = append(projected.Services, service)
-		}
-		if projected.Resources.CPUPercent > 100 {
-			projected.Resources.CPUPercent = 100
-		}
-		if allHealthy {
-			projected.Health = "healthy"
-		} else if anyUnhealthy {
-			projected.Health = "unhealthy"
-		} else if degraded || result.State == domain.EnvironmentRunning || result.State == domain.EnvironmentFailed || result.State == domain.EnvironmentOrphaned {
-			projected.Health = "degraded"
-		}
-		for _, goal := range result.Infrastructure {
-			projected.InfrastructureLeases = append(projected.InfrastructureLeases, contractv2.InfrastructureLease{
-				ID: stableInfrastructureLeaseID(goal.Identity), ServiceID: goal.Identity.ServiceID,
-				DisplayName: goal.Name, Kind: string(goal.Kind), Scope: "environment", State: string(goal.DesiredState), Ownership: "owned",
-			})
-		}
-		sort.Slice(projected.PortLeases, func(left, right int) bool { return projected.PortLeases[left].ID < projected.PortLeases[right].ID })
-		sort.Slice(projected.InfrastructureLeases, func(left, right int) bool {
-			return projected.InfrastructureLeases[left].ID < projected.InfrastructureLeases[right].ID
-		})
-		return projected, nil
 	}
+	ids := make([]string, 0, len(serviceIDs))
+	for id := range serviceIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	allHealthy := len(ids) > 0 && result.State == domain.EnvironmentRunning
+	anyUnhealthy, degraded := false, false
+	for _, id := range ids {
+		definition, found := metadata.Profile.Services[id]
+		if !found {
+			return contractv2.Environment{}, errors.New("service metadata is unavailable")
+		}
+		serviceResult, running := results[id]
+		service := contractv2.Service{
+			ID: id, DisplayName: definition.DisplayName, Kind: definition.Kind,
+			DesiredState: desired, ObservedState: observed, Health: "unknown", PortLeaseIDs: append([]string(nil), leasesByService[id]...),
+		}
+		if running {
+			if serviceResult.Observation.State != "" {
+				service.ObservedState = serviceResult.Observation.State
+			}
+			service.Health = serviceResult.Health.Health
+			if service.Health == "" {
+				service.Health = "unknown"
+			}
+			service.ObservationCode = serviceResult.Observation.Code
+			processCount := len(serviceResult.Process.Members)
+			if !serviceResult.Observation.ObservedAt.IsZero() {
+				processCount = serviceResult.Observation.ProcessCount
+			}
+			service.Run = &contractv2.ServiceRun{
+				ID: result.RunID, StartedAt: serviceResult.Process.StartedAt, ProcessCount: processCount,
+				CPUPercent: serviceResult.Observation.CPUPercent, MemoryBytes: serviceResult.Observation.MemoryBytes,
+			}
+			if result.Source != nil {
+				service.Run.SourceRevision = result.Source.Revision
+				service.Run.SourceHasTrackedChanges = result.Source.HasTrackedChanges
+				service.Run.SourceHasUntrackedFiles = result.Source.HasUntrackedFiles
+				service.Run.SourceObservedAt = result.Source.ObservedAt
+			}
+			projected.Resources.MemoryBytes = saturatingResourceAdd(projected.Resources.MemoryBytes, serviceResult.Observation.MemoryBytes)
+			projected.Resources.CPUPercent += serviceResult.Observation.CPUPercent
+			if service.ObservedState != string(domain.EnvironmentRunning) || service.ObservationCode != "" {
+				degraded = true
+			}
+		}
+		if service.Health != "healthy" {
+			allHealthy = false
+		}
+		if service.Health == "unhealthy" {
+			anyUnhealthy = true
+		}
+		projected.Services = append(projected.Services, service)
+	}
+	if projected.Resources.CPUPercent > 100 {
+		projected.Resources.CPUPercent = 100
+	}
+	if allHealthy {
+		projected.Health = "healthy"
+	} else if anyUnhealthy {
+		projected.Health = "unhealthy"
+	} else if degraded || result.State == domain.EnvironmentRunning || result.State == domain.EnvironmentFailed || result.State == domain.EnvironmentOrphaned {
+		projected.Health = "degraded"
+	}
+	for _, goal := range result.Infrastructure {
+		projected.InfrastructureLeases = append(projected.InfrastructureLeases, contractv2.InfrastructureLease{
+			ID: stableInfrastructureLeaseID(goal.Identity), ServiceID: goal.Identity.ServiceID,
+			DisplayName: goal.Name, Kind: string(goal.Kind), Scope: "environment", State: string(goal.DesiredState), Ownership: "owned",
+		})
+	}
+	sort.Slice(projected.PortLeases, func(left, right int) bool { return projected.PortLeases[left].ID < projected.PortLeases[right].ID })
+	sort.Slice(projected.InfrastructureLeases, func(left, right int) bool {
+		return projected.InfrastructureLeases[left].ID < projected.InfrastructureLeases[right].ID
+	})
+	return projected, nil
 }
 
 func stableConfiguredEnvironmentID(profileKey, worktreeID string) string {

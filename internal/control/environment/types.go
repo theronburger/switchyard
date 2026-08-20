@@ -193,9 +193,14 @@ type StopRequest struct {
 }
 
 type EnvironmentResult struct {
-	EnvironmentID  string
-	RunID          string
-	TargetID       string
+	EnvironmentID string
+	RunID         string
+	TargetID      string
+	// ProfileDigest is the accepted repository-profile digest the run was
+	// pinned to. It lets a restarted daemon recover the exact payload even
+	// after later configuration acceptances. Results persisted before the
+	// digest was recorded leave it empty and resolve to the current profile.
+	ProfileDigest  string
 	State          domain.EnvironmentState
 	Ports          []portlease.Lease
 	Projection     *ProjectionChange

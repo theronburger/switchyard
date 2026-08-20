@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/theronburger/switchyard/internal/configuration"
@@ -33,11 +34,27 @@ type Registration struct {
 	Profile            configuration.Repository
 }
 
+// Registry resolves the profile registration for an environment. Every
+// environment has exactly one current registration compiled from the accepted
+// configuration head. It may also carry pinned registrations compiled from
+// older accepted revisions that a durable run still references, so a daemon
+// restart after a later acceptance recovers the exact payload the run started
+// from instead of silently re-reading the head.
 type Registry struct {
 	byEnvironment map[string]Registration
+	pinned        map[pinnedRegistrationKey]Registration
 }
 
-func NewRegistry(registrations []Registration) (Registry, error) {
+type pinnedRegistrationKey struct {
+	environmentID string
+	profileDigest string
+}
+
+// NewRegistry builds a registry from current registrations plus optional
+// pinned registrations. A pinned registration must name an environment that
+// has a current registration and the same profile key; it may not duplicate
+// the current digest or another pinned digest.
+func NewRegistry(registrations []Registration, pinned ...Registration) (Registry, error) {
 	if len(registrations) == 0 {
 		return Registry{}, ErrProfileInvalid
 	}
@@ -51,15 +68,61 @@ func NewRegistry(registrations []Registration) (Registry, error) {
 		}
 		byEnvironment[registration.EnvironmentID] = registration
 	}
-	return Registry{byEnvironment: byEnvironment}, nil
+	pinnedByKey := make(map[pinnedRegistrationKey]Registration, len(pinned))
+	for _, registration := range pinned {
+		current, found := byEnvironment[registration.EnvironmentID]
+		if !found || !validRegistration(registration) || registration.ProfileKey != current.ProfileKey ||
+			registration.WorktreeID != current.WorktreeID || registration.ProfileDigest == current.ProfileDigest {
+			return Registry{}, ErrProfileInvalid
+		}
+		key := pinnedRegistrationKey{environmentID: registration.EnvironmentID, profileDigest: registration.ProfileDigest}
+		if _, duplicate := pinnedByKey[key]; duplicate {
+			return Registry{}, ErrProfileInvalid
+		}
+		pinnedByKey[key] = registration
+	}
+	return Registry{byEnvironment: byEnvironment, pinned: pinnedByKey}, nil
 }
 
+// Lookup returns the current registration for an environment.
 func (registry Registry) Lookup(environmentID string) (Registration, error) {
 	registration, found := registry.byEnvironment[environmentID]
 	if !found {
 		return Registration{}, ErrProfileInvalid
 	}
 	return registration, nil
+}
+
+// LookupPinned returns the registration compiled from exactly the accepted
+// profile digest a run is pinned to. An empty digest selects the current
+// registration for results persisted before pinning was recorded. A digest
+// that is neither current nor pinned is an error: a digest without its exact
+// payload is insufficient.
+func (registry Registry) LookupPinned(environmentID, profileDigest string) (Registration, error) {
+	current, err := registry.Lookup(environmentID)
+	if err != nil {
+		return Registration{}, err
+	}
+	if profileDigest == "" || profileDigest == current.ProfileDigest {
+		return current, nil
+	}
+	registration, found := registry.pinned[pinnedRegistrationKey{environmentID: environmentID, profileDigest: profileDigest}]
+	if !found {
+		return Registration{}, ErrProfileInvalid
+	}
+	return registration, nil
+}
+
+// PinnedDigests lists the non-current digests registered for an environment.
+func (registry Registry) PinnedDigests(environmentID string) []string {
+	digests := make([]string, 0)
+	for key := range registry.pinned {
+		if key.environmentID == environmentID {
+			digests = append(digests, key.profileDigest)
+		}
+	}
+	sort.Strings(digests)
+	return digests
 }
 
 func validRegistration(registration Registration) bool {

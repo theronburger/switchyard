@@ -58,6 +58,9 @@ type ProcessHost interface {
 type ReadinessTarget struct {
 	EnvironmentID string
 	RunID         string
+	// ProfileDigest pins readiness and health probes to the accepted profile
+	// the run started from. Empty for results persisted before pinning.
+	ProfileDigest string
 	Service       ServiceResult
 	Ports         []portlease.Lease
 	Spec          ReadinessSpec

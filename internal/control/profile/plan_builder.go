@@ -25,8 +25,11 @@ func NewPlanBuilder(registry Registry) PlanBuilder {
 }
 
 func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (environmentcontrol.ExecutionPlan, error) {
-	registration, err := builder.registry.Lookup(request.EnvironmentID)
-	if err != nil || request.Intent.ProfileDigest != registration.ProfileDigest || request.RunID == "" {
+	if request.Intent.ProfileDigest == "" || request.RunID == "" {
+		return environmentcontrol.ExecutionPlan{}, ErrProfileInvalid
+	}
+	registration, err := builder.registry.LookupPinned(request.EnvironmentID, request.Intent.ProfileDigest)
+	if err != nil {
 		return environmentcontrol.ExecutionPlan{}, ErrProfileInvalid
 	}
 	profile := registration.Profile

@@ -193,6 +193,7 @@ func (coordinator *Coordinator) publishStopped(
 		EnvironmentID: previous.EnvironmentID,
 		RunID:         previous.RunID,
 		TargetID:      previous.TargetID,
+		ProfileDigest: previous.ProfileDigest,
 		Source:        cloneSource(previous.Source),
 		State:         domain.EnvironmentStopped,
 		UpdatedAt:     coordinator.now().UTC(),

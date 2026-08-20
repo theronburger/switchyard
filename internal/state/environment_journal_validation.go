@@ -267,6 +267,7 @@ func validEnvironmentRefresh(
 	next environmentcontrol.EnvironmentResult,
 ) bool {
 	if current.EnvironmentID != next.EnvironmentID || current.RunID != next.RunID ||
+		current.TargetID != next.TargetID || current.ProfileDigest != next.ProfileDigest ||
 		current.State != domain.EnvironmentRunning || next.State != domain.EnvironmentRunning ||
 		!reflect.DeepEqual(current.Ports, next.Ports) || !reflect.DeepEqual(current.Projection, next.Projection) ||
 		!reflect.DeepEqual(current.Infrastructure, next.Infrastructure) ||

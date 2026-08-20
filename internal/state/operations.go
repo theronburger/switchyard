@@ -141,6 +141,10 @@ INSERT INTO operations(
 		_ = transaction.Rollback()
 		return contractv2.Operation{}, false, fmt.Errorf("persist operation: %w", err)
 	}
+	if err := pruneTerminalOperations(ctx, transaction); err != nil {
+		_ = transaction.Rollback()
+		return contractv2.Operation{}, false, err
+	}
 	if err := store.commitOperationsSnapshot(ctx, transaction); err != nil {
 		_ = transaction.Rollback()
 		return contractv2.Operation{}, false, err

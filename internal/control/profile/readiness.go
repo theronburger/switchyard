@@ -37,7 +37,7 @@ func (checker ReadinessChecker) WaitReady(ctx context.Context, target environmen
 		return err
 	}
 	maximumWait := checker.maximumWait
-	registration, lookupErr := checker.registry.Lookup(target.EnvironmentID)
+	registration, lookupErr := checker.registry.LookupPinned(target.EnvironmentID, target.ProfileDigest)
 	if lookupErr != nil {
 		return lookupErr
 	}
@@ -95,7 +95,7 @@ func (checker ReadinessChecker) CheckHealth(ctx context.Context, target environm
 }
 
 func (checker ReadinessChecker) probes(target environmentcontrol.ReadinessTarget) ([]health.ProbeSpec, []health.ProbeSpec, error) {
-	registration, err := checker.registry.Lookup(target.EnvironmentID)
+	registration, err := checker.registry.LookupPinned(target.EnvironmentID, target.ProfileDigest)
 	if err != nil || target.Service.ID == "" || target.Service.EnvironmentID != target.EnvironmentID ||
 		target.Service.RunID != target.RunID || target.Spec.ID != readinessID(target.Service.ID) {
 		return nil, nil, ErrProfileInvalid

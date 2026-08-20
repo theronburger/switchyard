@@ -121,14 +121,16 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		return EnvironmentResult{}, err
 	}
 
-	targetID := ""
+	targetID, profileDigest := "", ""
 	if request.Intent != nil {
 		targetID = request.Intent.TargetID
+		profileDigest = request.Intent.ProfileDigest
 	}
 	result := EnvironmentResult{
 		EnvironmentID: request.EnvironmentID,
 		RunID:         request.RunID,
 		TargetID:      targetID,
+		ProfileDigest: profileDigest,
 		State:         domain.EnvironmentStarting,
 		Source:        cloneSource(request.Source),
 		UpdatedAt:     coordinator.now().UTC(),
@@ -281,7 +283,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		}
 		for index, service := range stage {
 			err := coordinator.readiness.WaitReady(ctx, ReadinessTarget{
-				EnvironmentID: request.EnvironmentID, RunID: request.RunID,
+				EnvironmentID: request.EnvironmentID, RunID: request.RunID, ProfileDigest: result.ProfileDigest,
 				Service: result.Services[stageStart+index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,
 			})
 			if err != nil {
@@ -294,7 +296,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 	if len(services) != 0 {
 		for index, service := range services {
 			health, err := coordinator.readiness.CheckHealth(ctx, ReadinessTarget{
-				EnvironmentID: request.EnvironmentID, RunID: request.RunID,
+				EnvironmentID: request.EnvironmentID, RunID: request.RunID, ProfileDigest: result.ProfileDigest,
 				Service: result.Services[index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,
 			})
 			if err != nil {

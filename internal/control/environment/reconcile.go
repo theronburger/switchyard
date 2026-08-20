@@ -83,7 +83,8 @@ func (coordinator *Coordinator) reconcileStart(
 		}
 		result = EnvironmentResult{
 			EnvironmentID: operation.EnvironmentID, RunID: operation.RunID,
-			TargetID: operationTargetID(operation), State: domain.EnvironmentStopped,
+			TargetID: operationTargetID(operation), ProfileDigest: operationProfileDigest(operation),
+			State:     domain.EnvironmentStopped,
 			Source:    cloneSource(operation.Source),
 			UpdatedAt: coordinator.now().UTC(),
 		}
@@ -145,6 +146,7 @@ func environmentFromRollback(operation OperationRecord) EnvironmentResult {
 		EnvironmentID: operation.EnvironmentID,
 		RunID:         operation.RunID,
 		TargetID:      targetID,
+		ProfileDigest: operationProfileDigest(operation),
 		State:         operation.EnvironmentState,
 		Source:        cloneSource(operation.Source),
 	}
@@ -166,6 +168,13 @@ func environmentFromRollback(operation OperationRecord) EnvironmentResult {
 		}
 	}
 	return result
+}
+
+func operationProfileDigest(operation OperationRecord) string {
+	if operation.Intent == nil {
+		return ""
+	}
+	return operation.Intent.ProfileDigest
 }
 
 func operationTargetID(operation OperationRecord) string {

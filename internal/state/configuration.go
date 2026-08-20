@@ -155,6 +155,9 @@ ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision`, revision); e
 	if _, err := transaction.ExecContext(ctx, "DELETE FROM configuration_candidates WHERE digest = ?", digest); err != nil {
 		return ConfigurationRevision{}, fmt.Errorf("remove accepted configuration candidate: %w", err)
 	}
+	if err := pruneConfigurationRevisions(ctx, transaction); err != nil {
+		return ConfigurationRevision{}, err
+	}
 	if err := transaction.Commit(); err != nil {
 		return ConfigurationRevision{}, fmt.Errorf("commit configuration acceptance: %w", err)
 	}
@@ -248,4 +251,58 @@ func cloneStringMap(source map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+var ErrConfigurationRevisionMissing = errors.New("pinned configuration revision is not retained")
+
+// PinnedRepositoryProfile returns the exact repository profile whose accepted
+// per-repository digest matches. It searches every retained accepted revision,
+// newest first, so a run pinned to an older revision recovers its payload after
+// later acceptances. A digest without a retained payload is an error; callers
+// must not fall back to the head.
+func (store *Store) PinnedRepositoryProfile(
+	ctx context.Context,
+	profileKey string,
+	repositoryDigest string,
+) (configuration.Repository, error) {
+	if profileKey == "" || repositoryDigest == "" {
+		return configuration.Repository{}, errors.New("pinned profile key and digest are required")
+	}
+	rows, err := store.database.QueryContext(ctx, `
+SELECT revision, payload_json, repository_digests_json
+FROM configuration_revisions
+ORDER BY revision DESC`)
+	if err != nil {
+		return configuration.Repository{}, fmt.Errorf("read accepted configuration revisions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var revision int64
+		var payload, repositoryDigests []byte
+		if err := rows.Scan(&revision, &payload, &repositoryDigests); err != nil {
+			return configuration.Repository{}, fmt.Errorf("scan accepted configuration revision: %w", err)
+		}
+		var digests map[string]string
+		if err := json.Unmarshal(repositoryDigests, &digests); err != nil {
+			return configuration.Repository{}, fmt.Errorf("decode repository digests for revision %d: %w", revision, err)
+		}
+		if digests[profileKey] != repositoryDigest {
+			continue
+		}
+		var document configuration.Document
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&document); err != nil {
+			return configuration.Repository{}, fmt.Errorf("decode accepted configuration revision %d: %w", revision, err)
+		}
+		repository, found := document.Repositories[profileKey]
+		if !found {
+			return configuration.Repository{}, fmt.Errorf("accepted configuration revision %d does not contain %q", revision, profileKey)
+		}
+		return repository, nil
+	}
+	if err := rows.Err(); err != nil {
+		return configuration.Repository{}, fmt.Errorf("iterate accepted configuration revisions: %w", err)
+	}
+	return configuration.Repository{}, ErrConfigurationRevisionMissing
 }
