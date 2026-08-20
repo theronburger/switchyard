@@ -100,6 +100,7 @@ func TestCleanupHTTPPublishesClaimConflictsAndInterruption(t *testing.T) {
 		}
 		request := httptest.NewRequest(http.MethodPost, "/v1/cleanup/plans/cleanup_plan_01/apply", strings.NewReader(`{"schemaVersion":2,"planId":"cleanup_plan_01","expectedRevision":1,"candidateIds":[]}`))
 		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set(contractv2.SchemaVersionHeader, "2")
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)

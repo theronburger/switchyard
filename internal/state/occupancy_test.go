@@ -241,7 +241,7 @@ func TestReleasedOccupancyHistoryIsBounded(t *testing.T) {
 	}
 }
 
-func TestMigration11AddsOccupancyToAnExisting010Database(t *testing.T) {
+func TestMigration12AddsOccupancyToAnExistingV11Database(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	store := openTestStore(t, path)
@@ -251,7 +251,7 @@ func TestMigration11AddsOccupancyToAnExisting010Database(t *testing.T) {
 	// Roll the ledger back to a database that predates occupancy leases.
 	for _, statement := range []string{
 		"DROP TABLE occupancy_leases",
-		"DELETE FROM schema_migrations WHERE version = 11",
+		"DELETE FROM schema_migrations WHERE version = 12",
 	} {
 		if _, err := store.database.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
@@ -262,7 +262,7 @@ func TestMigration11AddsOccupancyToAnExisting010Database(t *testing.T) {
 	}
 	migrated := openTestStore(t, path)
 	var version int
-	if err := migrated.database.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 11 {
+	if err := migrated.database.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 12 {
 		t.Fatalf("schema version after reopen: %d %v", version, err)
 	}
 	if _, _, err := migrated.AcquireOccupancy(ctx, NewOccupancyLease{
