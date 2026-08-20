@@ -21,6 +21,7 @@ import (
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
+	"github.com/theronburger/switchyard/internal/runtime/finiterun"
 	"github.com/theronburger/switchyard/internal/runtime/health"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
 	"github.com/theronburger/switchyard/internal/runtime/processhost"
@@ -51,6 +52,12 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return nil, err
 		}
+		// Ownership evidence is only ever written beneath an owner-only
+		// directory, so a root left wider by an earlier version is narrowed
+		// before any runner consults it.
+		if err := os.Chmod(directory, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	// A finite action the previous daemon left running is stopped through
 	// its persisted, positively verified ownership before any profile is
@@ -59,6 +66,14 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	// counted and left alone.
 	actionProcesses := actioncontrol.NewProcessHost()
 	if _, err := actioncontrol.RecoverInterruptedRuns(ctx, actionProcesses, runtimeRoot); err != nil {
+		return nil, err
+	}
+	// Likewise for a workspace preparation step or environment initialization
+	// command the previous daemon left running: its preparation or start is
+	// failed as interrupted below, so its group is stopped first through the
+	// same persisted, positively verified ownership.
+	preparationProcesses := finiterun.NewProcessHost()
+	if _, err := finiterun.RecoverInterruptedRuns(ctx, preparationProcesses, runtimeRoot); err != nil {
 		return nil, err
 	}
 	// A preparation interrupted by the previous daemon is failed before any
@@ -176,7 +191,8 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		}
 		workspaceCoordinator, err = workspacecontrol.NewCoordinator(workspacecontrol.Config{
 			Journal: workspaceJournal, Planner: workspacePlanner,
-			Runner: workspacecontrol.ExactStepRunner{RuntimeRoot: runtimeRoot}, Verifier: workspacecontrol.OSRequirementVerifier{},
+			Runner:   workspacecontrol.ExactStepRunner{RuntimeRoot: runtimeRoot, Processes: preparationProcesses},
+			Verifier: workspacecontrol.OSRequirementVerifier{},
 		})
 		if err != nil {
 			return nil, err
@@ -217,7 +233,8 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	}
 	coordinator, err := environmentcontrol.NewCoordinator(environmentcontrol.Config{
 		Journal: journal, Ports: ports, Planner: profilecontrol.NewPlanBuilder(registry),
-		Preparations: profilecontrol.FiniteRunner{}, Projections: profilecontrol.NewArtifactMaterializer(registry),
+		Preparations:   profilecontrol.FiniteRunner{RuntimeRoot: runtimeRoot, Processes: preparationProcesses},
+		Projections:    profilecontrol.NewArtifactMaterializer(registry),
 		Infrastructure: infrastructure,
 		Processes:      processhost.New(processhost.Config{}), Readiness: readiness, RollbackTimeout: 45 * time.Second,
 	})
