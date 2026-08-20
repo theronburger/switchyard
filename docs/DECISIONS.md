@@ -122,6 +122,12 @@ Pinned operation intent identifies the accepted repository-profile digest, not a
 
 Durable state is bounded transactionally: one current snapshot row, 10,000 events, 500 terminal operations, 16 staged candidates, and 16 unreferenced configuration revisions, with every referenced or incomplete record retained regardless of age. Only live environment resources pin a revision; stopped results are history.
 
+### D-027: Clients declare exact versions; occupancy is explicit
+
+Every versioned daemon request declares the client's exact contract schema version in `X-Switchyard-Schema-Version`. A mismatch, an undeclared versioned request, or a request body from another contract generation is answered with HTTP 426 and the stable `UPGRADE_REQUIRED` error naming the daemon's version and which side is older; strict validation of exact-version bodies is unchanged. Go and Swift clients map that status, a mismatched handshake, and a well-formed descriptor from another generation to their upgrade-required state rather than to generic invalid or incompatible errors.
+
+Worktree occupancy is never inferred. The app records one explicit, conservative handoff lease after it has launched a task into a worktree, with a generic holder kind and bounded label, and only an owner release ends it. Held leases are published on the worktree, survive daemon restarts and inventory rebuilds, and block archive (`WORKTREE_OCCUPIED`) at acceptance and again immediately before the Git mutation. Occupancy, operation lifecycle, and configuration acceptance append audit events inside the transaction that performs the change. A background monitor may inform the app through the snapshot and event feed; it still never injects chat messages, wakes sleeping agents, or interrupts running agents.
+
 ## Open
 
 There are no open release-blocking identity or installation decisions. The bundle identifier is `com.theronburger.switchyard`.
