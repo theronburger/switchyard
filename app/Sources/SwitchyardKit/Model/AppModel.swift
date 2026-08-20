@@ -131,6 +131,23 @@ public enum AgentHandoffState: Sendable, Equatable {
     }
 }
 
+/// Progress of recording or releasing an explicit handoff lease. A failure
+/// here never undoes a launch that already happened; it is reported so the
+/// owner knows the worktree is not protected.
+public enum OccupancyActionState: Sendable, Equatable {
+    case idle
+    case recording(worktreeId: String)
+    case releasing(worktreeId: String, leaseId: String)
+    case failed(worktreeId: String, String)
+
+    public var isActive: Bool {
+        switch self {
+        case .recording, .releasing: return true
+        case .idle, .failed: return false
+        }
+    }
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -154,6 +171,7 @@ public final class AppModel {
     public private(set) var cleanupActionState: CleanupActionState = .idle
     public private(set) var configurationState: ConfigurationActionState = .idle
     public private(set) var agentHandoffState: AgentHandoffState = .idle
+    public private(set) var occupancyActionState: OccupancyActionState = .idle
     public private(set) var scenario: FixtureScenario
     public let isFixtureMode: Bool
     public var selection: SidebarSelection?
@@ -161,6 +179,7 @@ public final class AppModel {
     @ObservationIgnored private let liveController: (any DaemonLifecycleControlling)?
     @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
     @ObservationIgnored private let workspaceActions: (any WorkspaceActionSubmitting)?
+    @ObservationIgnored private let occupancyActions: (any OccupancyActionSubmitting)?
     @ObservationIgnored private let cleanupActions: (any CleanupActionSubmitting)?
     @ObservationIgnored private let configurationActions: (any ConfigurationActionSubmitting)?
     @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
@@ -233,6 +252,7 @@ public final class AppModel {
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         workspaceActions: any WorkspaceActionSubmitting = LiveWorkspaceActionClient(),
+        occupancyActions: (any OccupancyActionSubmitting)? = LiveOccupancyActionClient(),
         cleanupActions: any CleanupActionSubmitting = LiveCleanupActionClient(),
         configurationActions: (any ConfigurationActionSubmitting)? = LiveConfigurationActionClient(),
         agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
@@ -243,6 +263,7 @@ public final class AppModel {
         self.liveController = liveController
         self.environmentActions = environmentActions
         self.workspaceActions = workspaceActions
+        self.occupancyActions = occupancyActions
         self.cleanupActions = cleanupActions
         self.configurationActions = configurationActions
         self.agentConnections = agentConnections
@@ -260,6 +281,7 @@ public final class AppModel {
         self.liveController = nil
         self.environmentActions = nil
         self.workspaceActions = nil
+        self.occupancyActions = nil
         self.cleanupActions = nil
         self.configurationActions = configurationActions ?? FixtureConfigurationActionClient(scenario: scenario)
         self.agentConnections = nil
@@ -294,6 +316,7 @@ public final class AppModel {
                 liveController: lifecycle,
                 environmentActions: LiveEnvironmentActionClient(connectionFactory: connectionFactory),
                 workspaceActions: LiveWorkspaceActionClient(connectionFactory: connectionFactory),
+                occupancyActions: LiveOccupancyActionClient(connectionFactory: connectionFactory),
                 cleanupActions: LiveCleanupActionClient(connectionFactory: connectionFactory),
                 configurationActions: LiveConfigurationActionClient(connectionFactory: connectionFactory),
                 agentConnections: agentConnections,
@@ -823,6 +846,68 @@ public final class AppModel {
 
     public func reportAgentHandoffFailure(worktreeId: String, message: String) {
         agentHandoffState = .failed(worktreeId: worktreeId, message)
+    }
+
+    // MARK: - Occupancy leases
+
+    /// Generic holder kind for tasks the app launches into a worktree. It
+    /// names the category of holder, never the host product or a person.
+    public static let agentTaskHolderKind = "agent-task"
+
+    public var canRecordOccupancy: Bool {
+        !isFixtureMode && lifecycleState.isOperational && occupancyActions != nil && !occupancyActionState.isActive
+    }
+
+    /// Records an explicit, conservative handoff lease after the app launched
+    /// a task into `worktree`. Call this only after the launch itself
+    /// succeeded: the lease is a statement about something the app did, not a
+    /// guess about what an agent host is doing. Returns the lease, or `nil`
+    /// when the daemon refused or is unavailable; the failure is published in
+    /// `occupancyActionState` so the owner knows the worktree is unprotected.
+    @discardableResult
+    public func recordAgentHandoff(for worktree: Worktree, holderLabel: String) async -> OccupancyLease? {
+        guard canRecordOccupancy, let occupancyActions else { return nil }
+        occupancyActionState = .recording(worktreeId: worktree.id)
+        do {
+            let lease = try await occupancyActions.acquireOccupancy(AcquireOccupancyRequest(
+                requestId: "app_\(UUID().uuidString.lowercased())",
+                worktreeId: worktree.id,
+                holderKind: Self.agentTaskHolderKind,
+                holderLabel: holderLabel
+            ))
+            occupancyActionState = .idle
+            await refresh()
+            return lease
+        } catch {
+            occupancyActionState = .failed(worktreeId: worktree.id, Self.actionFailureMessage(error))
+            return nil
+        }
+    }
+
+    /// Ends a handoff lease on the owner's explicit request. Only a release
+    /// ends a lease; the app never expires one on its own.
+    @discardableResult
+    public func releaseOccupancy(_ lease: OccupancyLease) async -> Bool {
+        guard canRecordOccupancy, let occupancyActions else { return false }
+        occupancyActionState = .releasing(worktreeId: lease.worktreeId, leaseId: lease.id)
+        do {
+            _ = try await occupancyActions.releaseOccupancy(ReleaseOccupancyRequest(
+                requestId: "app_\(UUID().uuidString.lowercased())",
+                worktreeId: lease.worktreeId,
+                leaseId: lease.id
+            ))
+            occupancyActionState = .idle
+            await refresh()
+            return true
+        } catch {
+            occupancyActionState = .failed(worktreeId: lease.worktreeId, Self.actionFailureMessage(error))
+            return false
+        }
+    }
+
+    public func dismissOccupancyFailure() {
+        guard !occupancyActionState.isActive else { return }
+        occupancyActionState = .idle
     }
 
     public func dismissAgentHandoff() {

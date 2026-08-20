@@ -1163,6 +1163,9 @@ func writeWorktreeStatusText(writer io.Writer, status statusview.WorktreeContext
 		workspaceState = status.Worktree.Workspace.State
 	}
 	_, _ = fmt.Fprintf(writer, "Workspace: %s, %s\n", ownership, workspaceState)
+	if held := len(status.Worktree.Occupancy); held > 0 {
+		_, _ = fmt.Fprintf(writer, "Handed off: %d held lease(s); archive is protected until released\n", held)
+	}
 	_, _ = fmt.Fprintf(writer, "Git: %s at %s\n", gitSummary(status.Worktree.Git), shortRevision(status.Worktree.HeadRevision))
 	if status.Worktree.Changes != nil {
 		_, _ = fmt.Fprintf(writer, "Changes: branch +%d -%d; working tree +%d -%d\n",

@@ -11,6 +11,8 @@ import (
 
 var workspaceFingerprintPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
+var occupancyHolderKindPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
 const (
 	maximumOpaqueIDBytes       = 256
 	maximumIdempotencyKeyBytes = 512
@@ -20,6 +22,11 @@ const (
 	maximumPullRequestChecks   = 128
 	maximumDisplayTextBytes    = 2_048
 	maximumCleanupPathBytes    = 8_192
+	maximumHolderKindBytes     = 64
+	maximumHolderLabelBytes    = 256
+	// MaximumHeldOccupancyLeases bounds how many concurrent handoff leases one
+	// worktree can hold.
+	MaximumHeldOccupancyLeases = 16
 )
 
 func (snapshot StatusSnapshot) Validate() error {
@@ -72,6 +79,9 @@ func (snapshot StatusSnapshot) Validate() error {
 				return err
 			}
 			if err := validateWorkspaceStatus(worktree); err != nil {
+				return err
+			}
+			if err := validateWorktreeOccupancy(worktree); err != nil {
 				return err
 			}
 			worktrees[worktree.ID] = worktree
@@ -194,6 +204,112 @@ func validateWorkspaceStatus(worktree Worktree) error {
 			return fmt.Errorf("worktree %q workspace toolchain is duplicated", worktree.ID)
 		}
 		seen[toolchain.ID] = struct{}{}
+	}
+	return nil
+}
+
+// validateWorktreeOccupancy checks the published held leases of one worktree.
+// The snapshot carries only held leases; released leases are history.
+func validateWorktreeOccupancy(worktree Worktree) error {
+	if len(worktree.Occupancy) > MaximumHeldOccupancyLeases {
+		return fmt.Errorf("worktree %q publishes too many occupancy leases", worktree.ID)
+	}
+	seen := make(map[string]struct{}, len(worktree.Occupancy))
+	for _, lease := range worktree.Occupancy {
+		if err := lease.Validate(); err != nil {
+			return fmt.Errorf("worktree %q occupancy: %w", worktree.ID, err)
+		}
+		if lease.WorktreeID != worktree.ID {
+			return fmt.Errorf("worktree %q publishes a lease for worktree %q", worktree.ID, lease.WorktreeID)
+		}
+		if lease.State != "held" {
+			return fmt.Errorf("worktree %q publishes a lease that is not held", worktree.ID)
+		}
+		if _, duplicate := seen[lease.ID]; duplicate {
+			return fmt.Errorf("worktree %q occupancy lease %q is duplicated", worktree.ID, lease.ID)
+		}
+		seen[lease.ID] = struct{}{}
+	}
+	return nil
+}
+
+func (lease OccupancyLease) Validate() error {
+	if !validOpaqueValue(lease.ID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("occupancy lease id is invalid")
+	}
+	if !validOpaqueValue(lease.WorktreeID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("occupancy lease worktree id is invalid")
+	}
+	if !ValidOccupancyHolderKind(lease.HolderKind) {
+		return fmt.Errorf("occupancy lease holder kind is invalid")
+	}
+	if !ValidOccupancyHolderLabel(lease.HolderLabel) {
+		return fmt.Errorf("occupancy lease holder label is invalid")
+	}
+	if lease.AcquiredAt.IsZero() {
+		return fmt.Errorf("occupancy lease acquisition time is required")
+	}
+	switch lease.State {
+	case "held":
+		if lease.ReleasedAt != nil {
+			return fmt.Errorf("held occupancy lease must not carry a release time")
+		}
+	case "released":
+		if lease.ReleasedAt == nil || lease.ReleasedAt.IsZero() || lease.ReleasedAt.Before(lease.AcquiredAt) {
+			return fmt.Errorf("released occupancy lease requires a release time after acquisition")
+		}
+	default:
+		return fmt.Errorf("occupancy lease state %q is invalid", lease.State)
+	}
+	return nil
+}
+
+// ValidOccupancyHolderKind accepts a bounded lowercase token such as
+// "agent-task". It is a generic category, never a host product or account.
+func ValidOccupancyHolderKind(value string) bool {
+	return value != "" && len(value) <= maximumHolderKindBytes && occupancyHolderKindPattern.MatchString(value)
+}
+
+// ValidOccupancyHolderLabel accepts bounded single-line display text. Path
+// separators are refused so a label can never smuggle a private path.
+func ValidOccupancyHolderLabel(value string) bool {
+	if !validOpaqueValue(value, maximumHolderLabelBytes) {
+		return false
+	}
+	return !strings.ContainsAny(value, "/\\")
+}
+
+func (request AcquireOccupancyRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("schema version: got %d, want %d", request.SchemaVersion, SchemaVersion)
+	}
+	if !validOpaqueValue(request.RequestID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("request id is invalid")
+	}
+	if !validOpaqueValue(request.WorktreeID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("worktree id is invalid")
+	}
+	if !ValidOccupancyHolderKind(request.HolderKind) {
+		return fmt.Errorf("holder kind is invalid")
+	}
+	if !ValidOccupancyHolderLabel(request.HolderLabel) {
+		return fmt.Errorf("holder label is invalid")
+	}
+	return nil
+}
+
+func (request ReleaseOccupancyRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("schema version: got %d, want %d", request.SchemaVersion, SchemaVersion)
+	}
+	if !validOpaqueValue(request.RequestID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("request id is invalid")
+	}
+	if !validOpaqueValue(request.WorktreeID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("worktree id is invalid")
+	}
+	if !validOpaqueValue(request.LeaseID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("lease id is invalid")
 	}
 	return nil
 }

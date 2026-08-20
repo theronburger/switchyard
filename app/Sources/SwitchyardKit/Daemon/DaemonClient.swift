@@ -239,6 +239,39 @@ public struct DaemonClient: Sendable {
         return receipt
     }
 
+    /// Records an explicit handoff lease after the app launched a task into a
+    /// worktree. The daemon is the only lease writer; the app never infers
+    /// occupancy from the launcher.
+    public func acquireOccupancy(_ request: AcquireOccupancyRequest) async throws -> OccupancyLease {
+        try Self.validate(request)
+        let lease = try await post(
+            OccupancyLease.self,
+            pathComponents: ["v1", "worktrees", request.worktreeId, "occupancy"],
+            body: request,
+            requestId: request.requestId,
+            successStatus: 200
+        )
+        guard lease.worktreeId == request.worktreeId, lease.state == .held, Self.validOpaqueValue(lease.id, maximumBytes: 256) else {
+            throw DaemonClientError.malformedResponse("occupancy lease does not match the request")
+        }
+        return lease
+    }
+
+    public func releaseOccupancy(_ request: ReleaseOccupancyRequest) async throws -> OccupancyLease {
+        try Self.validate(request)
+        let lease = try await post(
+            OccupancyLease.self,
+            pathComponents: ["v1", "worktrees", request.worktreeId, "occupancy", request.leaseId, "release"],
+            body: request,
+            requestId: request.requestId,
+            successStatus: 200
+        )
+        guard lease.worktreeId == request.worktreeId, lease.id == request.leaseId, lease.state == .released else {
+            throw DaemonClientError.malformedResponse("released occupancy lease does not match the request")
+        }
+        return lease
+    }
+
     public func configuration() async throws -> ConfigurationStatus {
         let status = try await get(ConfigurationStatus.self, path: "v1/configuration")
         try Self.validate(status)
@@ -502,6 +535,39 @@ public struct DaemonClient: Sendable {
         }
     }
 
+    /// Holder kinds are generic lowercase tokens such as `agent-task`; labels
+    /// are bounded single-line display text without path separators.
+    static func validOccupancyHolder(kind: String, label: String) -> Bool {
+        guard !kind.isEmpty, kind.utf8.count <= 64,
+              kind.first.map({ $0.isLetter && $0.isLowercase }) == true,
+              !kind.hasSuffix("-"), !kind.contains("--"),
+              kind.allSatisfy({ ($0.isLetter && $0.isLowercase && $0.isASCII) || ($0.isNumber && $0.isASCII) || $0 == "-" }) else {
+            return false
+        }
+        return validOpaqueValue(label, maximumBytes: 256) && !label.contains("/") && !label.contains("\\")
+    }
+
+    private static func validate(_ request: AcquireOccupancyRequest) throws {
+        guard request.schemaVersion == contractSchemaVersion,
+              validOpaqueValue(request.requestId, maximumBytes: 256),
+              validOpaqueValue(request.worktreeId, maximumBytes: 256),
+              validPathIdentifier(request.worktreeId),
+              validOccupancyHolder(kind: request.holderKind, label: request.holderLabel) else {
+            throw DaemonClientError.invalidRequest("occupancy request is invalid")
+        }
+    }
+
+    private static func validate(_ request: ReleaseOccupancyRequest) throws {
+        guard request.schemaVersion == contractSchemaVersion,
+              validOpaqueValue(request.requestId, maximumBytes: 256),
+              validOpaqueValue(request.worktreeId, maximumBytes: 256),
+              validPathIdentifier(request.worktreeId),
+              validOpaqueValue(request.leaseId, maximumBytes: 256),
+              validPathIdentifier(request.leaseId) else {
+            throw DaemonClientError.invalidRequest("occupancy release request is invalid")
+        }
+    }
+
     private static func validate(_ status: ConfigurationStatus) throws {
         guard status.schemaVersion == contractSchemaVersion,
               status.acceptedRevision >= 0,
@@ -605,6 +671,3 @@ public struct DaemonClient: Sendable {
     }
 }
 
-private struct ContractErrorEnvelope: Decodable {
-    let error: ContractError
-}

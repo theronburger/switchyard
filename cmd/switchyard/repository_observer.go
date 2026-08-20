@@ -40,7 +40,10 @@ func newRepositoryObserver(store *state.Store, paths applicationPaths, restart f
 		},
 		annotate: annotateWorkspaceInventory,
 		restore: func(ctx context.Context, inventory *repositoryInventory) error {
-			return restoreWorkspaceInventory(ctx, store, inventory)
+			if err := restoreWorkspaceInventory(ctx, store, inventory); err != nil {
+				return err
+			}
+			return restoreOccupancyInventory(ctx, store, inventory)
 		},
 		restart: restart,
 	}

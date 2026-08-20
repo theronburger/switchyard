@@ -175,6 +175,9 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err := restoreWorkspaceInventory(ctx, store, &discoveredRepositories); err != nil {
 		return err
 	}
+	if err := restoreOccupancyInventory(ctx, store, &discoveredRepositories); err != nil {
+		return err
+	}
 	if err := publishDaemonSnapshot(
 		ctx, store, instanceID, startedAt, "starting", discoveredRepositories,
 	); err != nil {
@@ -238,6 +241,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		Cleanup: &daemon.CleanupService{
 			Store: store, Workspaces: cleanupJournal, RuntimeRoot: filepath.Join(paths.directory, "runtime"),
 		},
+		Occupancy: &daemon.OccupancyService{Store: store},
 	})
 	if err != nil {
 		return err

@@ -22,6 +22,9 @@ struct WorktreeDetailView: View {
                 serviceChanges
                 operations
                 workspaceReadiness
+                if !worktree.heldOccupancy.isEmpty || occupancyFailureMessage != nil {
+                    occupancySection
+                }
                 worktreeFacts
                 repositoryFacts
             }
@@ -265,6 +268,55 @@ struct WorktreeDetailView: View {
                 Text("The next environment start will verify toolchains and hydrate this worktree before building services.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var occupancyFailureMessage: String? {
+        guard case .failed(let worktreeId, let message) = model.occupancyActionState, worktreeId == worktree.id else { return nil }
+        return message
+    }
+
+    /// Held handoff leases. These are explicit records of tasks the app handed
+    /// this worktree; the app never infers them and only the owner ends them.
+    private var occupancySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Handed off", systemImage: "person.badge.clock")
+                    .font(.headline)
+                Spacer()
+                Text("Archive protected")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(worktree.heldOccupancy) { lease in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lease.holderLabel)
+                            .font(.callout)
+                        Text("Since \(Format.relative(lease.acquiredAt)) · \(lease.holderKind)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Release") {
+                        Task { await model.releaseOccupancy(lease) }
+                    }
+                    .disabled(!model.canRecordOccupancy)
+                    .help("End this handoff. Only do this once the task no longer needs the worktree.")
+                }
+            }
+            if let occupancyFailureMessage {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(occupancyFailureMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Button("Dismiss") { model.dismissOccupancyFailure() }
+                        .buttonStyle(.borderless)
+                }
             }
         }
         .padding(16)

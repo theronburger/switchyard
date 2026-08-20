@@ -235,6 +235,27 @@ CREATE TABLE IF NOT EXISTS cleanup_applies (
 );
 `,
 	},
+	{
+		// Explicit worktree occupancy leases: an owner-launched handoff is
+		// recorded only when a client acquires a lease and ends only when a
+		// client releases it. Held leases protect a worktree from archive.
+		version: 12,
+		sql: `
+CREATE TABLE occupancy_leases (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    worktree_id TEXT NOT NULL,
+    holder_kind TEXT NOT NULL,
+    holder_label TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('held', 'released')),
+    acquired_at TEXT NOT NULL,
+    released_at TEXT
+);
+
+CREATE INDEX occupancy_leases_worktree_state
+    ON occupancy_leases(worktree_id, state);
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {

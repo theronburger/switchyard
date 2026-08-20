@@ -117,7 +117,9 @@ struct CodexTaskLauncher: Sendable {
 }
 
 /// Prepares the exact worktree through the daemon when needed, then opens a
-/// new Codex task there. Switchyard records no occupancy from the deep link.
+/// new Codex task there. Switchyard infers nothing from the deep link itself;
+/// after the launch succeeds the app records one explicit, conservative
+/// handoff lease that only the owner releases.
 struct StartCodexTaskButton: View {
     @Bindable var model: AppModel
     let worktree: Worktree
@@ -180,6 +182,11 @@ struct StartCodexTaskButton: View {
             try await launcher.open(worktreePath: worktree.path)
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? CodexTaskError.launchFailed.errorDescription
+            return
         }
+        // The launch is fire-and-forget, so the lease is the only durable
+        // evidence that this worktree was handed to a task. Recording it
+        // protects the checkout from archive until the owner releases it.
+        await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task")
     }
 }

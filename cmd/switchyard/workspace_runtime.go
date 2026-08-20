@@ -14,6 +14,7 @@ import (
 
 type managedWorkspaceSnapshotStore interface {
 	ReadSnapshot(context.Context) (contractv2.StatusSnapshot, error)
+	HeldOccupancyForWorktree(context.Context, string) ([]contractv2.OccupancyLease, error)
 }
 
 type managedWorkspaceResolver struct {
@@ -96,6 +97,20 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 				http.StatusConflict, "WORKTREE_ENVIRONMENT_ACTIVE", "Stop this worktree's environment before archiving it.",
 			)
 		}
+	}
+	// An explicit handoff lease is conservative evidence that an agent task
+	// may still occupy the checkout. The durable lease table, not the
+	// published projection, is authoritative; only an owner release ends it.
+	held, err := resolver.store.HeldOccupancyForWorktree(ctx, request.WorktreeID)
+	if err != nil {
+		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
+			http.StatusServiceUnavailable, "WORKSPACE_STATE_UNAVAILABLE", "Workspace state is temporarily unavailable.",
+		)
+	}
+	if len(held) > 0 {
+		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
+			http.StatusConflict, "WORKTREE_OCCUPIED", "An agent task still holds this worktree. Release the handoff before archiving it.",
+		)
 	}
 	return workspacecontrol.ArchiveManagedRequest{
 		RepositoryID: target.repositoryID, WorktreePath: target.path,

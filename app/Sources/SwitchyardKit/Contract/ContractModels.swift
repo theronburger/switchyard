@@ -77,6 +77,30 @@ public struct Worktree: Decodable, Identifiable, Sendable {
     public let changes: WorktreeChanges?
     public let pullRequest: PullRequestObservation?
     public let workspace: WorkspaceStatus?
+    /// Held handoff leases. Absent or empty when no owner-launched task was
+    /// explicitly handed this worktree; never inferred by the app.
+    public let occupancy: [OccupancyLease]?
+
+    public var heldOccupancy: [OccupancyLease] { occupancy ?? [] }
+}
+
+/// An explicit, conservative record that an owner-launched task was handed a
+/// worktree. Only a client acquires one and only a client releases it; a held
+/// lease protects the worktree from archive (D-009a).
+public struct OccupancyLease: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let worktreeId: String
+    public let holderKind: String
+    public let holderLabel: String
+    public let state: OccupancyLeaseState
+    public let acquiredAt: Date
+    public let releasedAt: Date?
+}
+
+public enum OccupancyLeaseState: String, ForwardCompatibleDecodable {
+    case unknown
+    case held
+    case released
 }
 
 public struct WorkspaceStatus: Decodable, Sendable {
@@ -427,6 +451,118 @@ public struct ContractError: Decodable, Error, Sendable {
     public let exitCode: Int?
 }
 
+/// The daemon's error envelope: `{"schemaVersion": 2, "error": {...}}`.
+public struct ContractErrorEnvelope: Decodable, Sendable {
+    public let schemaVersion: Int?
+    public let error: ContractError
+}
+
+/// Repository-neutral public view of one accepted profile action. It never
+/// exposes an executable, argument, or environment shape.
+public struct ProfileAction: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let repositoryId: String
+    public let profileKey: String
+    public let profileDigest: String
+    public let displayName: String
+    public let scope: ProfileActionScope
+    public let risk: ProfileActionRisk
+    public let kind: ProfileActionKind
+    public let lifecycle: ProfileActionLifecycle?
+    public let requiresConfirmation: Bool
+}
+
+public enum ProfileActionScope: String, ForwardCompatibleDecodable {
+    case unknown
+    case machine
+    case repository
+    case worktree
+    case environment
+    case service
+}
+
+public enum ProfileActionRisk: String, ForwardCompatibleDecodable {
+    case unknown
+    case local
+    case remoteRead = "remote-read"
+    case remoteWrite = "remote-write"
+}
+
+public enum ProfileActionKind: String, ForwardCompatibleDecodable {
+    case unknown
+    case command
+    case lifecycle
+}
+
+public enum ProfileActionLifecycle: String, ForwardCompatibleDecodable {
+    case unknown
+    case prepare
+    case start
+    case stop
+    case cleanup
+}
+
+public struct ProfileActionList: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let acceptedDigest: String?
+    public let actions: [ProfileAction]
+}
+
+/// Runs one accepted profile action against exactly the targets its scope
+/// requires. `confirmedActionId` must equal `actionId` for remote-write
+/// actions; confirmation is never persisted.
+public struct RunProfileActionRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let repositoryId: String
+    public let actionId: String
+    public let worktreeId: String?
+    public let environmentId: String?
+    public let serviceId: String?
+    public let confirmedActionId: String?
+
+    public init(
+        requestId: String,
+        idempotencyKey: String,
+        repositoryId: String,
+        actionId: String,
+        worktreeId: String? = nil,
+        environmentId: String? = nil,
+        serviceId: String? = nil,
+        expectedEnvironmentRevision: Int64? = nil,
+        confirmedActionId: String? = nil
+    ) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = expectedEnvironmentRevision
+        self.repositoryId = repositoryId
+        self.actionId = actionId
+        self.worktreeId = worktreeId
+        self.environmentId = environmentId
+        self.serviceId = serviceId
+        self.confirmedActionId = confirmedActionId
+    }
+}
+
+/// Bounded, redacted tail excerpts of one operation's Switchyard-owned logs.
+public struct OperationDiagnostics: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let operationId: String
+    public let environmentId: String
+    public let logReference: String
+    public let excerpts: [OperationLogExcerpt]
+}
+
+public struct OperationLogExcerpt: Decodable, Sendable, Equatable {
+    public let stream: String
+    public let content: String
+    public let truncated: Bool
+    public let redacted: Bool
+}
+
 public struct CleanupScope: Codable, Sendable, Equatable {
     public let kind: String
     public let id: String?
@@ -572,6 +708,36 @@ public struct CreateWorktreeRequest: Codable, Sendable, Equatable {
         self.repositoryId = repositoryId
         self.branch = branch
         self.startPoint = startPoint
+    }
+}
+
+public struct AcquireOccupancyRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let worktreeId: String
+    public let holderKind: String
+    public let holderLabel: String
+
+    public init(requestId: String, worktreeId: String, holderKind: String, holderLabel: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.worktreeId = worktreeId
+        self.holderKind = holderKind
+        self.holderLabel = holderLabel
+    }
+}
+
+public struct ReleaseOccupancyRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let worktreeId: String
+    public let leaseId: String
+
+    public init(requestId: String, worktreeId: String, leaseId: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.worktreeId = worktreeId
+        self.leaseId = leaseId
     }
 }
 

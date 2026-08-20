@@ -98,6 +98,43 @@ type Worktree struct {
 	Changes      *WorktreeChanges        `json:"changes,omitempty"`
 	PullRequest  *PullRequestObservation `json:"pullRequest,omitempty"`
 	Workspace    *WorkspaceStatus        `json:"workspace,omitempty"`
+	Occupancy    []OccupancyLease        `json:"occupancy,omitempty"`
+}
+
+// OccupancyLease is an explicit, conservative record that an owner-launched
+// task was handed a worktree. Switchyard never infers occupancy from a deep
+// link, a process, or a transcript; a lease exists only because a client
+// acquired it and ends only when a client releases it. A held lease protects
+// the worktree from archive. HolderKind is a bounded generic token and
+// HolderLabel is bounded display text; neither identifies a person, account,
+// or host product.
+type OccupancyLease struct {
+	ID          string     `json:"id"`
+	WorktreeID  string     `json:"worktreeId"`
+	HolderKind  string     `json:"holderKind"`
+	HolderLabel string     `json:"holderLabel"`
+	State       string     `json:"state"`
+	AcquiredAt  time.Time  `json:"acquiredAt"`
+	ReleasedAt  *time.Time `json:"releasedAt,omitempty"`
+}
+
+// AcquireOccupancyRequest records a handoff lease for one worktree. The
+// request ID makes acquisition idempotent: repeating it returns the same lease.
+type AcquireOccupancyRequest struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	RequestID     string `json:"requestId"`
+	WorktreeID    string `json:"worktreeId"`
+	HolderKind    string `json:"holderKind"`
+	HolderLabel   string `json:"holderLabel"`
+}
+
+// ReleaseOccupancyRequest ends one handoff lease. Releasing an already
+// released lease is idempotent and returns the released record.
+type ReleaseOccupancyRequest struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	RequestID     string `json:"requestId"`
+	WorktreeID    string `json:"worktreeId"`
+	LeaseID       string `json:"leaseId"`
 }
 
 type WorkspaceStatus struct {

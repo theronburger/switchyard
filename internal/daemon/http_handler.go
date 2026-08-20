@@ -64,6 +64,7 @@ type HandlerConfig struct {
 	Configuration        ConfigurationActions
 	Cleanup              CleanupActions
 	ProfileActions       ProfileActions
+	Occupancy            OccupancyActions
 }
 
 type errorResponse struct {
@@ -151,6 +152,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 			return
 		}
 		if handler.operationDiagnostics(response, request) {
+			return
+		}
+		if handler.occupancy(response, request) {
 			return
 		}
 		if handler.mutation(response, request) {

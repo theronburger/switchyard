@@ -393,6 +393,35 @@ private actor RecordingWorkspaceActions: WorkspaceActionSubmitting {
     }
 }
 
+private actor RecordingOccupancyActions: OccupancyActionSubmitting {
+    enum Mode { case succeed, refuse }
+    let mode: Mode
+    private(set) var acquires: [AcquireOccupancyRequest] = []
+    private(set) var releases: [ReleaseOccupancyRequest] = []
+    init(mode: Mode = .succeed) { self.mode = mode }
+
+    func acquireOccupancy(_ request: AcquireOccupancyRequest) async throws -> OccupancyLease {
+        acquires.append(request)
+        if mode == .refuse {
+            throw DaemonClientError.contract(try ContractDecoder().decode(ContractError.self, from: Data("""
+            {"code":"OCCUPANCY_LIMIT","message":"This worktree already holds the maximum number of handoff leases.","retryable":false}
+            """.utf8)))
+        }
+        return try ContractDecoder().decode(OccupancyLease.self, from: Data("""
+        {"id":"occupancy_test","worktreeId":"\(request.worktreeId)","holderKind":"\(request.holderKind)",
+         "holderLabel":"\(request.holderLabel)","state":"held","acquiredAt":"2026-08-21T09:05:00Z"}
+        """.utf8))
+    }
+
+    func releaseOccupancy(_ request: ReleaseOccupancyRequest) async throws -> OccupancyLease {
+        releases.append(request)
+        return try ContractDecoder().decode(OccupancyLease.self, from: Data("""
+        {"id":"\(request.leaseId)","worktreeId":"\(request.worktreeId)","holderKind":"agent-task",
+         "holderLabel":"Codex task","state":"released","acquiredAt":"2026-08-21T09:05:00Z","releasedAt":"2026-08-21T09:45:00Z"}
+        """.utf8))
+    }
+}
+
 @MainActor
 struct ConfigurationAppModelTests {
     private static var fixtureURL: URL {
@@ -623,6 +652,92 @@ struct ConfigurationAppModelTests {
         let prepares = await workspaceActions.prepares
         #expect(prepares.map(\.worktreeId) == [worktree.id])
         #expect(prepares.first?.expectedEnvironmentRevision == nil)
+    }
+}
+
+@MainActor
+struct OccupancyAppModelTests {
+    private static var fixtureURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "contracts/v2/fixtures/status.json")
+    }
+
+    private static func liveModel(occupancy: RecordingOccupancyActions) throws -> AppModel {
+        let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: Data(contentsOf: fixtureURL))
+        let session = DaemonSession(
+            instanceId: snapshot.daemon.instanceId, daemonVersion: snapshot.daemon.version,
+            endpoint: EndpointDescriptor(
+                schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 49402,
+                daemonVersion: snapshot.daemon.version, instanceId: snapshot.daemon.instanceId,
+                pid: 4242, createdAt: snapshot.daemon.startedAt
+            )
+        )
+        let report = DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .passed("healthy"))])
+        return AppModel(
+            liveController: StubLifecycleController(result: DaemonLifecycleResult(state: .ready(session), snapshot: snapshot, doctorReport: report)),
+            occupancyActions: occupancy,
+            configurationActions: nil,
+            agentConnections: nil,
+            pollingInterval: .seconds(60)
+        )
+    }
+
+    @Test
+    func `a launched handoff records one explicit generic lease and the owner can release it`() async throws {
+        let occupancy = RecordingOccupancyActions()
+        let model = try Self.liveModel(occupancy: occupancy)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+        #expect(worktree.heldOccupancy.isEmpty)
+        #expect(model.canRecordOccupancy)
+
+        let lease = try #require(await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task"))
+        #expect(lease.state == .held)
+        #expect(model.occupancyActionState == .idle)
+        let acquires = await occupancy.acquires
+        #expect(acquires.count == 1)
+        #expect(acquires.first?.worktreeId == worktree.id)
+        #expect(acquires.first?.holderKind == AppModel.agentTaskHolderKind)
+        #expect(acquires.first?.holderKind == "agent-task")
+        #expect(acquires.first?.holderLabel == "Codex task")
+
+        let released = await model.releaseOccupancy(lease)
+        #expect(released)
+        let releases = await occupancy.releases
+        #expect(releases.map(\.leaseId) == [lease.id])
+        #expect(releases.first?.worktreeId == worktree.id)
+    }
+
+    @Test
+    func `a refused lease is reported without undoing the launch and never blocks later handoffs`() async throws {
+        let occupancy = RecordingOccupancyActions(mode: .refuse)
+        let model = try Self.liveModel(occupancy: occupancy)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+
+        let lease = await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task")
+        #expect(lease == nil)
+        guard case .failed(let worktreeId, let message) = model.occupancyActionState else {
+            Issue.record("expected a published occupancy failure, got \(model.occupancyActionState)")
+            return
+        }
+        #expect(worktreeId == worktree.id)
+        #expect(message.contains("OCCUPANCY_LIMIT"))
+        #expect(model.canRecordOccupancy, "a failed lease must not wedge the app")
+        model.dismissOccupancyFailure()
+        #expect(model.occupancyActionState == .idle)
+    }
+
+    @Test
+    func `fixture mode never records occupancy`() async throws {
+        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL)
+        await model.refresh()
+        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
+        #expect(!model.canRecordOccupancy)
+        #expect(await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task") == nil)
+        #expect(model.occupancyActionState == .idle)
     }
 }
 

@@ -52,6 +52,19 @@ func restoreWorkspaceInventory(ctx context.Context, store *state.Store, inventor
 	return nil
 }
 
+// restoreOccupancyInventory re-attaches durable held handoff leases to freshly
+// discovered worktrees so an inventory rebuild never drops occupancy.
+func restoreOccupancyInventory(ctx context.Context, store *state.Store, inventory *repositoryInventory) error {
+	held, err := store.ListHeldOccupancy(ctx)
+	if err != nil {
+		return err
+	}
+	projection := contractv2.StatusSnapshot{Repositories: inventory.Repositories}
+	state.ProjectOccupancy(&projection, held)
+	inventory.Repositories = projection.Repositories
+	return nil
+}
+
 func contractWorkspaceStatus(result workspacecontrol.Result) *contractv2.WorkspaceStatus {
 	toolchains := make([]contractv2.WorkspaceToolchain, len(result.Toolchains))
 	for index, toolchain := range result.Toolchains {
