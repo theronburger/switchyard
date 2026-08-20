@@ -74,6 +74,7 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 	root := t.TempDir()
 	t.Setenv(gitExecutableOverride, "/usr/bin/false")
 	paths := applicationPaths{
+		root:              root,
 		directory:         root,
 		database:          filepath.Join(root, "state.sqlite"),
 		runtimeDescriptor: filepath.Join(root, "runtime.json"),
@@ -152,6 +153,7 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 func TestDaemonDoesNotPublishRuntimeFilesWhenAlreadyCancelled(t *testing.T) {
 	root := t.TempDir()
 	paths := applicationPaths{
+		root:              root,
 		directory:         root,
 		database:          filepath.Join(root, "state.sqlite"),
 		runtimeDescriptor: filepath.Join(root, "runtime.json"),

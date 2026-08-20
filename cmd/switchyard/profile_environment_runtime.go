@@ -52,6 +52,15 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 			return nil, err
 		}
 	}
+	// A finite action the previous daemon left running is stopped through
+	// its persisted, positively verified ownership before any profile is
+	// consulted: its operation is failed as interrupted on this boot, so its
+	// process group must not keep running unowned. Unverifiable evidence is
+	// counted and left alone.
+	actionProcesses := actioncontrol.NewProcessHost()
+	if _, err := actioncontrol.RecoverInterruptedRuns(ctx, actionProcesses, runtimeRoot); err != nil {
+		return nil, err
+	}
 	// A preparation interrupted by the previous daemon is failed before any
 	// profile is consulted, so a worktree whose profile lost its preparation
 	// steps, or a boot with no accepted repository, cannot keep an incomplete
@@ -263,7 +272,8 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		return nil, err
 	}
 	profileActionConfig := daemon.ProfileActionServiceConfig{
-		Lifecycle: ctx, Store: store, Resolver: actionResolver, Runner: actioncontrol.ExactRunner{RuntimeRoot: runtimeRoot},
+		Lifecycle: ctx, Store: store, Resolver: actionResolver,
+		Runner:      actioncontrol.ExactRunner{RuntimeRoot: runtimeRoot, Processes: actionProcesses},
 		Environment: actions, Keys: operationKeys,
 	}
 	if workspaceActions != nil {

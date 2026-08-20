@@ -359,6 +359,11 @@ func actionFailure(actionID, logReference string, err error, outcome *actioncont
 	case errors.Is(err, actioncontrol.ErrCommandStart):
 		failure.Code = "ACTION_COMMAND_START_FAILED"
 		failure.Message = "The profile action command could not be started."
+	case errors.Is(err, actioncontrol.ErrGroupUnverified):
+		failure.Code = "ACTION_GROUP_UNVERIFIED"
+		failure.Message = "The profile action's process group no longer matched its recorded ownership and was left untouched."
+		failure.Retryable = false
+		failure.NextAction = "inspect_operation_diagnostics"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		failure.Code = "ACTION_INTERRUPTED"
 		failure.Message = "The profile action was interrupted before it completed."

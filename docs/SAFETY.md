@@ -8,6 +8,8 @@ Switchyard manages processes, worktrees, ports, and Docker resources. Safety is 
 - Persist PID, process start time, environment ID, run ID, command fingerprint, and log paths.
 - Persist process-group membership and revalidate every member immediately before signalling; PID and group identifiers can both be reused.
 - A non-leader whose live argv fingerprint changes may be requalified only when PID, process-group ID, and start time still match and its current parent chain reaches an exactly verified owned member. Persist the refreshed fingerprint. Leader drift, detached children, or instability across the two pre-signal scans remain report-only.
+- The one exception is the daemon's own unreaped child. Exit is observed before reaping, and reaping and signalling both happen under the run lock, so while the daemon holds that lock and has not reaped the leader, the leader's PID and therefore its group ID provably denote this run. Only then may the leader's fingerprint be requalified (a shell shim or `env` shebang replaces the executable image during startup) and may group members that verification cannot tie to a persisted ancestor still be signalled. A restarted daemon is never the parent and keeps the strict rule.
+- Finite command actions persist the same launch intent and verified ownership as services. Boot stops every action group left running by the previous daemon through verified ownership, counts unverifiable evidence without signalling it, and a finished action's exited leader is kept unreaped until descendants that outlived it have been stopped through the same ownership.
 - Never kill by executable name, fuzzy command match, port alone, or ancestry guess.
 - Unknown matching processes are report-only until explicitly adopted.
 - Reconciliation after restart must defend against PID reuse.
@@ -32,6 +34,7 @@ Switchyard manages processes, worktrees, ports, and Docker resources. Safety is 
 
 ## Worktrees
 
+- Operations on one worktree (prepare, archive, adopt, an environment start, worktree-bound command actions) and on one repository's shared Git state (create, archive, adopt, repository-scoped command actions) run one at a time; a conflicting operation stays pending rather than racing. Unrelated worktrees remain concurrent.
 - Parse `git worktree list --porcelain -z` as the source of registered worktrees.
 - Respect Git's locked and prunable states.
 - Never remove a dirty, untracked-sensitive, unpushed, active, or agent-occupied worktree.

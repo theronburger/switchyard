@@ -40,6 +40,10 @@ var (
 	ErrScopeMismatch     = errors.New("profile action scope does not match the requested target")
 	ErrInvalidCommand    = errors.New("profile action command is invalid")
 	ErrCommandStart      = errors.New("profile action command could not start")
+	// ErrGroupUnverified reports that the run's process group no longer
+	// matched its persisted ownership, so it was reported rather than
+	// signalled.
+	ErrGroupUnverified = errors.New("profile action process group could not be positively verified")
 
 	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 )
@@ -133,9 +137,19 @@ func ValidateScope(scope string, target Target) error {
 	return nil
 }
 
+// OwnerScope is the value finite action ownership records carry in the
+// environment slot of the shared process-ownership schema; the service slot
+// carries the action ID and the run slot the operation ID. Recovery matches
+// on persisted PID, process group, start time, and command fingerprint, never
+// on this label or on an executable name.
+const OwnerScope = "profile-action"
+
 // ExactCommand is a fully compiled executable invocation. There is no shell,
-// no interpreter, and no inherited environment.
+// no interpreter, and no inherited environment. ActionID and OperationID bind
+// the owned process group to the operation that accepted it.
 type ExactCommand struct {
+	ActionID     string
+	OperationID  string
 	Executable   string
 	Arguments    []string
 	Directory    string

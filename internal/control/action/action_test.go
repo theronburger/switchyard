@@ -76,6 +76,7 @@ func testCommand(t *testing.T, executable string, arguments ...string) ExactComm
 		t.Fatal(err)
 	}
 	return ExactCommand{
+		ActionID: "tidy", OperationID: "operation_01",
 		Executable: executable, Arguments: arguments, Directory: root,
 		Environment:  []string{"HOME=" + root, "PATH=/usr/bin:/bin", "TMPDIR=" + root},
 		Timeout:      10 * time.Second,
@@ -159,6 +160,8 @@ func TestExactRunnerRejectsUnsafeCommandsWithoutStarting(t *testing.T) {
 		"nul in argument":           func(c *ExactCommand) { c.Arguments = []string{"a\x00b"} },
 		"relative run directory":    func(c *ExactCommand) { c.RunDirectory = "run" },
 		"environment without value": func(c *ExactCommand) { c.Environment = append(c.Environment, "BROKEN") },
+		"missing action id":         func(c *ExactCommand) { c.ActionID = "" },
+		"unsafe operation id":       func(c *ExactCommand) { c.OperationID = "../escape" },
 	}
 	for name, mutate := range cases {
 		command := testCommand(t, "/bin/sh", "-c", "touch "+filepath.Join(root, "started"))
@@ -269,19 +272,19 @@ func TestExactRunnerRefusesSymlinkedLogBeforeTruncation(t *testing.T) {
 	}
 }
 
-func TestExactRunnerReusesOwnedRunDirectoryAndLogs(t *testing.T) {
+func TestExactRunnerNeverReusesARunDirectoryWithProcessEvidence(t *testing.T) {
 	command := testCommand(t, "/bin/sh", "-c", "echo second")
 	first := testCommand(t, "/bin/sh", "-c", "echo first-run-output-that-is-longer")
 	first.RunDirectory = command.RunDirectory
 	if _, err := testRunner(first).Run(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := testRunner(command).Run(context.Background(), command); err != nil {
-		t.Fatal(err)
+	if _, err := testRunner(command).Run(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("second run in an owned directory: %v", err)
 	}
 	contents, err := os.ReadFile(filepath.Join(command.RunDirectory, "stdout.log"))
-	if err != nil || string(contents) != "second\n" {
-		t.Fatalf("existing owned log was not truncated and rewritten: %v %q", err, contents)
+	if err != nil || string(contents) != "first-run-output-that-is-longer\n" {
+		t.Fatalf("first run's log was disturbed: %v %q", err, contents)
 	}
 }
 

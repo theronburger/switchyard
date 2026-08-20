@@ -90,6 +90,7 @@ func CompileAction(request ActionCompileRequest) (actioncontrol.ExactCommand, er
 		return actioncontrol.ExactCommand{}, ErrProfileInvalid
 	}
 	return actioncontrol.ExactCommand{
+		ActionID: request.ActionID, OperationID: request.OperationID,
 		Executable: command.Executable, Arguments: arguments, Environment: environment,
 		Directory: directory, Timeout: timeout,
 		RunDirectory: runRoot,

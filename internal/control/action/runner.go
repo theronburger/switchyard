@@ -3,31 +3,51 @@ package action
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/theronburger/switchyard/internal/runtime/childgroup"
+	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
-const terminationGrace = 2 * time.Second
+const (
+	terminationGrace = 2 * time.Second
+	killWait         = 2 * time.Second
+	// stopBudget bounds the verified TERM, grace, re-verify, KILL sequence
+	// that finishes a timed-out, cancelled, or straggling group.
+	stopBudget = terminationGrace + killWait + 10*time.Second
+	// membershipRefreshInterval paces the ownership refresh of a running
+	// action so recovery after a crash sees recent leader and member identity.
+	membershipRefreshInterval = 15 * time.Second
+)
 
 // ExactRunner executes a compiled command in a positively owned process group
 // with bounded owner-only stdout/stderr files. It never consults a shell and
 // never inherits the daemon environment. RuntimeRoot must be an existing,
 // owned, non-symlinked directory; every run directory must sit beneath it and
 // every path component between the two must be proven before it is touched.
+//
+// Ownership is crash-durable: the launch intent and the verified leader
+// identity are persisted in the run directory through Processes before and
+// immediately after fork, exactly as for environment services, so a daemon
+// that dies mid-run leaves evidence RecoverInterruptedRuns can act on with
+// positive verification rather than an unowned process group.
 type ExactRunner struct {
 	RuntimeRoot string
 	Now         func() time.Time
+	// Processes owns launch, verification, and signalling. When nil a host
+	// with the action termination grace is used.
+	Processes *processhost.Host
 }
 
 // Run executes the command and reports its bounded outcome. A non-zero exit
 // status is reported through Outcome, not through the error; errors are
-// reserved for invalid commands, start failures, and runner faults.
+// reserved for invalid commands, start failures, and runner faults. A finite
+// action ends with its whole group stopped: descendants that outlive the
+// leader are terminated through the same verified ownership.
 func (runner ExactRunner) Run(ctx context.Context, command ExactCommand) (Outcome, error) {
 	now := runner.Now
 	if now == nil {
@@ -42,33 +62,70 @@ func (runner ExactRunner) Run(ctx context.Context, command ExactCommand) (Outcom
 	if err := createOwnedRunDirectory(runner.RuntimeRoot, command.RunDirectory); err != nil {
 		return Outcome{}, err
 	}
-	stdout, err := openBoundedLog(filepath.Join(command.RunDirectory, "stdout.log"))
+	// A run directory that already carries process evidence is never
+	// reused and its logs are never truncated; every operation launches
+	// into its own directory.
+	for _, evidence := range []string{processhost.OwnershipFileName, processhost.LaunchIntentFileName} {
+		if _, err := os.Lstat(filepath.Join(command.RunDirectory, evidence)); err == nil {
+			return Outcome{}, ErrInvalidCommand
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Outcome{}, err
+		}
+	}
+	stdout, err := openBoundedLog(filepath.Join(command.RunDirectory, processhost.StdoutLogFileName))
 	if err != nil {
 		return Outcome{}, err
 	}
 	defer func() { _ = stdout.Close() }()
-	stderr, err := openBoundedLog(filepath.Join(command.RunDirectory, "stderr.log"))
+	stderr, err := openBoundedLog(filepath.Join(command.RunDirectory, processhost.StderrLogFileName))
 	if err != nil {
 		return Outcome{}, err
 	}
 	defer func() { _ = stderr.Close() }()
 
+	host := runner.host()
+	ownershipPath := filepath.Join(command.RunDirectory, processhost.OwnershipFileName)
+	defer host.Forget(ownershipPath)
 	runContext, cancel := context.WithTimeout(ctx, command.Timeout)
 	defer cancel()
-	process := exec.Command(command.Executable, command.Arguments...)
-	process.Dir = command.Directory
-	process.Env = append([]string(nil), command.Environment...)
-	process.Stdin = nil
-	process.Stdout = stdout
-	process.Stderr = stderr
-	process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	outcome := Outcome{StartedAt: now().UTC()}
-	if err := process.Start(); err != nil {
-		return Outcome{}, ErrCommandStart
+	if _, err := host.Start(runContext, processhost.LaunchSpec{
+		EnvironmentID: OwnerScope, ServiceID: command.ActionID, RunID: command.OperationID,
+		Executable: command.Executable, Arguments: command.Arguments, Environment: command.Environment,
+		Directory: command.Directory, RunDirectory: command.RunDirectory,
+		Stdout: stdout, Stderr: stderr, DeferReap: true,
+	}); err != nil {
+		switch {
+		case errors.Is(err, processhost.ErrAlreadyOwned), errors.Is(err, processhost.ErrOrphanUnverified):
+			return Outcome{}, ErrInvalidCommand
+		case runContext.Err() != nil:
+			return Outcome{}, runContext.Err()
+		default:
+			return Outcome{}, ErrCommandStart
+		}
 	}
-	supervised := childgroup.Supervise(runContext, process, terminationGrace)
-	waitErr := supervised.WaitErr
-	if supervised.Interrupted {
+
+	waitErr := runner.awaitExit(runContext, host, ownershipPath)
+	interrupted := waitErr != nil && runContext.Err() != nil
+	if waitErr != nil && !interrupted {
+		return Outcome{}, waitErr
+	}
+	// The leader is exited-but-unreaped (or still running on interruption),
+	// so its group ID still positively denotes this run while descendants
+	// that outlived it are stopped. Only then is the leader reaped.
+	stopContext, cancelStop := context.WithTimeout(context.Background(), stopBudget)
+	defer cancelStop()
+	if _, err := host.Stop(stopContext, ownershipPath); err != nil {
+		if errors.Is(err, processhost.ErrOwnershipMismatch) || errors.Is(err, processhost.ErrUnstableGroup) {
+			return Outcome{}, fmt.Errorf("%w: %v", ErrGroupUnverified, err)
+		}
+		return Outcome{}, err
+	}
+	exit, err := host.WaitExit(stopContext, ownershipPath)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if interrupted {
 		outcome.TimedOut = errors.Is(runContext.Err(), context.DeadlineExceeded)
 		if !outcome.TimedOut {
 			return Outcome{}, runContext.Err()
@@ -77,26 +134,51 @@ func (runner ExactRunner) Run(ctx context.Context, command ExactCommand) (Outcom
 	outcome.FinishedAt = now().UTC()
 	outcome.StdoutTruncated = stdout.truncated
 	outcome.StderrTruncated = stderr.truncated
-	outcome.ExitCode = exitCode(process, waitErr)
+	outcome.ExitCode = exitCode(exit)
 	return outcome, nil
 }
 
-func exitCode(process *exec.Cmd, waitErr error) int {
-	if process.ProcessState != nil {
-		if code := process.ProcessState.ExitCode(); code >= 0 {
-			return code
+// awaitExit waits for the leader while periodically re-reading the owned
+// group, so the persisted leader fingerprint and membership a restart would
+// recover from stay current for long-running actions.
+func (runner ExactRunner) awaitExit(ctx context.Context, host *processhost.Host, ownershipPath string) error {
+	for {
+		window, cancel := context.WithTimeout(ctx, membershipRefreshInterval)
+		err := host.WaitExited(window, ownershipPath)
+		cancel()
+		if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+			return err
 		}
-		if status, ok := process.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			return 128 + int(status.Signal())
-		}
+		refresh, cancelRefresh := context.WithTimeout(ctx, killWait)
+		_, _ = host.Reconcile(refresh, ownershipPath)
+		cancelRefresh()
 	}
-	if waitErr == nil {
-		return 0
+}
+
+func (runner ExactRunner) host() *processhost.Host {
+	if runner.Processes != nil {
+		return runner.Processes
 	}
-	return -1
+	return processhost.New(processhost.Config{GracePeriod: terminationGrace, KillWait: killWait})
+}
+
+// NewProcessHost returns the host a daemon should share between its action
+// runner and RecoverInterruptedRuns.
+func NewProcessHost() *processhost.Host {
+	return processhost.New(processhost.Config{GracePeriod: terminationGrace, KillWait: killWait})
+}
+
+func exitCode(exit processhost.ExitStatus) int {
+	if exit.Signal != 0 {
+		return 128 + exit.Signal
+	}
+	return exit.ExitCode
 }
 
 func validateCommand(command ExactCommand) error {
+	if !identifierPattern.MatchString(command.ActionID) || !identifierPattern.MatchString(command.OperationID) {
+		return ErrInvalidCommand
+	}
 	for _, path := range []string{command.Executable, command.Directory, command.RunDirectory} {
 		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
 			return ErrInvalidCommand
