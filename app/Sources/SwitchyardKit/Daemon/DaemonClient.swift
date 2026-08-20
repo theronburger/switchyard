@@ -211,6 +211,58 @@ public struct DaemonClient: Sendable {
         return receipt
     }
 
+    public func prepareWorktree(_ request: PrepareWorktreeRequest) async throws -> MutationReceipt {
+        try Self.validate(request)
+        guard Self.validPathIdentifier(request.worktreeId) else {
+            throw DaemonClientError.invalidRequest("worktree ID is not safe for the local API path")
+        }
+        let receipt = try await post(
+            MutationReceipt.self,
+            pathComponents: ["v1", "worktrees", request.worktreeId, "prepare"],
+            body: request,
+            requestId: request.requestId
+        )
+        try Self.validate(receipt, requestId: request.requestId)
+        return receipt
+    }
+
+    public func configuration() async throws -> ConfigurationStatus {
+        let status = try await get(ConfigurationStatus.self, path: "v1/configuration")
+        try Self.validate(status)
+        return status
+    }
+
+    public func validateConfiguration(_ request: ConfigurationValidationRequest) async throws -> ConfigurationStatus {
+        guard request.schemaVersion == contractSchemaVersion, request.expectedRevision >= 0 else {
+            throw DaemonClientError.invalidRequest("configuration validation request is invalid")
+        }
+        let status = try await post(
+            ConfigurationStatus.self,
+            pathComponents: ["v1", "configuration", "validate"],
+            body: request,
+            requestId: "configuration_\(UUID().uuidString.lowercased())",
+            successStatus: 200
+        )
+        try Self.validate(status)
+        return status
+    }
+
+    public func acceptConfiguration(_ request: ConfigurationAcceptanceRequest) async throws -> ConfigurationStatus {
+        guard request.schemaVersion == contractSchemaVersion, request.expectedRevision >= 0,
+              Self.validDigest(request.digest) else {
+            throw DaemonClientError.invalidRequest("configuration acceptance request is invalid")
+        }
+        let status = try await post(
+            ConfigurationStatus.self,
+            pathComponents: ["v1", "configuration", "accept"],
+            body: request,
+            requestId: "configuration_\(UUID().uuidString.lowercased())",
+            successStatus: 200
+        )
+        try Self.validate(status)
+        return status
+    }
+
     public func planCleanup(_ request: CleanupPlanRequest) async throws -> CleanupPlan {
         guard request.schemaVersion == contractSchemaVersion,
               request.scope.kind == "global" && request.scope.id == nil ||
@@ -394,6 +446,56 @@ public struct DaemonClient: Sendable {
               validOpaqueValue(request.worktreeId, maximumBytes: 256) else {
             throw DaemonClientError.invalidRequest("worktree selection is invalid")
         }
+    }
+
+    private static func validate(_ request: PrepareWorktreeRequest) throws {
+        try validateMutation(
+            schemaVersion: request.schemaVersion,
+            requestId: request.requestId,
+            idempotencyKey: request.idempotencyKey,
+            expectedEnvironmentRevision: request.expectedEnvironmentRevision
+        )
+        guard request.expectedEnvironmentRevision == nil,
+              validOpaqueValue(request.worktreeId, maximumBytes: 256) else {
+            throw DaemonClientError.invalidRequest("worktree selection is invalid")
+        }
+    }
+
+    private static func validate(_ status: ConfigurationStatus) throws {
+        guard status.schemaVersion == contractSchemaVersion,
+              status.acceptedRevision >= 0,
+              status.state != .unknown else {
+            throw DaemonClientError.malformedResponse("configuration status is invalid")
+        }
+        if status.acceptedRevision == 0 {
+            guard status.acceptedDigest == nil || status.acceptedDigest == "" else {
+                throw DaemonClientError.malformedResponse("accepted configuration identity is invalid")
+            }
+        } else {
+            guard validDigest(status.acceptedDigest ?? "") else {
+                throw DaemonClientError.malformedResponse("accepted configuration identity is invalid")
+            }
+        }
+        if status.state == .pending, status.candidate == nil {
+            throw DaemonClientError.malformedResponse("pending configuration candidate is required")
+        }
+        if let candidate = status.candidate {
+            guard candidate.schemaVersion == contractSchemaVersion,
+                  validDigest(candidate.digest), validDigest(candidate.sourceDigest),
+                  !candidate.compilerVersion.isEmpty,
+                  candidate.repositoryDigests.allSatisfy({ validOpaqueValue($0.key, maximumBytes: 256) && validDigest($0.value) }),
+                  candidate.executableDigests.allSatisfy({ !$0.key.isEmpty && validDigest($0.value) }) else {
+                throw DaemonClientError.malformedResponse("configuration candidate is invalid")
+            }
+        }
+    }
+
+    /// `sha256:` followed by exactly 64 lowercase hexadecimal digits.
+    public static func validDigest(_ value: String) -> Bool {
+        let prefix = "sha256:"
+        guard value.hasPrefix(prefix) else { return false }
+        let hex = value.dropFirst(prefix.count)
+        return hex.count == 64 && hex.allSatisfy { "0123456789abcdef".contains($0) }
     }
 
     private static func validateMutation(

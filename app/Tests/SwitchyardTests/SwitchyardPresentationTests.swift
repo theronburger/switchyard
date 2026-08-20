@@ -366,6 +366,28 @@ struct SwitchyardPresentationTests {
                 size: CGSize(width: 1_180, height: 760),
                 appearance: .dark)
         ))
+        model.selection = .repository(snapshot.repositories[0].id)
+        renders.append((
+            "repository-settings-wide-dark",
+            try render(
+                AnyView(CommandCenterView(model: model)),
+                size: CGSize(width: 1_180, height: 760),
+                appearance: .dark)
+        ))
+        renders.append((
+            "add-repository-sheet-dark",
+            try render(
+                AnyView(AddRepositorySheet(model: model, isPresented: .constant(true))),
+                size: CGSize(width: 640, height: 640),
+                appearance: .dark)
+        ))
+        renders.append((
+            "configuration-status-light",
+            try render(
+                AnyView(ConfigurationStatusCard(model: model).padding(20)),
+                size: CGSize(width: 900, height: 420),
+                appearance: .light)
+        ))
         renders.append((
             "settings-dark",
             try render(

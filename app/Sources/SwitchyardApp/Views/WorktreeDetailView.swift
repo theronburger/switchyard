@@ -74,6 +74,7 @@ struct WorktreeDetailView: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                StartCodexTaskButton(model: model, worktree: worktree)
                 OpenInZedButton(worktree: worktree)
                 if worktree.workspace?.ownership == .adopted && !worktree.isPrimary {
                     Button {
@@ -276,8 +277,16 @@ struct WorktreeDetailView: View {
                 KeyValueRow(key: "Name", value: repository.displayName)
                 KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true, copyable: true)
                 KeyValueRow(key: "Remote", value: repository.remote, monospaced: true, copyable: true)
-                KeyValueRow(key: "Adapter", value: repository.adapter, monospaced: true)
+                KeyValueRow(key: "Profile key", value: repository.adapter, monospaced: true)
                 KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true, copyable: true)
+                HStack {
+                    Text("Configuration").foregroundStyle(.secondary)
+                    Spacer()
+                    RepositoryAcceptanceBadge(state: model.acceptanceState(for: repository))
+                    Button("Settings") { model.selection = .repository(repository.id) }
+                        .buttonStyle(.borderless)
+                }
+                .font(.callout)
                 if let runtime = repository.runtime {
                     KeyValueRow(key: "Default target", value: runtime.defaultTargetId)
                     KeyValueRow(key: "Targets", value: runtime.targets.map(\.displayName).joined(separator: ", "))

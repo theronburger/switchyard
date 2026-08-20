@@ -70,12 +70,28 @@ struct CommandCenterView: View {
 
                 if let snapshot = model.snapshot {
                     ForEach(snapshot.repositories) { repository in
-                        Text(repository.displayName)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.top, 10)
-                            .padding(.bottom, 2)
+                        SidebarRow(
+                            isSelected: model.selection == .repository(repository.id),
+                            action: { model.selection = .repository(repository.id) }
+                        ) {
+                            HStack(spacing: 6) {
+                                Text(repository.displayName)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 4)
+                                if model.acceptanceState(for: repository).requiresAcceptance {
+                                    Image(systemName: "exclamationmark.circle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                        .help("Configuration changes for this repository are waiting for acceptance")
+                                }
+                                Image(systemName: "gearshape")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.top, 8)
+                        .help("Repository settings")
 
                         ForEach(repository.worktrees) { worktree in
                             let environment = snapshot.environment(for: worktree)
@@ -208,6 +224,12 @@ struct CommandCenterView: View {
             } else {
                 fallback
             }
+        case .repository(let repositoryId):
+            if let snapshot = model.snapshot, let repository = snapshot.repository(withId: repositoryId) {
+                RepositorySettingsView(model: model, repository: repository, snapshot: snapshot)
+            } else {
+                fallback
+            }
         case .overview, nil:
             fallback
         }
@@ -229,14 +251,21 @@ struct CommandCenterView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No worktrees discovered", systemImage: "arrow.triangle.branch")
-        } description: {
-            Text("Open Connection Doctor to inspect repository discovery and daemon setup.")
-        } actions: {
-            Button("Open Connection Doctor") { model.selection = .connectionDoctor }
-                .buttonStyle(.borderedProminent)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                ContentUnavailableView {
+                    Label("No repositories configured", systemImage: "arrow.triangle.branch")
+                } description: {
+                    Text("Add a repository to the private configuration, validate it, and accept the revision. Connection Doctor inspects daemon setup.")
+                } actions: {
+                    Button("Open Connection Doctor") { model.selection = .connectionDoctor }
+                }
+                ConfigurationStatusCard(model: model)
+            }
+            .padding(28)
+            .frame(maxWidth: 1_180, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     private func errorState(_ message: String) -> some View {
@@ -298,6 +327,8 @@ struct CommandCenterView: View {
             return model.snapshot?.environment(withId: id)?.displayName ?? "Switchyard"
         case .worktree(_, let id):
             return model.snapshot?.worktree(withId: id)?.branch ?? "Worktree"
+        case .repository(let id):
+            return model.snapshot?.repository(withId: id).map { "\($0.displayName) settings" } ?? "Repository"
         case .connectionDoctor: return "Connection Doctor"
         case .overview, nil: return "Switchyard"
         }
@@ -426,6 +457,7 @@ struct OverviewView: View {
                 overviewHeader
                 if let snapshot = model.snapshot {
                     StartEnvironmentView(model: model, snapshot: snapshot)
+                    ConfigurationStatusCard(model: model)
                     RepositoryInventoryView(model: model, snapshot: snapshot)
                     PullRequestOverviewView(model: model, snapshot: snapshot)
                     GlobalOperationsView(snapshot: snapshot)
@@ -654,16 +686,24 @@ private struct RepositoryInventoryCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(repository.displayName)
                     .font(.headline)
-                Text("\(repository.worktrees.count) worktrees · \(repository.adapter) adapter")
+                Text("\(repository.worktrees.count) worktrees · profile \(repository.adapter)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            RepositoryAcceptanceBadge(state: model.acceptanceState(for: repository))
+            Button {
+                model.selection = .repository(repository.id)
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Open repository settings")
         } content: {
             VStack(alignment: .leading, spacing: 10) {
                 KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true)
                 KeyValueRow(key: "Remote", value: repository.remote, monospaced: true)
-                KeyValueRow(key: "Adapter", value: repository.adapter, monospaced: true)
+                KeyValueRow(key: "Profile key", value: repository.adapter, monospaced: true)
                 KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true)
                 if let runtime = repository.runtime {
                     KeyValueRow(key: "Default target", value: runtime.defaultTargetId)

@@ -639,3 +639,68 @@ public extension ForwardCompatibleDecodable {
         self = Self(rawValue: rawValue) ?? Self.unknown
     }
 }
+
+public struct PrepareWorktreeRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let worktreeId: String
+
+    public init(requestId: String, idempotencyKey: String, worktreeId: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = nil
+        self.worktreeId = worktreeId
+    }
+}
+
+public enum ConfigurationState: String, ForwardCompatibleDecodable {
+    case unknown
+    case missing
+    case accepted
+    case pending
+}
+
+/// One validated-but-not-yet-accepted private configuration revision.
+public struct ConfigurationCandidate: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let digest: String
+    public let sourceDigest: String
+    public let compilerVersion: String
+    public let repositoryDigests: [String: String]
+    public let executableDigests: [String: String]
+    public let stagedAt: Date
+}
+
+/// Daemon-published configuration acceptance state (D-025).
+public struct ConfigurationStatus: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let state: ConfigurationState
+    public let acceptedRevision: Int64
+    public let acceptedDigest: String?
+    public let candidate: ConfigurationCandidate?
+}
+
+public struct ConfigurationValidationRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let expectedRevision: Int64
+
+    public init(expectedRevision: Int64) {
+        self.schemaVersion = contractSchemaVersion
+        self.expectedRevision = expectedRevision
+    }
+}
+
+public struct ConfigurationAcceptanceRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let expectedRevision: Int64
+    public let digest: String
+
+    public init(expectedRevision: Int64, digest: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.expectedRevision = expectedRevision
+        self.digest = digest
+    }
+}

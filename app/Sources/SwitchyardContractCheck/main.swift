@@ -239,6 +239,7 @@ actor StubWorkspaceActions: WorkspaceActionSubmitting {
     private(set) var creates: [CreateWorktreeRequest] = []
     private(set) var adopts: [AdoptWorktreeRequest] = []
     private(set) var archives: [ArchiveWorktreeRequest] = []
+    private(set) var prepares: [PrepareWorktreeRequest] = []
 
     init(receipt: MutationReceipt) {
         self.receipt = receipt
@@ -256,6 +257,11 @@ actor StubWorkspaceActions: WorkspaceActionSubmitting {
 
     func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt {
         adopts.append(request)
+        return receipt
+    }
+
+    func prepareWorktree(_ request: PrepareWorktreeRequest) async throws -> MutationReceipt {
+        prepares.append(request)
         return receipt
     }
 }

@@ -5,6 +5,7 @@ public enum SidebarSelection: Hashable, Sendable {
     case overview
     case environment(String)
     case worktree(repositoryId: String, worktreeId: String)
+    case repository(String)
     case connectionDoctor
 }
 
@@ -89,6 +90,46 @@ public enum CleanupActionState: Sendable, Equatable {
     case failed(String)
 }
 
+public enum ConfigurationActionState: Sendable, Equatable {
+    case idle
+    case loading
+    case loaded(ConfigurationStatus)
+    case validating(ConfigurationStatus?)
+    case accepting(ConfigurationStatus)
+    case failed(message: String, last: ConfigurationStatus?)
+
+    public var status: ConfigurationStatus? {
+        switch self {
+        case .idle, .loading: return nil
+        case .loaded(let status), .accepting(let status): return status
+        case .validating(let status), .failed(_, let status): return status
+        }
+    }
+
+    public var isBusy: Bool {
+        switch self {
+        case .loading, .validating, .accepting: return true
+        case .idle, .loaded, .failed: return false
+        }
+    }
+
+    public var failureMessage: String? {
+        guard case .failed(let message, _) = self else { return nil }
+        return message
+    }
+}
+
+public enum AgentHandoffState: Sendable, Equatable {
+    case idle
+    case preparing(worktreeId: String, receipt: MutationReceipt?)
+    case failed(worktreeId: String, String)
+
+    public var isActive: Bool {
+        if case .preparing = self { return true }
+        return false
+    }
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -110,6 +151,8 @@ public final class AppModel {
     public private(set) var environmentActionState: EnvironmentActionState = .idle
     public private(set) var workspaceActionState: WorkspaceActionState = .idle
     public private(set) var cleanupActionState: CleanupActionState = .idle
+    public private(set) var configurationState: ConfigurationActionState = .idle
+    public private(set) var agentHandoffState: AgentHandoffState = .idle
     public private(set) var scenario: FixtureScenario
     public let isFixtureMode: Bool
     public var selection: SidebarSelection?
@@ -118,6 +161,7 @@ public final class AppModel {
     @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
     @ObservationIgnored private let workspaceActions: (any WorkspaceActionSubmitting)?
     @ObservationIgnored private let cleanupActions: (any CleanupActionSubmitting)?
+    @ObservationIgnored private let configurationActions: (any ConfigurationActionSubmitting)?
     @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
     @ObservationIgnored private var fixtureProvider: (any StatusProviding)?
     @ObservationIgnored private let canonicalFixtureURL: URL?
@@ -189,6 +233,7 @@ public final class AppModel {
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         workspaceActions: any WorkspaceActionSubmitting = LiveWorkspaceActionClient(),
         cleanupActions: any CleanupActionSubmitting = LiveCleanupActionClient(),
+        configurationActions: (any ConfigurationActionSubmitting)? = LiveConfigurationActionClient(),
         agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
         pollingInterval: Duration = .seconds(5)
     ) {
@@ -198,18 +243,24 @@ public final class AppModel {
         self.environmentActions = environmentActions
         self.workspaceActions = workspaceActions
         self.cleanupActions = cleanupActions
+        self.configurationActions = configurationActions
         self.agentConnections = agentConnections
         self.canonicalFixtureURL = nil
         self.pollingInterval = pollingInterval
     }
 
-    public init(scenario: FixtureScenario, canonicalFixtureURL: URL? = nil) {
+    public init(
+        scenario: FixtureScenario,
+        canonicalFixtureURL: URL? = nil,
+        configurationActions: (any ConfigurationActionSubmitting)? = nil
+    ) {
         self.scenario = scenario
         self.isFixtureMode = true
         self.liveController = nil
         self.environmentActions = nil
         self.workspaceActions = nil
         self.cleanupActions = nil
+        self.configurationActions = configurationActions ?? FixtureConfigurationActionClient(scenario: scenario)
         self.agentConnections = nil
         self.canonicalFixtureURL = canonicalFixtureURL
         self.pollingInterval = .seconds(5)
@@ -243,6 +294,7 @@ public final class AppModel {
                 environmentActions: LiveEnvironmentActionClient(connectionFactory: connectionFactory),
                 workspaceActions: LiveWorkspaceActionClient(connectionFactory: connectionFactory),
                 cleanupActions: LiveCleanupActionClient(connectionFactory: connectionFactory),
+                configurationActions: LiveConfigurationActionClient(connectionFactory: connectionFactory),
                 agentConnections: agentConnections,
                 pollingInterval: pollingInterval
             )
@@ -255,6 +307,7 @@ public final class AppModel {
         guard isFixtureMode, scenario != self.scenario else { return }
         self.scenario = scenario
         fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        configurationState = .idle
         await refresh()
     }
 
@@ -291,6 +344,9 @@ public final class AppModel {
         }
         if agentConnectionReport == nil, let agentConnections {
             agentConnectionReport = await agentConnections.inspect()
+        }
+        if case .idle = configurationState, lifecycleState.isOperational || isFixtureMode {
+            await refreshConfiguration()
         }
         if !routedInitialConnectionSetup {
             routedInitialConnectionSetup = true
@@ -566,6 +622,137 @@ public final class AppModel {
         cleanupActionState = .idle
     }
 
+    // MARK: - Private configuration (D-025)
+
+    /// Whether the daemon can answer configuration reads right now. Fixture
+    /// builds answer from scenario data so the surfaces stay renderable.
+    public var canReadConfiguration: Bool {
+        configurationActions != nil && (isFixtureMode || lifecycleState.isOperational)
+    }
+
+    public var canMutateConfiguration: Bool {
+        canReadConfiguration && !configurationState.isBusy
+    }
+
+    public var configurationPresentation: ConfigurationAcceptancePresentation? {
+        configurationState.status.map(ConfigurationAcceptancePresentation.init(status:))
+    }
+
+    /// Profile keys the daemon currently publishes (the status contract's
+    /// `adapter` field carries the repository key).
+    public var publishedProfileKeys: Set<String> {
+        Set(snapshot?.repositories.map(\.adapter) ?? [])
+    }
+
+    /// Profile keys that appear in accepted or candidate configuration.
+    public var configuredRepositoryKeys: Set<String> {
+        var keys = publishedProfileKeys
+        if let candidate = configurationState.status?.candidate {
+            keys.formUnion(candidate.repositoryDigests.keys)
+        }
+        return keys
+    }
+
+    public func acceptanceState(for repository: Repository) -> RepositoryAcceptanceState {
+        configurationPresentation?.repositoryState(profileKey: repository.adapter, isPublished: true) ?? .unknown
+    }
+
+    public func refreshConfiguration() async {
+        guard canReadConfiguration, let configurationActions else { return }
+        if case .idle = configurationState { configurationState = .loading }
+        do {
+            configurationState = .loaded(try await configurationActions.configuration())
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: configurationState.status)
+        }
+    }
+
+    /// Validates the desired private configuration file against the exact
+    /// accepted revision the app last observed.
+    public func validateConfiguration() async {
+        guard canMutateConfiguration, let configurationActions else { return }
+        let expectedRevision = configurationState.status?.acceptedRevision ?? 0
+        configurationState = .validating(configurationState.status)
+        do {
+            configurationState = .loaded(try await configurationActions.validateConfiguration(
+                ConfigurationValidationRequest(expectedRevision: expectedRevision)
+            ))
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: configurationState.status)
+        }
+    }
+
+    /// Accepts exactly the candidate digest shown to the owner at the exact
+    /// expected revision. Any drift is rejected by the daemon's CAS.
+    public func acceptConfiguration(candidateDigest: String) async {
+        guard canMutateConfiguration, let configurationActions,
+              let status = configurationState.status,
+              status.state == .pending,
+              let candidate = status.candidate,
+              candidate.digest == candidateDigest else { return }
+        configurationState = .accepting(status)
+        do {
+            configurationState = .loaded(try await configurationActions.acceptConfiguration(
+                ConfigurationAcceptanceRequest(expectedRevision: status.acceptedRevision, digest: candidate.digest)
+            ))
+            await refresh()
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: status)
+        }
+    }
+
+    public func dismissConfigurationFailure() {
+        guard case .failed(_, let last) = configurationState else { return }
+        configurationState = last.map(ConfigurationActionState.loaded) ?? .idle
+    }
+
+    // MARK: - Agent handoff
+
+    /// Whether a worktree is ready for an agent handoff without preparation.
+    public func worktreeIsPrepared(_ worktree: Worktree) -> Bool {
+        worktree.workspace?.state == .ready
+    }
+
+    public var canPrepareWorktree: Bool {
+        !isFixtureMode && lifecycleState.isOperational && !agentHandoffState.isActive && !workspaceActionState.isActive
+    }
+
+    /// Prepares the exact worktree through the daemon and waits for the
+    /// operation to finish. Returns `true` when the worktree is ready for a
+    /// handoff; fixture builds and already-prepared worktrees skip the daemon.
+    @discardableResult
+    public func prepareWorktreeForHandoff(_ worktree: Worktree) async -> Bool {
+        if worktreeIsPrepared(worktree) || isFixtureMode {
+            agentHandoffState = .idle
+            return true
+        }
+        guard canPrepareWorktree, let workspaceActions else { return false }
+        agentHandoffState = .preparing(worktreeId: worktree.id, receipt: nil)
+        do {
+            let receipt = try await workspaceActions.prepareWorktree(PrepareWorktreeRequest(
+                requestId: "app_\(UUID().uuidString.lowercased())",
+                idempotencyKey: "workspace_prepare_\(UUID().uuidString.lowercased())",
+                worktreeId: worktree.id
+            ))
+            agentHandoffState = .preparing(worktreeId: worktree.id, receipt: receipt)
+            try await waitForOperation(receipt)
+            agentHandoffState = .idle
+            return true
+        } catch {
+            agentHandoffState = .failed(worktreeId: worktree.id, Self.actionFailureMessage(error))
+            return false
+        }
+    }
+
+    public func reportAgentHandoffFailure(worktreeId: String, message: String) {
+        agentHandoffState = .failed(worktreeId: worktreeId, message)
+    }
+
+    public func dismissAgentHandoff() {
+        guard !agentHandoffState.isActive else { return }
+        agentHandoffState = .idle
+    }
+
     private func monitorWorkspaceAction(_ kind: WorkspaceActionKind, receipt: MutationReceipt) {
         workspaceActionMonitor?.cancel()
         workspaceActionMonitor = Task { [weak self] in
@@ -667,6 +854,9 @@ public final class AppModel {
             selection = nil
         }
         if case .worktree(_, let id) = selection, snapshot?.worktree(withId: id) == nil {
+            selection = nil
+        }
+        if case .repository(let id) = selection, snapshot?.repository(withId: id) == nil {
             selection = nil
         }
     }

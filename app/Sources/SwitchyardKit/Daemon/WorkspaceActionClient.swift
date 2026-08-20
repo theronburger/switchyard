@@ -4,6 +4,7 @@ public protocol WorkspaceActionSubmitting: Sendable {
     func createWorktree(_ request: CreateWorktreeRequest) async throws -> MutationReceipt
     func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt
     func archiveWorktree(_ request: ArchiveWorktreeRequest) async throws -> MutationReceipt
+    func prepareWorktree(_ request: PrepareWorktreeRequest) async throws -> MutationReceipt
 }
 
 public struct LiveWorkspaceActionClient: WorkspaceActionSubmitting {
@@ -26,6 +27,11 @@ public struct LiveWorkspaceActionClient: WorkspaceActionSubmitting {
     public func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt {
         let client = try await verifiedClient()
         return try await client.adoptWorktree(request)
+    }
+
+    public func prepareWorktree(_ request: PrepareWorktreeRequest) async throws -> MutationReceipt {
+        let client = try await verifiedClient()
+        return try await client.prepareWorktree(request)
     }
 
     private func verifiedClient() async throws -> DaemonClient {
