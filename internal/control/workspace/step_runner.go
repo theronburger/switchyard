@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/theronburger/switchyard/internal/runtime/childgroup"
 )
 
 const maximumStepLogBytes = 4 * 1024 * 1024
@@ -61,39 +63,21 @@ func (runner ExactStepRunner) Run(ctx context.Context, step StepSpec) error {
 	if err := command.Start(); err != nil {
 		return ErrStepFailed
 	}
-	waited := make(chan error, 1)
-	go func() { waited <- command.Wait() }()
-	select {
-	case err := <-waited:
-		if err != nil {
-			return ErrStepFailed
-		}
-		return nil
-	case <-stepContext.Done():
-	}
-	select {
-	case err := <-waited:
-		if err != nil {
-			return errors.Join(stepContext.Err(), ErrStepFailed)
-		}
-		return stepContext.Err()
-	default:
-	}
-	_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
 	grace := runner.GracePeriod
 	if grace <= 0 {
 		grace = 2 * time.Second
 	}
-	timer := time.NewTimer(grace)
-	defer timer.Stop()
-	select {
-	case <-waited:
-		return stepContext.Err()
-	case <-timer.C:
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		<-waited
+	supervised := childgroup.Supervise(stepContext, command, grace)
+	if supervised.Interrupted {
+		if supervised.WaitErr != nil {
+			return errors.Join(stepContext.Err(), ErrStepFailed)
+		}
 		return stepContext.Err()
 	}
+	if supervised.WaitErr != nil {
+		return ErrStepFailed
+	}
+	return nil
 }
 
 func ensureStepOwnershipMarker(directory, stepID string) error {

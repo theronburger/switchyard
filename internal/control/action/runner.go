@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/theronburger/switchyard/internal/runtime/childgroup"
 )
 
 const terminationGrace = 2 * time.Second
@@ -64,24 +66,10 @@ func (runner ExactRunner) Run(ctx context.Context, command ExactCommand) (Outcom
 	if err := process.Start(); err != nil {
 		return Outcome{}, ErrCommandStart
 	}
-	waited := make(chan error, 1)
-	go func() { waited <- process.Wait() }()
-	var waitErr error
-	select {
-	case waitErr = <-waited:
-	case <-runContext.Done():
+	supervised := childgroup.Supervise(runContext, process, terminationGrace)
+	waitErr := supervised.WaitErr
+	if supervised.Interrupted {
 		outcome.TimedOut = errors.Is(runContext.Err(), context.DeadlineExceeded)
-		_ = syscall.Kill(-process.Process.Pid, syscall.SIGTERM)
-		select {
-		case waitErr = <-waited:
-		case <-time.After(terminationGrace):
-			_ = syscall.Kill(-process.Process.Pid, syscall.SIGKILL)
-			select {
-			case waitErr = <-waited:
-			case <-time.After(terminationGrace):
-				waitErr = errors.New("profile action command did not exit")
-			}
-		}
 		if !outcome.TimedOut {
 			return Outcome{}, runContext.Err()
 		}

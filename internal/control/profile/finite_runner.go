@@ -12,6 +12,8 @@ import (
 	"time"
 
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
+
+	"github.com/theronburger/switchyard/internal/runtime/childgroup"
 )
 
 const maximumFiniteLogBytes = 4 * 1024 * 1024
@@ -49,33 +51,14 @@ func (FiniteRunner) Run(ctx context.Context, step environmentcontrol.Preparation
 	if err := command.Start(); err != nil {
 		return errors.New("finite profile command could not start")
 	}
-	waited := make(chan error, 1)
-	go func() { waited <- command.Wait() }()
-	select {
-	case err := <-waited:
-		if err != nil {
-			return errors.New("finite profile command failed")
-		}
-		return nil
-	case <-stepContext.Done():
-		select {
-		case <-waited:
-			return stepContext.Err()
-		default:
-		}
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
-		select {
-		case <-waited:
-			return stepContext.Err()
-		case <-time.After(2 * time.Second):
-		}
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		select {
-		case <-waited:
-		case <-time.After(2 * time.Second):
-		}
+	supervised := childgroup.Supervise(stepContext, command, 2*time.Second)
+	if supervised.Interrupted {
 		return stepContext.Err()
 	}
+	if supervised.WaitErr != nil {
+		return errors.New("finite profile command failed")
+	}
+	return nil
 }
 
 func validFiniteStep(step environmentcontrol.PreparationSpec) bool {
