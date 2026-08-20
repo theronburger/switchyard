@@ -90,8 +90,10 @@ func validOperationDiagnostics(diagnostics contractv1.OperationDiagnostics, oper
 	if maximumBytes == 0 {
 		maximumBytes = 8 * 1024
 	}
+	// Repository, worktree, and machine scoped profile actions report
+	// diagnostics without an environment.
 	if diagnostics.SchemaVersion != contractv1.SchemaVersion || diagnostics.OperationID != operationID ||
-		diagnostics.EnvironmentID == "" || diagnostics.LogReference == "" ||
+		diagnostics.LogReference == "" ||
 		len(diagnostics.Excerpts) == 0 || len(diagnostics.Excerpts) > 2 {
 		return false
 	}

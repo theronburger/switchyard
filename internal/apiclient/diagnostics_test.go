@@ -37,6 +37,30 @@ func TestClientReadsExplicitOperationDiagnosticsAfterHandshake(t *testing.T) {
 	}
 }
 
+func TestClientAcceptsProfileActionDiagnosticsWithoutEnvironment(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	token := testToken()
+	snapshot := validSnapshot(now)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		secureJSONHeaders(response)
+		if request.URL.Path == "/handshake" {
+			writeTestHandshake(t, response, snapshot)
+			return
+		}
+		writeTestJSON(t, response, contractv1.OperationDiagnostics{
+			SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_11",
+			LogReference: "sample/operation_11",
+			Excerpts:     []contractv1.OperationLogExcerpt{{Stream: "stdout", Content: "tidy: 3 files changed"}},
+		})
+	}))
+	defer server.Close()
+	client := NewClient(connectionForServer(t, server.URL, token, snapshot, now), ClientOptions{})
+	diagnostics, err := client.OperationDiagnostics(context.Background(), "operation_11", 0)
+	if err != nil || diagnostics.EnvironmentID != "" || len(diagnostics.Excerpts) != 1 {
+		t.Fatalf("diagnostics: %+v err=%v", diagnostics, err)
+	}
+}
+
 func TestClientPreservesDiagnosticsContractError(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	token := testToken()

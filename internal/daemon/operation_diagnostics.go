@@ -67,7 +67,12 @@ func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 	if err != nil {
 		return contractv1.OperationDiagnostics{}, err
 	}
-	if operation.EnvironmentID == "" || operation.Error == nil || operation.Error.LogReference == "" {
+	if operation.Error == nil || operation.Error.LogReference == "" {
+		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+	}
+	// Repository, worktree, and machine scoped profile actions have no
+	// environment; every other operation's logs live under one.
+	if operation.EnvironmentID == "" && operation.Kind != ProfileActionOperationKind {
 		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
 	logDirectory, valid := reader.logDirectory(operation.Kind, operation.EnvironmentID, operation.Error.LogReference)
@@ -105,6 +110,9 @@ func (reader *OperationDiagnosticsReader) logDirectory(kind, environmentID, refe
 		// and operation, independent of any environment run directory.
 		directory = filepath.Join(reader.runtimeRoot, "actions", cleanReference)
 	} else {
+		if environmentID == "" || strings.ContainsAny(environmentID, "/\\\x00") || environmentID == "." || environmentID == ".." {
+			return "", false
+		}
 		directory = filepath.Join(reader.runtimeRoot, "environments", environmentID, "runs", cleanReference)
 	}
 	return directory, pathContainedBy(reader.runtimeRoot, directory)

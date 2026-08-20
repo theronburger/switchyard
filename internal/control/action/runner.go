@@ -15,9 +15,12 @@ const terminationGrace = 2 * time.Second
 
 // ExactRunner executes a compiled command in a positively owned process group
 // with bounded owner-only stdout/stderr files. It never consults a shell and
-// never inherits the daemon environment.
+// never inherits the daemon environment. RuntimeRoot must be an existing,
+// owned, non-symlinked directory; every run directory must sit beneath it and
+// every path component between the two must be proven before it is touched.
 type ExactRunner struct {
-	Now func() time.Time
+	RuntimeRoot string
+	Now         func() time.Time
 }
 
 // Run executes the command and reports its bounded outcome. A non-zero exit
@@ -34,7 +37,7 @@ func (runner ExactRunner) Run(ctx context.Context, command ExactCommand) (Outcom
 	if err := validateCommand(command); err != nil {
 		return Outcome{}, err
 	}
-	if err := os.MkdirAll(command.RunDirectory, 0o700); err != nil {
+	if err := createOwnedRunDirectory(runner.RuntimeRoot, command.RunDirectory); err != nil {
 		return Outcome{}, err
 	}
 	stdout, err := openBoundedLog(filepath.Join(command.RunDirectory, "stdout.log"))
@@ -151,16 +154,74 @@ func validateCommand(command ExactCommand) error {
 	return nil
 }
 
+// createOwnedRunDirectory proves that root is an owned private directory and
+// that every existing component between root and destination is a real owned
+// private directory before creating the missing remainder. Nothing under a
+// symlinked or foreign component is ever created or modified.
+func createOwnedRunDirectory(root, destination string) error {
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root || strings.ContainsRune(root, 0) {
+		return ErrInvalidCommand
+	}
+	relative, err := filepath.Rel(root, destination)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ErrInvalidCommand
+	}
+	if !ownedPrivateDirectory(root) {
+		return ErrInvalidCommand
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	current := root
+	create := len(components)
+	for index, component := range components {
+		candidate := filepath.Join(current, component)
+		_, err := os.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			create = index
+			break
+		}
+		if err != nil || !ownedPrivateDirectory(candidate) {
+			return ErrInvalidCommand
+		}
+		current = candidate
+	}
+	for _, component := range components[create:] {
+		current = filepath.Join(current, component)
+		if err := os.Mkdir(current, 0o700); err != nil {
+			return ErrInvalidCommand
+		}
+		if !ownedPrivateDirectory(current) {
+			return ErrInvalidCommand
+		}
+	}
+	return nil
+}
+
+func ownedPrivateDirectory(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Geteuid()) && info.Mode().Perm()&0o077 == 0
+}
+
 type boundedLog struct {
 	file      *os.File
 	remaining int64
 	truncated bool
 }
 
+// openBoundedLog creates a fresh owner-only log or, when one already exists,
+// opens it without following symlinks and proves it is a singly linked owned
+// regular file before truncating it. A foreign or multiply linked file is
+// never opened for writing with truncation.
 func openBoundedLog(path string) (*boundedLog, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		file, err = os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+	}
 	if err != nil {
-		return nil, err
+		return nil, ErrInvalidCommand
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -168,9 +229,13 @@ func openBoundedLog(path string) (*boundedLog, error) {
 		return nil, err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || !ok || stat.Nlink != 1 {
+	if !info.Mode().IsRegular() || !ok || stat.Nlink != 1 || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {
 		_ = file.Close()
 		return nil, ErrInvalidCommand
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
+		return nil, err
 	}
 	return &boundedLog{file: file, remaining: MaximumOutputBytes}, nil
 }

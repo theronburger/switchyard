@@ -148,3 +148,108 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogs(t *testing.T) {
 		t.Fatalf("traversal into the actions root was allowed: %v", err)
 	}
 }
+
+func TestOperationDiagnosticsReaderResolvesProfileActionLogsWithoutEnvironment(t *testing.T) {
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	logReference := "sample/operation_11"
+	logDirectory := filepath.Join(runtimeRoot, "actions", filepath.FromSlash(logReference))
+	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDirectory, "stdout.log"), []byte("tidy: 3 files changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Repository, worktree, and machine scoped actions never carry an environment.
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+		ID: "operation_11", Kind: ProfileActionOperationKind,
+		Error: &contractv1.ContractError{LogReference: logReference},
+	}}, runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := reader.ReadOperationDiagnostics(context.Background(), "operation_11", 256)
+	if err != nil || len(diagnostics.Excerpts) != 1 || !strings.Contains(diagnostics.Excerpts[0].Content, "3 files changed") ||
+		diagnostics.EnvironmentID != "" || diagnostics.OperationID != "operation_11" {
+		t.Fatalf("non-environment action diagnostics: %+v err=%v", diagnostics, err)
+	}
+	// Any other operation kind still needs an environment to locate its logs.
+	reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+		ID: "operation_12", Kind: "environment.start",
+		Error: &contractv1.ContractError{LogReference: "run_01/preparations/service/command-0"},
+	}}
+	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_12", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+		t.Fatalf("environment operation without environment was served: %v", err)
+	}
+	// A traversal reference on an environment-less action stays inside the actions root.
+	reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+		ID: "operation_13", Kind: ProfileActionOperationKind,
+		Error: &contractv1.ContractError{LogReference: "../environments/env_01/runs/run_01"},
+	}}
+	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_13", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+		t.Fatalf("traversal out of the actions root was allowed: %v", err)
+	}
+}
+
+func TestOperationDiagnosticsReaderRefusesForeignProfileActionLogs(t *testing.T) {
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	foreignRoot := t.TempDir()
+	foreignLog := filepath.Join(foreignRoot, "stdout.log")
+	if err := os.WriteFile(foreignLog, []byte("foreign secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(runtimeRoot, "actions", "sample"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A symlinked log file inside an owned action directory.
+	ownedDirectory := filepath.Join(runtimeRoot, "actions", "sample", "operation_20")
+	if err := os.Mkdir(ownedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(foreignLog, filepath.Join(ownedDirectory, "stdout.log")); err != nil {
+		t.Fatal(err)
+	}
+	// A symlinked action directory pointing outside the runtime root.
+	if err := os.Symlink(foreignRoot, filepath.Join(runtimeRoot, "actions", "sample", "operation_21")); err != nil {
+		t.Fatal(err)
+	}
+	// A symlinked profile directory above the action directory.
+	if err := os.Symlink(foreignRoot, filepath.Join(runtimeRoot, "actions", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	// A group-readable action directory is not private.
+	sharedDirectory := filepath.Join(runtimeRoot, "actions", "sample", "operation_22")
+	if err := os.Mkdir(sharedDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedDirectory, "stdout.log"), []byte("shared"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A group-readable log inside a private directory.
+	leakyDirectory := filepath.Join(runtimeRoot, "actions", "sample", "operation_23")
+	if err := os.Mkdir(leakyDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leakyDirectory, "stdout.log"), []byte("leaky"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{}, runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, reference := range map[string]string{
+		"symlinked log":        "sample/operation_20",
+		"symlinked action dir": "sample/operation_21",
+		"symlinked profile":    "linked/operation_20",
+		"shared directory":     "sample/operation_22",
+		"shared log":           "sample/operation_23",
+		"missing":              "sample/operation_24",
+	} {
+		reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+			ID: "operation", Kind: ProfileActionOperationKind,
+			Error: &contractv1.ContractError{LogReference: reference},
+		}}
+		if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+			t.Fatalf("%s: expected ErrOperationDiagnosticsUnavailable, got %v", name, err)
+		}
+	}
+}

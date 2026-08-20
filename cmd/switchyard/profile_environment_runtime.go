@@ -258,7 +258,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		return nil, err
 	}
 	profileActionConfig := daemon.ProfileActionServiceConfig{
-		Lifecycle: ctx, Store: store, Resolver: actionResolver, Runner: actioncontrol.ExactRunner{},
+		Lifecycle: ctx, Store: store, Resolver: actionResolver, Runner: actioncontrol.ExactRunner{RuntimeRoot: runtimeRoot},
 		Environment: actions,
 	}
 	if workspaceActions != nil {

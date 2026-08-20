@@ -72,6 +72,9 @@ func TestValidateScopeRequiresExactTargets(t *testing.T) {
 func testCommand(t *testing.T, executable string, arguments ...string) ExactCommand {
 	t.Helper()
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return ExactCommand{
 		Executable: executable, Arguments: arguments, Directory: root,
 		Environment:  []string{"HOME=" + root, "PATH=/usr/bin:/bin", "TMPDIR=" + root},
@@ -80,9 +83,15 @@ func testCommand(t *testing.T, executable string, arguments ...string) ExactComm
 	}
 }
 
+// testRunner roots the runner at the temporary directory that testCommand
+// placed the run directory under.
+func testRunner(command ExactCommand) ExactRunner {
+	return ExactRunner{RuntimeRoot: filepath.Dir(command.RunDirectory)}
+}
+
 func TestExactRunnerCapturesBoundedOutputAndExitCode(t *testing.T) {
 	command := testCommand(t, "/bin/sh", "-c", "head -c 2000000 /dev/zero | tr '\\0' x; echo err >&2; exit 3")
-	outcome, err := ExactRunner{}.Run(context.Background(), command)
+	outcome, err := testRunner(command).Run(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +112,7 @@ func TestExactRunnerReportsTimeoutAndStopsProcessGroup(t *testing.T) {
 	command := testCommand(t, "/bin/sh", "-c", "sleep 30 & wait")
 	command.Timeout = 300 * time.Millisecond
 	started := time.Now()
-	outcome, err := ExactRunner{}.Run(context.Background(), command)
+	outcome, err := testRunner(command).Run(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +131,7 @@ func TestExactRunnerReportsCancellationAsError(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		cancel()
 	}()
-	_, err := ExactRunner{}.Run(ctx, command)
+	_, err := testRunner(command).Run(ctx, command)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
@@ -154,7 +163,7 @@ func TestExactRunnerRejectsUnsafeCommandsWithoutStarting(t *testing.T) {
 	for name, mutate := range cases {
 		command := testCommand(t, "/bin/sh", "-c", "touch "+filepath.Join(root, "started"))
 		mutate(&command)
-		_, err := ExactRunner{}.Run(context.Background(), command)
+		_, err := testRunner(command).Run(context.Background(), command)
 		if !errors.Is(err, ErrInvalidCommand) {
 			t.Fatalf("%s: expected ErrInvalidCommand, got %v", name, err)
 		}
@@ -164,10 +173,122 @@ func TestExactRunnerRejectsUnsafeCommandsWithoutStarting(t *testing.T) {
 	}
 }
 
+func TestExactRunnerRejectsRunDirectoryOutsideRuntimeRoot(t *testing.T) {
+	command := testCommand(t, "/bin/sh", "-c", "true")
+	for name, runner := range map[string]ExactRunner{
+		"missing root":  {},
+		"relative root": {RuntimeRoot: "runtime"},
+		"sibling root":  {RuntimeRoot: t.TempDir()},
+		"equal to run":  {RuntimeRoot: command.RunDirectory},
+	} {
+		if _, err := runner.Run(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+			t.Fatalf("%s: expected ErrInvalidCommand, got %v", name, err)
+		}
+	}
+	if _, err := os.Lstat(command.RunDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run directory was created by a rejected runner: %v", err)
+	}
+}
+
+func TestExactRunnerRefusesSymlinkedParentBeforeMutation(t *testing.T) {
+	command := testCommand(t, "/bin/sh", "-c", "echo escaped")
+	root := filepath.Dir(command.RunDirectory)
+	foreign := t.TempDir()
+	foreignLog := filepath.Join(foreign, "stdout.log")
+	if err := os.WriteFile(foreignLog, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(foreign, command.RunDirectory); err != nil {
+		t.Fatal(err)
+	}
+	command.RunDirectory = filepath.Join(command.RunDirectory, "nested")
+	if _, err := testRunner(command).Run(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("expected ErrInvalidCommand, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(foreign, "nested")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner created a directory through a symlinked parent: %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("runtime root was mutated: %v %v", err, entries)
+	}
+
+	// A symlinked run directory itself must be refused as well, with the
+	// foreign log untouched rather than truncated.
+	command.RunDirectory = filepath.Dir(command.RunDirectory)
+	if _, err := testRunner(command).Run(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("expected ErrInvalidCommand, got %v", err)
+	}
+	contents, err := os.ReadFile(foreignLog)
+	if err != nil || string(contents) != "keep me\n" {
+		t.Fatalf("foreign log was modified: %v %q", err, contents)
+	}
+}
+
+func TestExactRunnerRefusesHardlinkedLogBeforeTruncation(t *testing.T) {
+	for _, stream := range []string{"stdout", "stderr"} {
+		command := testCommand(t, "/bin/sh", "-c", "echo clobbered; echo clobbered >&2")
+		foreign := filepath.Join(t.TempDir(), "secret.txt")
+		if err := os.WriteFile(foreign, []byte("keep me\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(command.RunDirectory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(foreign, filepath.Join(command.RunDirectory, stream+".log")); err != nil {
+			t.Skipf("hard links unavailable: %v", err)
+		}
+		if _, err := testRunner(command).Run(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+			t.Fatalf("%s: expected ErrInvalidCommand, got %v", stream, err)
+		}
+		contents, err := os.ReadFile(foreign)
+		if err != nil || string(contents) != "keep me\n" {
+			t.Fatalf("%s: hardlinked file was truncated: %v %q", stream, err, contents)
+		}
+	}
+}
+
+func TestExactRunnerRefusesSymlinkedLogBeforeTruncation(t *testing.T) {
+	command := testCommand(t, "/bin/sh", "-c", "echo clobbered")
+	foreign := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(foreign, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(command.RunDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(foreign, filepath.Join(command.RunDirectory, "stdout.log")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testRunner(command).Run(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("expected ErrInvalidCommand, got %v", err)
+	}
+	contents, err := os.ReadFile(foreign)
+	if err != nil || string(contents) != "keep me\n" {
+		t.Fatalf("symlink target was modified: %v %q", err, contents)
+	}
+}
+
+func TestExactRunnerReusesOwnedRunDirectoryAndLogs(t *testing.T) {
+	command := testCommand(t, "/bin/sh", "-c", "echo second")
+	first := testCommand(t, "/bin/sh", "-c", "echo first-run-output-that-is-longer")
+	first.RunDirectory = command.RunDirectory
+	if _, err := testRunner(first).Run(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testRunner(command).Run(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(command.RunDirectory, "stdout.log"))
+	if err != nil || string(contents) != "second\n" {
+		t.Fatalf("existing owned log was not truncated and rewritten: %v %q", err, contents)
+	}
+}
+
 func TestExactRunnerDoesNotInheritDaemonEnvironment(t *testing.T) {
 	t.Setenv("SWITCHYARD_TEST_SECRET", "leak")
 	command := testCommand(t, "/bin/sh", "-c", "test -z \"$SWITCHYARD_TEST_SECRET\"")
-	outcome, err := ExactRunner{}.Run(context.Background(), command)
+	outcome, err := testRunner(command).Run(context.Background(), command)
 	if err != nil || outcome.ExitCode != 0 {
 		t.Fatalf("daemon environment leaked: err=%v outcome=%+v", err, outcome)
 	}
