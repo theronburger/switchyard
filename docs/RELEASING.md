@@ -51,13 +51,12 @@ History-rewrite replacement maps and scanner JSON reports may themselves retain 
 
 ## Cut a release
 
-1. Update `VERSION`, both version values in `packaging/Switchyard-Info.plist`, and `CHANGELOG.md`.
-2. Run `make check`, `make race`, the exact linters, vulnerability scan, and `make release-dry-run` on macOS.
+1. Merge conventional commits to `main`. Release Please maintains the version, changelog, and plist in one release pull request.
+2. Approve and merge the green Release Please pull request. Native `GITHUB_TOKEN` pull requests may require the repository's configured Actions approval before their checks run.
+3. The merge creates the version tag and draft release, then calls the protected reusable release workflow. Approve the `release` environment only after its tag and generated files match the reviewed release pull request.
+4. The release workflow reruns `make check`, `make race`, the exact linters, vulnerability scan, and release dry run on macOS.
    Render the candidate Cask and validate it with the current Homebrew: Ruby parsing, `brew install --cask --dry-run`, and `brew fetch --cask`. Run `brew audit` as well; if this work Mac cannot fetch Homebrew's portable Ruby because of its known RubyGems TLS failure, record that environmental failure separately from successful Cask parse and fetch checks.
-3. Run the secret, history, configuration, and binary-artifact review. For the first public release, complete the history gate above. The repository must remain private until the rewritten remote refs pass.
-4. Open a pull request. Require green CI and CodeQL, complete the hostile Fable review, and merge the reviewed tree to `main`.
-5. Create an annotated tag from reviewed `main`: `git tag -a vX.Y.Z -m "Switchyard X.Y.Z"` and push it.
-6. Inspect the pending deployment. Approve the protected `release` environment only when the tag, workflow, version, and embedded Sparkle public key all match.
+5. Run the secret, history, configuration, binary-artifact, and hostile Fable reviews before merging the release pull request.
 
 The tag workflow reruns production checks, imports the publisher identity into an ephemeral runner Keychain, builds Intel and Apple Silicon binaries, creates a universal app, signs nested Sparkle components and the daemon in strict order, verifies entitlements and architectures, derives the Sparkle public key from the private seed, performs a real signed launch, produces checksums and a CycloneDX SBOM for the Go runtime dependency graph, signs the appcast, attests the artifacts, publishes the GitHub Release, and updates the Homebrew Cask with a downgrade guard. Swift packages remain pinned in `app/Package.resolved`.
 

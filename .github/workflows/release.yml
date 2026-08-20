@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Existing version tag created by Release Please
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,7 +17,7 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -19,11 +25,14 @@ jobs:
     name: Sign and publish
     runs-on: macos-26
     environment: release
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -41,13 +50,10 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" ./...
           "$(go env GOPATH)/bin/gitleaks" git . --redact --exit-code 1 --no-banner
       - name: Validate release version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           expected_tag="v$(tr -d '[:space:]' < VERSION)"
           test "$RELEASE_TAG" = "$expected_tag"
           grep -Fq "## [$RELEASE_TAG]" CHANGELOG.md
-          git cat-file -t "$RELEASE_TAG" | grep -Fx tag
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - name: Run production checks
         run: scripts/ci.sh
@@ -171,21 +177,35 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/*.zip \
-            dist/*.sbom.cdx.json \
-            dist/appcast.xml \
-            dist/checksums.txt \
-            --verify-tag \
-            --generate-notes \
-            --title "Switchyard $(tr -d '[:space:]' < VERSION)"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              dist/*.zip \
+              dist/*.sbom.cdx.json \
+              dist/appcast.xml \
+              dist/checksums.txt \
+              --clobber
+            gh release edit "$RELEASE_TAG" \
+              --draft=false \
+              --latest \
+              --verify-tag \
+              --title "Switchyard $(tr -d '[:space:]' < VERSION)"
+          else
+            gh release create "$RELEASE_TAG" \
+              dist/*.zip \
+              dist/*.sbom.cdx.json \
+              dist/appcast.xml \
+              dist/checksums.txt \
+              --verify-tag \
+              --generate-notes \
+              --title "Switchyard $(tr -d '[:space:]' < VERSION)"
+          fi
       - name: Verify published release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           published_directory="$RUNNER_TEMP/published-release"
           mkdir -p "$published_directory"
-          gh release download "$GITHUB_REF_NAME" --dir "$published_directory"
+          gh release download "$RELEASE_TAG" --dir "$published_directory"
           (
             cd "$published_directory"
             shasum -a 256 -c checksums.txt
