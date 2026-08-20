@@ -2,13 +2,14 @@ package daemon
 
 import (
 	"context"
-	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestLoopbackServerServesAndShutsDown(t *testing.T) {
