@@ -201,6 +201,11 @@ func (service *ConfigurationService) MutateRepository(
 		if !desired.Present {
 			edited, err = configuration.NewDocument(entry)
 		} else {
+			if !entry.Enabled {
+				if err := service.disableAllowed(ctx, entry.Key, desired); err != nil {
+					return contractv2.ConfigurationStatus{}, err
+				}
+			}
 			edited, err = configuration.UpsertRepository(desired.Contents, entry)
 		}
 	case contractv2.ConfigurationRepositoryRemove:
@@ -230,6 +235,39 @@ func (service *ConfigurationService) MutateRepository(
 		return contractv2.ConfigurationStatus{}, rejected(err)
 	}
 	return service.stage(ctx, request.ExpectedRevision, loaded)
+}
+
+// disableAllowed refuses to disable a repository that still owns a live
+// environment. Once the disabled revision is accepted the daemon restarts
+// without a registration for that repository, and a live environment without
+// a registration fails boot closed; refusing here keeps the daemon bootable.
+// A key the desired file does not know yet, or a malformed file, is left to
+// the upsert and compiler to report.
+func (service *ConfigurationService) disableAllowed(ctx context.Context, key string, desired configuration.Desired) error {
+	if desired.Problem != nil {
+		return nil
+	}
+	if repository, configured := desired.Document.Repositories[key]; !configured || !repository.Enabled {
+		return nil
+	}
+	if service.References == nil {
+		return ErrConfigurationRepositoryReferenced
+	}
+	snapshot, err := service.References.ReadSnapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("read references: %w", err)
+	}
+	for _, published := range snapshot.Repositories {
+		if published.ProfileKey != key {
+			continue
+		}
+		for _, environment := range snapshot.Environments {
+			if environment.RepositoryID == published.ID && environment.ObservedState != "stopped" {
+				return ErrConfigurationRepositoryReferenced
+			}
+		}
+	}
+	return nil
 }
 
 // removalAllowed enforces the documented safe path: disable, accept, clean up

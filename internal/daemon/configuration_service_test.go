@@ -165,6 +165,27 @@ func TestConfigurationServiceAddsUpdatesDisablesAndRemovesThroughTheDaemon(t *te
 	renamed := sampleEntry("alpha", false)
 	renamed.DisplayName = "Alpha (paused)"
 	renamed.DefaultBase = "origin/trunk"
+	// Disabling is refused while the repository still owns a live environment:
+	// the accepted disable would restart the daemon without a registration
+	// for that environment and fail boot closed.
+	live := validHTTPStatus()
+	live.Repositories = []contractv2.Repository{{
+		ID: "repo_alpha", ProfileKey: "alpha", DisplayName: "Alpha", RootPath: "/tmp/alpha", Remote: "origin",
+	}}
+	live.Environments = []contractv2.Environment{{ID: "env_1", RepositoryID: "repo_alpha", ObservedState: "starting"}}
+	service.References = staticStatusSource{snapshot: live}
+	if _, err := service.MutateRepository(ctx, mutation("upsert", "alpha", 1, pending.Desired.SourceDigest, renamed)); !errors.Is(err, ErrConfigurationRepositoryReferenced) {
+		t.Fatalf("disable with a live environment must fail, got %v", err)
+	}
+	service.References = nil
+	if _, err := service.MutateRepository(ctx, mutation("upsert", "alpha", 1, pending.Desired.SourceDigest, renamed)); !errors.Is(err, ErrConfigurationRepositoryReferenced) {
+		t.Fatalf("disable without a reference source must fail closed, got %v", err)
+	}
+	if current := configuration.ReadDesired(path); !current.Document.Repositories["alpha"].Enabled {
+		t.Fatal("a refused disable must not touch the desired file")
+	}
+	live.Environments[0].ObservedState = "stopped"
+	service.References = staticStatusSource{snapshot: live}
 	pending, err = service.MutateRepository(ctx, mutation("upsert", "alpha", 1, pending.Desired.SourceDigest, renamed))
 	if err != nil {
 		t.Fatal(err)

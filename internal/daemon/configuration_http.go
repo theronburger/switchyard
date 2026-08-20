@@ -91,7 +91,7 @@ func (handler *apiHandler) writeConfigurationResult(
 		case errors.Is(err, ErrConfigurationRepositoryEnabled):
 			writeError(response, http.StatusConflict, "CONFIGURATION_REPOSITORY_ENABLED", "Disable the repository and accept that revision before removing it", false)
 		case errors.Is(err, ErrConfigurationRepositoryReferenced):
-			writeError(response, http.StatusConflict, "CONFIGURATION_REPOSITORY_REFERENCED", "Stop its environments and archive its managed worktrees before removing the repository", false)
+			writeError(response, http.StatusConflict, "CONFIGURATION_REPOSITORY_REFERENCED", "Stop its environments before disabling the repository, and archive its managed worktrees before removing it", false)
 		case errors.As(err, &rejection):
 			writeError(response, http.StatusBadRequest, "CONFIGURATION_INVALID", "Private configuration is invalid: "+rejection.Reason, false)
 		default:
