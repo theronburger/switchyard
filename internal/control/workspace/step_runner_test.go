@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,10 @@ func TestExactStepRunnerWritesOnlyPrivateBoundedLogs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(working, "stdout.log")); !os.IsNotExist(err) {
 		t.Fatalf("log leaked into worktree: %v", err)
+	}
+	marker, err := os.ReadFile(filepath.Join(runDirectory, ownershipMarkerFilename))
+	if err != nil || !strings.Contains(string(marker), `"kind":"preparation-step"`) {
+		t.Fatalf("ownership marker=%q err=%v", marker, err)
 	}
 }
 

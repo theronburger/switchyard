@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -13,6 +15,13 @@ import (
 )
 
 const maximumStepLogBytes = 4 * 1024 * 1024
+const ownershipMarkerFilename = "ownership.json"
+
+type stepOwnershipMarker struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	StepID        string `json:"stepId"`
+}
 
 type ExactStepRunner struct {
 	RuntimeRoot string
@@ -25,6 +34,9 @@ func (runner ExactStepRunner) Run(ctx context.Context, step StepSpec) error {
 		return ErrInvalidPlan
 	}
 	if err := createPrivateDirectoryTree(runner.RuntimeRoot, step.RunDirectory); err != nil {
+		return ErrInvalidPlan
+	}
+	if err := ensureStepOwnershipMarker(step.RunDirectory, step.ID); err != nil {
 		return ErrInvalidPlan
 	}
 	stdout, err := openBoundedLog(filepath.Join(step.RunDirectory, "stdout.log"))
@@ -82,6 +94,53 @@ func (runner ExactStepRunner) Run(ctx context.Context, step StepSpec) error {
 		<-waited
 		return stepContext.Err()
 	}
+}
+
+func ensureStepOwnershipMarker(directory, stepID string) error {
+	marker := stepOwnershipMarker{SchemaVersion: 1, Kind: "preparation-step", StepID: stepID}
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(directory, ownershipMarkerFilename)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		contents, readErr := os.ReadFile(path)
+		var existing stepOwnershipMarker
+		decoder := json.NewDecoder(bytes.NewReader(contents))
+		decoder.DisallowUnknownFields()
+		decodeErr := decoder.Decode(&existing)
+		var trailing any
+		trailingErr := decoder.Decode(&trailing)
+		if readErr != nil || decodeErr != nil || !errors.Is(trailingErr, io.EOF) || existing != marker {
+			return ErrInvalidPlan
+		}
+		info, statErr := os.Lstat(path)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+			return ErrInvalidPlan
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	err = directoryHandle.Sync()
+	return errors.Join(err, directoryHandle.Close())
 }
 
 func pathContained(root, path string) bool {
