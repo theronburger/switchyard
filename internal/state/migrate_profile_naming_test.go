@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,5 +181,131 @@ func TestMigrationRefusesMalformedLegacyIntent(t *testing.T) {
 	}
 	if _, err := Open(ctx, Config{Path: path}); err == nil || !strings.Contains(err.Error(), "apply migration 10") {
 		t.Fatalf("malformed legacy intent was accepted: %v", err)
+	}
+}
+
+// TestMigrationRefusesEveryMalformedLegacyShape proves that migration 10 never
+// relabels a payload it did not verify: a corrupt snapshot, a snapshot with an
+// unexpected schema version or repositories shape, a non-string legacy value,
+// and malformed rows in the tables whose shape did not change all fail closed
+// and leave the database at schema 9.
+func TestMigrationRefusesEveryMalformedLegacyShape(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		statement string
+	}{
+		{"snapshot trailing data", `UPDATE current_snapshot SET payload_json = payload_json || '{"trailing":true}'`},
+		{"snapshot schema version absent", `UPDATE current_snapshot SET payload_json = REPLACE(payload_json, '"schemaVersion":2,', '')`},
+		{"snapshot schema version string", `UPDATE current_snapshot SET payload_json = REPLACE(payload_json, '"schemaVersion":2', '"schemaVersion":"1"')`},
+		{"snapshot schema version float", `UPDATE current_snapshot SET payload_json = REPLACE(payload_json, '"schemaVersion":2', '"schemaVersion":1.0')`},
+		{"snapshot repositories null", `UPDATE current_snapshot SET payload_json = '{"schemaVersion":1,"repositories":null}'`},
+		{"snapshot repositories object", `UPDATE current_snapshot SET payload_json = '{"schemaVersion":1,"repositories":{}}'`},
+		{"snapshot adapter not a string", `UPDATE current_snapshot SET payload_json = json_set(json_remove(REPLACE(payload_json, '"schemaVersion":2', '"schemaVersion":1'), '$.repositories[0].profileKey'), '$.repositories[0].adapter', null)`},
+		{"environment result not json", `UPDATE environment_current_results SET schema_version = 1, result_json = 'not json at all'`},
+		{"environment result array", `UPDATE environment_current_results SET schema_version = 1, result_json = '[1,2]'`},
+		{"environment result trailing data", `UPDATE environment_current_results SET schema_version = 1, result_json = result_json || '{}'`},
+		{"workspace record not json", `UPDATE workspace_operation_records SET schema_version = 1, record_json = '{'`},
+		{"workspace result empty adapter", `UPDATE workspace_current_results SET schema_version = 1, result_json = REPLACE(result_json, '"ProfileKey":"example"', '"Adapter":""')`},
+		{"environment intent null adapter", `UPDATE environment_operation_records SET schema_version = 1, record_json = REPLACE(record_json, '"ProfileDigest":"sha256:pinned"', '"Adapter":null')`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.sqlite")
+			store := openTestStore(t, path)
+			seedLegacyMigrationFixture(t, store)
+			for _, statement := range []string{testCase.statement, "DELETE FROM schema_migrations WHERE version = 10"} {
+				if _, err := store.database.ExecContext(ctx, statement); err != nil {
+					t.Fatalf("%s: %v", statement, err)
+				}
+			}
+			legacyBefore := countLegacyRows(t, store.database)
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(ctx, Config{Path: path}); err == nil || !strings.Contains(err.Error(), "apply migration 10") {
+				t.Fatalf("malformed legacy state was accepted: %v", err)
+			}
+			// The failed migration left the ledger at 9 and every row unstamped.
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = raw.Close() }()
+			var version int
+			if err := raw.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 9 {
+				t.Fatalf("schema version after refused migration: %d %v", version, err)
+			}
+			if legacyAfter := countLegacyRows(t, raw); legacyAfter != legacyBefore {
+				t.Fatalf("a refused migration stamped rows: %d legacy rows before, %d after", legacyBefore, legacyAfter)
+			}
+		})
+	}
+}
+
+func countLegacyRows(t *testing.T, database *sql.DB) int {
+	t.Helper()
+	var legacy int
+	if err := database.QueryRowContext(context.Background(), `
+SELECT (SELECT COUNT(*) FROM environment_operation_records WHERE schema_version = 1)
+     + (SELECT COUNT(*) FROM environment_current_results WHERE schema_version = 1)
+     + (SELECT COUNT(*) FROM workspace_operation_records WHERE schema_version = 1)
+     + (SELECT COUNT(*) FROM workspace_current_results WHERE schema_version = 1)
+     + (SELECT COUNT(*) FROM current_snapshot WHERE payload_json LIKE '%"schemaVersion":1%')`).Scan(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	return legacy
+}
+
+// seedLegacyMigrationFixture writes one snapshot with a published repository,
+// one incomplete pinned start, one current environment result, and one
+// complete workspace preparation in the current (v2) shapes. Each case then
+// downgrades exactly one of them to a hostile 0.1.0 shape.
+func seedLegacyMigrationFixture(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := context.Background()
+	seedEnvironmentJournalSnapshot(t, store)
+	createPublicEnvironmentOperation(t, store, "operation_01", "env_01", environmentcontrol.OperationStart)
+	journal := newTestEnvironmentJournal(t, store, defaultProjector)
+	record := pendingStartRecord("operation_01", "env_01")
+	record.Intent = &environmentcontrol.PlanIntent{ProfileDigest: "sha256:pinned", ServiceIDs: []string{"web"}}
+	if err := journal.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	createPublicEnvironmentOperation(t, store, "operation_02", "env_02", environmentcontrol.OperationStart)
+	published := pendingStartRecord("operation_02", "env_02")
+	published.Intent = &environmentcontrol.PlanIntent{ProfileDigest: "sha256:pinned", ServiceIDs: []string{"web"}}
+	if err := journal.Create(ctx, published); err != nil {
+		t.Fatal(err)
+	}
+	published = runningRecord(published, environmentcontrol.PhaseWaitingReadiness)
+	if err := journal.Update(ctx, published); err != nil {
+		t.Fatal(err)
+	}
+	published.State = domain.OperationSucceeded
+	published.EnvironmentState = domain.EnvironmentRunning
+	published.Phase = environmentcontrol.PhaseComplete
+	if err := journal.Publish(ctx, published, successfulEnvironmentResult("env_02")); err != nil {
+		t.Fatal(err)
+	}
+	workspaceJournal, err := NewWorkspaceJournal(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceRecord := validWorkspaceRecord("operation_workspace", "worktree_01")
+	if err := workspaceJournal.Begin(ctx, workspaceRecord); err != nil {
+		t.Fatal(err)
+	}
+	workspaceRecord.State = workspacecontrol.StateRunning
+	workspaceRecord.Phase = workspacecontrol.PhasePreparing
+	workspaceRecord.NextStep = 1
+	if err := workspaceJournal.Update(ctx, workspaceRecord); err != nil {
+		t.Fatal(err)
+	}
+	workspaceRecord.State = workspacecontrol.StateReady
+	workspaceRecord.Phase = workspacecontrol.PhaseComplete
+	workspaceRecord.NextStep = 2
+	if err := workspaceJournal.Publish(ctx, workspaceRecord, validWorkspaceResult("worktree_01")); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 )
 
 // legacyRecordSchemaVersion is the record schema written by Switchyard 0.1.0
@@ -46,11 +47,20 @@ func migrateLegacySnapshot(ctx context.Context, transaction *sql.Tx) error {
 	if err != nil {
 		return fmt.Errorf("decode legacy status snapshot: %w", err)
 	}
-	if version, _ := document["schemaVersion"].(json.Number); version.String() != "1" {
+	version, ok := document["schemaVersion"].(json.Number)
+	switch {
+	case ok && version.String() == "2":
+		// Already migrated; the migration is idempotent.
 		return nil
+	case ok && version.String() == "1":
+	default:
+		return fmt.Errorf("legacy status snapshot schema version %v is not 1", document["schemaVersion"])
 	}
 	document["schemaVersion"] = json.Number("2")
-	repositories, _ := document["repositories"].([]any)
+	repositories, ok := document["repositories"].([]any)
+	if !ok {
+		return errors.New("legacy status snapshot repositories is not an array")
+	}
 	for _, entry := range repositories {
 		repository, ok := entry.(map[string]any)
 		if !ok {
@@ -106,12 +116,15 @@ func rewriteLegacyRows(ctx context.Context, transaction *sql.Tx, table, keyColum
 			_ = rows.Close()
 			return fmt.Errorf("scan legacy %s: %w", table, err)
 		}
+		// Every legacy row is decoded before it is stamped with the new
+		// schema version, even when its shape did not change: a payload that
+		// is not one well-formed JSON object is refused, never relabelled.
+		document, err := decodeLegacyObject(payload)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode legacy %s %q: %w", table, key, err)
+		}
 		if rewrite != nil {
-			document, err := decodeLegacyObject(payload)
-			if err != nil {
-				_ = rows.Close()
-				return fmt.Errorf("decode legacy %s %q: %w", table, key, err)
-			}
 			if err := rewrite(document); err != nil {
 				_ = rows.Close()
 				return fmt.Errorf("migrate legacy %s %q: %w", table, key, err)
@@ -150,6 +163,9 @@ func decodeLegacyObject(payload []byte) (map[string]any, error) {
 	if document == nil {
 		return nil, errors.New("payload is not a JSON object")
 	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("payload has trailing data")
+	}
 	return document, nil
 }
 
@@ -163,6 +179,9 @@ func renameKey(object map[string]any, from, to string) error {
 	}
 	if _, conflict := object[to]; conflict {
 		return fmt.Errorf("both %q and %q are present", from, to)
+	}
+	if text, ok := value.(string); !ok || text == "" {
+		return fmt.Errorf("%q is not a non-empty string", from)
 	}
 	delete(object, from)
 	object[to] = value
