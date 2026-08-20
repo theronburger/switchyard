@@ -98,6 +98,22 @@ func TestManagedManagerRefusesUnpushedAndForeignWorktrees(t *testing.T) {
 		t.Fatalf("unpushed archive error: %v", err)
 	}
 
+	// A configured upstream whose ref no longer exists (remote branch deleted
+	// and pruned) must not read as "pushed": Git names the upstream but emits
+	// no ahead/behind line, so the start-revision comparison must still apply.
+	runManagedGit(t, repository, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing-remote"))
+	runManagedGit(t, created.WorktreePath, "config", "branch.feature/unpushed.remote", "origin")
+	runManagedGit(t, created.WorktreePath, "config", "branch.feature/unpushed.merge", "refs/heads/feature/unpushed")
+	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{
+		RepositoryID: "repository_01", WorktreePath: created.WorktreePath,
+	})
+	if !errors.Is(err, ErrManagedUnpushed) {
+		t.Fatalf("archive with a vanished upstream ref must refuse unpushed work: %v", err)
+	}
+	if _, err := os.Stat(created.WorktreePath); err != nil {
+		t.Fatalf("unpushed worktree was removed: %v", err)
+	}
+
 	foreignPath := filepath.Join(managedRoot, "foreign")
 	runManagedGit(t, repository, "worktree", "add", "-b", "feature/foreign", foreignPath, "main")
 	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{

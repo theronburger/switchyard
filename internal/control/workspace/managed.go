@@ -648,8 +648,15 @@ func canonicalGitObjectID(output []byte) (string, bool) {
 	return value, true
 }
 
+// parseManagedStatus reads porcelain v2 branch headers. hasUpstream is true
+// only when Git both names an upstream and could compare against it
+// (branch.ab present): a configured upstream whose ref is gone, such as a
+// remote branch deleted after a merge and pruned locally, reports no ahead
+// count at all, and the caller must then fall back to the start-revision
+// comparison rather than treat the branch as pushed.
 func parseManagedStatus(output []byte) (dirty bool, ahead int, hasUpstream bool, valid bool) {
 	valid = true
+	upstreamNamed, comparable := false, false
 	for _, field := range bytes.Split(output, []byte{0}) {
 		if len(field) == 0 {
 			continue
@@ -660,9 +667,10 @@ func parseManagedStatus(output []byte) (dirty bool, ahead int, hasUpstream bool,
 			continue
 		}
 		if strings.HasPrefix(line, "# branch.upstream ") {
-			hasUpstream = strings.TrimSpace(strings.TrimPrefix(line, "# branch.upstream ")) != ""
+			upstreamNamed = strings.TrimSpace(strings.TrimPrefix(line, "# branch.upstream ")) != ""
 		}
 		if strings.HasPrefix(line, "# branch.ab ") {
+			comparable = true
 			parts := strings.Fields(strings.TrimPrefix(line, "# branch.ab "))
 			if len(parts) != 2 || !strings.HasPrefix(parts[0], "+") || !strings.HasPrefix(parts[1], "-") {
 				return false, 0, false, false
@@ -674,6 +682,7 @@ func parseManagedStatus(output []byte) (dirty bool, ahead int, hasUpstream bool,
 			ahead = parsed
 		}
 	}
+	hasUpstream = upstreamNamed && comparable
 	return dirty, ahead, hasUpstream, valid
 }
 
