@@ -97,6 +97,9 @@ ON CONFLICT(digest) DO NOTHING`,
 		}
 		stagedAt = existing.StagedAt
 	}
+	if err := pruneConfigurationCandidates(ctx, transaction); err != nil {
+		return ConfigurationCandidate{}, err
+	}
 	if err := transaction.Commit(); err != nil {
 		return ConfigurationCandidate{}, fmt.Errorf("commit configuration staging: %w", err)
 	}

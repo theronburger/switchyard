@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
 	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
@@ -211,5 +212,129 @@ func TestTerminalOperationRetentionIsBoundedAndPreservesReferencedWork(t *testin
 	current, found, err := journal.Current(ctx, "env_01")
 	if err != nil || !found || current.RunID != "run_env_01" {
 		t.Fatalf("current environment result lost after pruning: found=%v err=%v", found, err)
+	}
+}
+
+// TestTerminalOperationRetentionOrdersChronologicallyWithinOneSecond proves
+// that the retention bound keeps the chronologically newest operations even
+// when RFC 3339 text would sort a fractional timestamp before a whole one.
+func TestTerminalOperationRetentionOrdersChronologicallyWithinOneSecond(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	seedEnvironmentJournalSnapshot(t, store)
+	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return base }
+	create := func(id string) {
+		fingerprint, err := FingerprintRequest(map[string]string{"operationId": id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.CreateOperation(ctx, NewOperation{
+			ID: id, RequestID: id, IdempotencyKey: id, RequestFingerprint: fingerprint, Kind: "workspace.prepare",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, next := range []string{"running", "succeeded"} {
+			if _, err := store.TransitionOperation(ctx, id, next, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for index := 0; index < retainedTerminalOperationLimit; index++ {
+		create(fmt.Sprintf("operation_%04d", index))
+	}
+	// Half a second later, as RFC 3339 text "...00.5Z", which sorts before "...00Z".
+	store.now = func() time.Time { return base.Add(500 * time.Millisecond) }
+	create("operation_newest")
+	store.now = func() time.Time { return base.Add(time.Second) }
+	create("operation_trigger")
+	operations, err := store.ListOperations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make(map[string]struct{}, len(operations))
+	for _, operation := range operations {
+		ids[operation.ID] = struct{}{}
+	}
+	if _, kept := ids["operation_newest"]; !kept {
+		t.Fatal("the chronologically newest terminal operation was pruned")
+	}
+	if _, pruned := ids["operation_0000"]; pruned {
+		t.Fatal("the oldest terminal operation survived")
+	}
+}
+
+// TestConfigurationRevisionRetentionIgnoresStoppedResults proves that a stopped
+// environment result no longer pins its configuration revision, so finished
+// history cannot grow the retained revisions without bound.
+func TestConfigurationRevisionRetentionIgnoresStoppedResults(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	seedEnvironmentJournalSnapshot(t, store)
+	stoppedRevision := acceptTestConfiguration(t, store, 0, "Stopped")
+	createPublicEnvironmentOperation(t, store, "operation_stopped", "env_01", environmentcontrol.OperationStart)
+	journal := newTestEnvironmentJournal(t, store, defaultProjector)
+	record := pendingStartRecord("operation_stopped", "env_01")
+	record.Intent = &environmentcontrol.PlanIntent{ProfileDigest: stoppedRevision.RepositoryDigests["sample"], ServiceIDs: []string{"web"}}
+	if err := journal.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record = runningRecord(record, environmentcontrol.PhaseLaunchingServices)
+	if err := journal.Update(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.EnvironmentState, record.Phase = domain.EnvironmentStopping, environmentcontrol.PhaseRollingBack
+	if err := journal.Update(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.State, record.EnvironmentState, record.Phase = domain.OperationFailed, domain.EnvironmentStopped, environmentcontrol.PhaseComplete
+	record.Failure = "service exited before readiness"
+	result := successfulEnvironmentResult("env_01")
+	result.State, result.Services = domain.EnvironmentStopped, []environmentcontrol.ServiceResult{}
+	result.ProfileDigest = stoppedRevision.RepositoryDigests["sample"]
+	if err := journal.Publish(ctx, record, result); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < retainedConfigurationRevisionLimit+4; index++ {
+		acceptTestConfiguration(t, store, int64(index+1), fmt.Sprintf("Revision%02d", index))
+	}
+	var count int
+	if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM configuration_revisions").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != retainedConfigurationRevisionLimit {
+		t.Fatalf("retained %d configuration revisions, want %d", count, retainedConfigurationRevisionLimit)
+	}
+	if _, err := store.PinnedRepositoryProfile(ctx, "sample", stoppedRevision.RepositoryDigests["sample"]); !errors.Is(err, ErrConfigurationRevisionMissing) {
+		t.Fatalf("stopped result kept its revision pinned: %v", err)
+	}
+}
+
+// TestConfigurationCandidateRetentionIsBounded proves that repeatedly staging
+// distinct candidates without accepting keeps only the most recent ones.
+func TestConfigurationCandidateRetentionIsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	var latest configuration.Loaded
+	for index := 0; index < retainedConfigurationCandidateLimit+5; index++ {
+		document := strings.Replace(testConfigurationDocument, "displayName: Sample", fmt.Sprintf("displayName: Candidate%02d", index), 1)
+		loaded, err := configuration.Parse([]byte(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.StageConfiguration(ctx, 0, "compiler-v1", loaded); err != nil {
+			t.Fatal(err)
+		}
+		latest = loaded
+	}
+	var count int
+	if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM configuration_candidates").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != retainedConfigurationCandidateLimit {
+		t.Fatalf("retained %d candidates, want %d", count, retainedConfigurationCandidateLimit)
+	}
+	if _, err := store.AcceptConfiguration(ctx, 0, latest.Digest); err != nil {
+		t.Fatalf("latest candidate must remain acceptable: %v", err)
 	}
 }
