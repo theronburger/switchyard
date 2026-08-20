@@ -59,6 +59,10 @@ type EnvironmentActionServiceConfig struct {
 	Workspace   WorkspaceEnsurer
 	Resolver    EnvironmentActionResolver
 	NewID       func(string) (string, error)
+	// Keys serializes an environment start against workspace lifecycle
+	// operations and worktree-scoped actions on the same worktree. Share one
+	// instance with the workspace and profile-action services.
+	Keys *OperationKeys
 }
 
 type EnvironmentActionService struct {
@@ -68,6 +72,7 @@ type EnvironmentActionService struct {
 	workspace   WorkspaceEnsurer
 	resolver    EnvironmentActionResolver
 	newID       func(string) (string, error)
+	keys        *OperationKeys
 	lifecycle   context.Context
 	cancel      context.CancelFunc
 	mutex       sync.Mutex
@@ -83,10 +88,13 @@ func NewEnvironmentActionService(config EnvironmentActionServiceConfig) (*Enviro
 	if config.NewID == nil {
 		config.NewID = randomActionID
 	}
+	if config.Keys == nil {
+		config.Keys = NewOperationKeys()
+	}
 	lifecycle, cancel := context.WithCancel(config.Lifecycle)
 	return &EnvironmentActionService{
 		store: config.Store, journal: config.Journal, coordinator: config.Coordinator,
-		workspace: config.Workspace, resolver: config.Resolver, newID: config.NewID,
+		workspace: config.Workspace, resolver: config.Resolver, newID: config.NewID, keys: config.Keys,
 		lifecycle: lifecycle, cancel: cancel,
 	}, nil
 }
@@ -216,6 +224,16 @@ func (service *EnvironmentActionService) executeStart(
 	request environmentcontrol.StartRequest,
 ) {
 	defer service.workers.Done()
+	// The worktree key is held from workspace ensure until the coordinator
+	// has published the environment, so an archive accepted meanwhile cannot
+	// revalidate against a still-stopped snapshot and remove the checkout
+	// under a running preparation or launch.
+	release, err := service.keys.Acquire(service.lifecycle, worktreeOperationKey(worktreeID))
+	if err != nil {
+		service.finalizeUnhandled(request.OperationID, err)
+		return
+	}
+	defer release()
 	if service.workspace != nil {
 		_, err := service.workspace.Ensure(service.lifecycle, workspacecontrol.EnsureRequest{
 			OperationID: request.OperationID, WorktreeID: worktreeID,
@@ -225,7 +243,7 @@ func (service *EnvironmentActionService) executeStart(
 			return
 		}
 	}
-	_, err := service.coordinator.Start(service.lifecycle, request)
+	_, err = service.coordinator.Start(service.lifecycle, request)
 	service.finalizeUnhandled(request.OperationID, err)
 }
 

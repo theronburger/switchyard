@@ -40,6 +40,9 @@ type WorkspaceActionServiceConfig struct {
 	Resolver  WorkspaceActionResolver
 	Restart   func()
 	NewID     func(string) (string, error)
+	// Keys serializes conflicting operations across services. Share one
+	// instance with the environment and profile-action services.
+	Keys *OperationKeys
 }
 
 type WorkspaceActionService struct {
@@ -49,6 +52,7 @@ type WorkspaceActionService struct {
 	resolver  WorkspaceActionResolver
 	restart   func()
 	newID     func(string) (string, error)
+	keys      *OperationKeys
 	lifecycle context.Context
 	cancel    context.CancelFunc
 	mutex     sync.Mutex
@@ -66,10 +70,13 @@ func NewWorkspaceActionService(config WorkspaceActionServiceConfig) (*WorkspaceA
 	if config.NewID == nil {
 		config.NewID = randomActionID
 	}
+	if config.Keys == nil {
+		config.Keys = NewOperationKeys()
+	}
 	lifecycle, cancel := context.WithCancel(config.Lifecycle)
 	return &WorkspaceActionService{
 		store: config.Store, backend: config.Backend, ensurer: config.Ensurer, resolver: config.Resolver,
-		restart: config.Restart, newID: config.NewID, lifecycle: lifecycle, cancel: cancel,
+		restart: config.Restart, newID: config.NewID, keys: config.Keys, lifecycle: lifecycle, cancel: cancel,
 	}, nil
 }
 
@@ -88,7 +95,12 @@ func (service *WorkspaceActionService) CreateWorktree(
 	if err != nil {
 		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
-	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceCreateOperation, "repository", request.RepositoryID, true, func(string) error {
+	return service.accept(workspaceAcceptance{
+		ctx: ctx, request: request.MutationRequest, fingerprint: fingerprint, kind: workspaceCreateOperation,
+		resourceKind: "repository", resourceID: request.RepositoryID, restartAfterSuccess: true,
+		// Creation mutates the repository's shared Git administrative state.
+		keys: []string{repositoryOperationKey(resolved.RepositoryID)},
+	}, func(string) error {
 		_, err := service.backend.Create(service.lifecycle, resolved)
 		return err
 	})
@@ -109,7 +121,13 @@ func (service *WorkspaceActionService) ArchiveWorktree(
 	if err != nil {
 		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
-	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceArchiveOperation, "worktree", request.WorktreeID, true, func(string) error {
+	return service.accept(workspaceAcceptance{
+		ctx: ctx, request: request.MutationRequest, fingerprint: fingerprint, kind: workspaceArchiveOperation,
+		resourceKind: "worktree", resourceID: request.WorktreeID, restartAfterSuccess: true,
+		// Archive waits for any preparation or worktree-scoped action on the
+		// same worktree and for sibling Git administrative mutations.
+		keys: []string{worktreeOperationKey(request.WorktreeID), repositoryOperationKey(resolved.RepositoryID)},
+	}, func(string) error {
 		// Revalidate immediately before mutation: an environment start may
 		// have been accepted for this worktree after the request was resolved,
 		// and the backend re-checks only Git state, not environment activity.
@@ -140,7 +158,11 @@ func (service *WorkspaceActionService) AdoptWorktree(
 	if err != nil {
 		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
-	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceAdoptOperation, "worktree", request.WorktreeID, true, func(string) error {
+	return service.accept(workspaceAcceptance{
+		ctx: ctx, request: request.MutationRequest, fingerprint: fingerprint, kind: workspaceAdoptOperation,
+		resourceKind: "worktree", resourceID: request.WorktreeID, restartAfterSuccess: true,
+		keys: []string{worktreeOperationKey(request.WorktreeID), repositoryOperationKey(resolved.RepositoryID)},
+	}, func(string) error {
 		_, err := service.backend.Adopt(service.lifecycle, resolved)
 		return err
 	})
@@ -162,7 +184,11 @@ func (service *WorkspaceActionService) PrepareWorktree(
 		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	return service.accept(
-		ctx, request.MutationRequest, fingerprint, workspacePrepareOperation, "worktree", worktreeID, false,
+		workspaceAcceptance{
+			ctx: ctx, request: request.MutationRequest, fingerprint: fingerprint, kind: workspacePrepareOperation,
+			resourceKind: "worktree", resourceID: worktreeID, restartAfterSuccess: false,
+			keys: []string{worktreeOperationKey(worktreeID)},
+		},
 		func(operationID string) error {
 			_, ensureErr := service.ensurer.Ensure(service.lifecycle, workspacecontrol.EnsureRequest{
 				OperationID: operationID, WorktreeID: worktreeID,
@@ -172,16 +198,24 @@ func (service *WorkspaceActionService) PrepareWorktree(
 	)
 }
 
+// workspaceAcceptance describes one accepted workspace mutation: its durable
+// operation identity and the resource keys its execution must hold.
+type workspaceAcceptance struct {
+	ctx                 context.Context
+	request             contractv2.MutationRequest
+	fingerprint         [sha256.Size]byte
+	kind                string
+	resourceKind        string
+	resourceID          string
+	restartAfterSuccess bool
+	keys                []string
+}
+
 func (service *WorkspaceActionService) accept(
-	ctx context.Context,
-	request contractv2.MutationRequest,
-	fingerprint [sha256.Size]byte,
-	kind string,
-	resourceKind string,
-	resourceID string,
-	restartAfterSuccess bool,
+	acceptance workspaceAcceptance,
 	action func(string) error,
 ) (contractv2.MutationReceipt, error) {
+	ctx, request, fingerprint, kind := acceptance.ctx, acceptance.request, acceptance.fingerprint, acceptance.kind
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	if service.closed || service.lifecycle.Err() != nil {
@@ -200,17 +234,27 @@ func (service *WorkspaceActionService) accept(
 	}
 	if created {
 		service.workers.Add(1)
-		go service.execute(operation.ID, resourceKind, resourceID, restartAfterSuccess, action)
+		go service.execute(operation.ID, acceptance, action)
 	}
 	return receiptForOperation(request.RequestID, operation), nil
 }
 
 func (service *WorkspaceActionService) execute(
-	operationID, resourceKind, resourceID string,
-	restartAfterSuccess bool,
+	operationID string,
+	acceptance workspaceAcceptance,
 	action func(string) error,
 ) {
 	defer service.workers.Done()
+	resourceKind, resourceID, restartAfterSuccess := acceptance.resourceKind, acceptance.resourceID, acceptance.restartAfterSuccess
+	// The operation stays pending while a conflicting operation on the same
+	// worktree or repository runs; a lifecycle shutdown while waiting fails
+	// it as interrupted without ever having started.
+	release, err := service.keys.Acquire(service.lifecycle, acceptance.keys...)
+	if err != nil {
+		service.fail(operationID, workspaceFailure(err, resourceKind, resourceID))
+		return
+	}
+	defer release()
 	if _, err := service.store.TransitionOperation(
 		service.lifecycle, operationID, string(domain.OperationRunning), nil,
 	); err != nil {

@@ -121,17 +121,20 @@ func (resolver configuredProfileActionResolver) ResolveAction(
 	if !found || definition.ID == "" {
 		return daemon.ProfileActionResolution{}, configuredActionError(404, "ACTION_NOT_FOUND", "The requested action is not part of the accepted profile.", false)
 	}
+	executingWorktreeID := ""
 	if request.WorktreeID != "" {
 		registration, found := resolver.byWorktree[request.WorktreeID]
 		if !found || registration.RepositoryID != request.RepositoryID {
 			return daemon.ProfileActionResolution{}, configuredActionError(404, "WORKTREE_NOT_FOUND", "The requested worktree is not available.", false)
 		}
+		executingWorktreeID = registration.WorktreeID
 	}
 	if request.EnvironmentID != "" {
 		registration, found := resolver.byEnvironment[request.EnvironmentID]
 		if !found || registration.RepositoryID != request.RepositoryID {
 			return daemon.ProfileActionResolution{}, configuredActionError(404, "ENVIRONMENT_NOT_FOUND", "The requested environment is not available.", false)
 		}
+		executingWorktreeID = registration.WorktreeID
 		if request.ServiceID != "" {
 			service, found := registration.Profile.Services[request.ServiceID]
 			if !found || !service.IsAvailable() {
@@ -146,6 +149,7 @@ func (resolver configuredProfileActionResolver) ResolveAction(
 			RepositoryID: request.RepositoryID, WorktreeID: request.WorktreeID,
 			EnvironmentID: request.EnvironmentID, ServiceID: request.ServiceID,
 		},
+		WorktreeID: executingWorktreeID,
 	}
 	if definition.Kind == actioncontrol.KindLifecycle && definition.Lifecycle == actioncontrol.LifecycleStart {
 		for id, service := range entry.Profile.Services {

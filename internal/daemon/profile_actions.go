@@ -28,6 +28,11 @@ type ProfileActionResolution struct {
 	AcceptedDigest string
 	// StartServiceIDs lists the services a lifecycle start dispatches.
 	StartServiceIDs []string
+	// WorktreeID is the worktree a command action executes in, including for
+	// environment- and service-scoped targets whose Target carries only the
+	// environment. It serializes the run against that worktree's lifecycle;
+	// machine- and repository-scoped actions leave it empty.
+	WorktreeID string
 }
 
 type ProfileActionResolver interface {
@@ -48,6 +53,10 @@ type ProfileActionServiceConfig struct {
 	Environment EnvironmentActions
 	Workspace   WorkspaceActions
 	NewID       func(string) (string, error)
+	// Keys serializes command actions against workspace lifecycle operations
+	// on the same worktree or repository. Share one instance with the
+	// workspace and environment services.
+	Keys *OperationKeys
 }
 
 type ProfileActionService struct {
@@ -57,6 +66,7 @@ type ProfileActionService struct {
 	environment EnvironmentActions
 	workspace   WorkspaceActions
 	newID       func(string) (string, error)
+	keys        *OperationKeys
 	lifecycle   context.Context
 	cancel      context.CancelFunc
 	mutex       sync.Mutex
@@ -71,10 +81,13 @@ func NewProfileActionService(config ProfileActionServiceConfig) (*ProfileActionS
 	if config.NewID == nil {
 		config.NewID = randomActionID
 	}
+	if config.Keys == nil {
+		config.Keys = NewOperationKeys()
+	}
 	lifecycle, cancel := context.WithCancel(config.Lifecycle)
 	return &ProfileActionService{
 		store: config.Store, resolver: config.Resolver, runner: config.Runner,
-		environment: config.Environment, workspace: config.Workspace, newID: config.NewID,
+		environment: config.Environment, workspace: config.Workspace, newID: config.NewID, keys: config.Keys,
 		lifecycle: lifecycle, cancel: cancel,
 	}, nil
 }
@@ -121,6 +134,9 @@ func (service *ProfileActionService) RunAction(
 		EnvironmentID: request.EnvironmentID, ServiceID: request.ServiceID,
 	}
 	if target != resolution.Target {
+		return contractv2.MutationReceipt{}, profileActionsUnavailable()
+	}
+	if !consistentActionWorktree(definition.Scope, target, resolution.WorktreeID) {
 		return contractv2.MutationReceipt{}, profileActionsUnavailable()
 	}
 	if err := actioncontrol.ValidateScope(definition.Scope, target); err != nil {
@@ -229,6 +245,16 @@ func (service *ProfileActionService) execute(operationID string, resolution Prof
 	defer service.workers.Done()
 	actionID := resolution.Definition.ID
 	logReference := filepath.ToSlash(filepath.Join(resolution.ProfileKey, operationID))
+	// A command action stays pending until no conflicting workspace
+	// operation, environment start, or sibling action holds its keys; the
+	// store already serializes environment-targeted operations per
+	// environment.
+	release, err := service.keys.Acquire(service.lifecycle, commandActionKeys(resolution)...)
+	if err != nil {
+		service.fail(operationID, actionFailure(actionID, logReference, err, nil))
+		return
+	}
+	defer release()
 	if _, err := service.store.TransitionOperation(service.lifecycle, operationID, string(domain.OperationRunning), nil); err != nil {
 		service.fail(operationID, actionFailure(actionID, logReference, err, nil))
 		return
@@ -244,6 +270,33 @@ func (service *ProfileActionService) execute(operationID string, resolution Prof
 	}
 	if _, err := service.store.TransitionOperation(service.lifecycle, operationID, string(domain.OperationSucceeded), nil); err != nil {
 		service.fail(operationID, actionFailure(actionID, logReference, err, nil))
+	}
+}
+
+// consistentActionWorktree requires the resolver to name the executing
+// worktree for every worktree-bound scope so serialization cannot silently
+// degrade to unkeyed concurrency.
+func consistentActionWorktree(scope string, target actioncontrol.Target, worktreeID string) bool {
+	switch scope {
+	case actioncontrol.ScopeWorktree:
+		return worktreeID == target.WorktreeID
+	case actioncontrol.ScopeEnvironment, actioncontrol.ScopeService:
+		return worktreeID != ""
+	default:
+		return worktreeID == ""
+	}
+}
+
+// commandActionKeys names the resources a command action run mutates.
+// Machine- and repository-scoped actions act on the shared checkout and
+// serialize with worktree creation and archive in that repository; every
+// narrower scope serializes with its worktree's lifecycle.
+func commandActionKeys(resolution ProfileActionResolution) []string {
+	switch resolution.Definition.Scope {
+	case actioncontrol.ScopeMachine, actioncontrol.ScopeRepository:
+		return []string{repositoryOperationKey(resolution.Target.RepositoryID)}
+	default:
+		return []string{worktreeOperationKey(resolution.WorktreeID)}
 	}
 }
 

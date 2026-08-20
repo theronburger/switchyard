@@ -65,7 +65,19 @@ func (resolver *fakeProfileActionResolver) ResolveAction(_ context.Context, requ
 			EnvironmentID: request.EnvironmentID, ServiceID: request.ServiceID,
 		},
 		StartServiceIDs: []string{"web"},
+		WorktreeID:      executingWorktreeID(definition.Scope, request),
 	}, nil
+}
+
+func executingWorktreeID(scope string, request contractv2.RunProfileActionRequest) string {
+	switch scope {
+	case actioncontrol.ScopeWorktree:
+		return request.WorktreeID
+	case actioncontrol.ScopeEnvironment, actioncontrol.ScopeService:
+		return "worktree_01"
+	default:
+		return ""
+	}
 }
 
 func (resolver *fakeProfileActionResolver) CompileAction(_ context.Context, resolution ProfileActionResolution, operationID string) (actioncontrol.ExactCommand, error) {

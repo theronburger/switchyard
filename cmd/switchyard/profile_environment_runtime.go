@@ -235,8 +235,12 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		return nil, err
 	}
 	resolver := newConfiguredActionResolver(environments, paths.configuration, discovered.AcceptedConfigurationDigest)
+	// One key set serializes every service's operations on the same worktree
+	// or repository; unrelated targets keep running concurrently.
+	operationKeys := daemon.NewOperationKeys()
 	actions, err := daemon.NewEnvironmentActionService(daemon.EnvironmentActionServiceConfig{
 		Lifecycle: ctx, Store: store, Journal: journal, Coordinator: coordinator, Workspace: workspaceCoordinator, Resolver: resolver,
+		Keys: operationKeys,
 	})
 	if err != nil {
 		return nil, err
@@ -248,7 +252,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 		workspaceResolver.acceptedConfigurationDigest = discovered.AcceptedConfigurationDigest
 		workspaceActions, err = daemon.NewWorkspaceActionService(daemon.WorkspaceActionServiceConfig{
 			Lifecycle: ctx, Store: store, Backend: manager, Ensurer: workspaceCoordinator,
-			Resolver: workspaceResolver, Restart: restart,
+			Resolver: workspaceResolver, Restart: restart, Keys: operationKeys,
 		})
 		if err != nil {
 			return nil, err
@@ -260,7 +264,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	}
 	profileActionConfig := daemon.ProfileActionServiceConfig{
 		Lifecycle: ctx, Store: store, Resolver: actionResolver, Runner: actioncontrol.ExactRunner{RuntimeRoot: runtimeRoot},
-		Environment: actions,
+		Environment: actions, Keys: operationKeys,
 	}
 	if workspaceActions != nil {
 		profileActionConfig.Workspace = workspaceActions
