@@ -81,6 +81,8 @@ type Result struct {
 	PlanID        string    `json:"planId"`
 	PlanRevision  int64     `json:"planRevision"`
 	Removals      []Removal `json:"removals"`
+	ClaimedAt     time.Time `json:"claimedAt"`
+	Attempts      int       `json:"attempts"`
 	CompletedAt   time.Time `json:"completedAt"`
 }
 
@@ -192,6 +194,12 @@ func (planner PrivatePreparationPlanner) Remove(ctx context.Context, candidate C
 		if err != nil {
 			return ErrCandidateChanged
 		}
+		// Logs go first and the ownership marker last, so a removal that is
+		// interrupted part-way leaves a step that is still positively owned
+		// and re-plannable instead of an unverifiable leftover.
+		sort.SliceStable(files, func(left, right int) bool {
+			return files[left].Name() != "ownership.json" && files[right].Name() == "ownership.json"
+		})
 		for _, file := range files {
 			if file.Name() != "ownership.json" && file.Name() != "stdout.log" && file.Name() != "stderr.log" {
 				return ErrCandidateChanged
