@@ -149,10 +149,10 @@ func NewDocument(entry RepositoryEntry) ([]byte, error) {
 	top.Content = append(top.Content,
 		stringNode("schemaVersion"), intNode(SchemaVersion),
 		stringNode("machine"), &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
-			stringNode("ports"), &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+			stringNode("ports"), {Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
 				stringNode("first"), intNode(30000), stringNode("last"), intNode(49999),
 			}},
-			stringNode("execution"), &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+			stringNode("execution"), {Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
 				stringNode("inheritedEnvironment"), {Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle},
 				stringNode("shellDefault"), stringNode("deny"),
 			}},

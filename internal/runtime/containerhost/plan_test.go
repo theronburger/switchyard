@@ -323,3 +323,35 @@ func TestPlannerNeverGeneratesGlobalPrune(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateContainerEnvironmentAcceptsOnlyPortableVariableNames(t *testing.T) {
+	t.Parallel()
+	accepted := [][]string{
+		{"A=1"},
+		{"_=1"},
+		{"a_b9=value with spaces"},
+		{"NAME=", "OTHER=x=y"},
+	}
+	for _, environment := range accepted {
+		if err := validateContainerEnvironment(environment); err != nil {
+			t.Fatalf("expected %q to be accepted, got %v", environment, err)
+		}
+	}
+	rejected := map[string][]string{
+		"leading digit":      {"1NAME=value"},
+		"hyphen":             {"NA-ME=value"},
+		"dot":                {"NA.ME=value"},
+		"space":              {"NA ME=value"},
+		"unicode":            {"NÄME=value"},
+		"empty name":         {"=value"},
+		"missing separator":  {"NAME"},
+		"embedded nul":       {"NAME=val\x00ue"},
+		"duplicate variable": {"NAME=1", "NAME=2"},
+		"oversized entry":    {"NAME=" + strings.Repeat("x", 64*1024)},
+	}
+	for label, environment := range rejected {
+		if err := validateContainerEnvironment(environment); err == nil {
+			t.Fatalf("expected %s %q to be rejected", label, environment)
+		}
+	}
+}

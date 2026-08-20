@@ -5,12 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestLoadOrCreateTokenCreatesAndReusesPrivateToken(t *testing.T) {

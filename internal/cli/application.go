@@ -272,19 +272,16 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if err != nil {
 			return writeFailure(stdout, stderr, command.JSON, err)
 		}
-		if command.Name == "validate-configuration" {
-			expected := status.AcceptedRevision
-			if command.ExpectedRevision != nil {
-				expected = *command.ExpectedRevision
-			}
+		expected := status.AcceptedRevision
+		if command.ExpectedRevision != nil {
+			expected = *command.ExpectedRevision
+		}
+		switch command.Name {
+		case "validate-configuration":
 			status, err = backend.ValidateConfiguration(ctx, contractv2.ConfigurationValidationRequest{
 				SchemaVersion: contractv2.SchemaVersion, ExpectedRevision: expected,
 			})
-		} else if command.Name == "accept-configuration" {
-			expected := status.AcceptedRevision
-			if command.ExpectedRevision != nil {
-				expected = *command.ExpectedRevision
-			}
+		case "accept-configuration":
 			status, err = backend.AcceptConfiguration(ctx, contractv2.ConfigurationAcceptanceRequest{
 				SchemaVersion: contractv2.SchemaVersion, ExpectedRevision: expected, Digest: command.Positionals[0],
 			})

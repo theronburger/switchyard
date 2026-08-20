@@ -206,7 +206,7 @@ func validateContainerEnvironment(environment []string) error {
 			return errors.New("container environment is invalid")
 		}
 		for index, character := range name {
-			if !(character == '_' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || index > 0 && character >= '0' && character <= '9') {
+			if character != '_' && (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && (index == 0 || character < '0' || character > '9') {
 				return errors.New("container environment is invalid")
 			}
 		}
