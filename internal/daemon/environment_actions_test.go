@@ -21,6 +21,7 @@ type fakeActionOperationStore struct {
 	byKey       map[string]state.NewOperation
 	createErr   error
 	transitions int
+	transition  func(context.Context, string, string, *contractv1.ContractError) (contractv1.Operation, error)
 }
 
 func newFakeActionOperationStore() *fakeActionOperationStore {
@@ -69,11 +70,14 @@ func (store *fakeActionOperationStore) ReadOperation(
 }
 
 func (store *fakeActionOperationStore) TransitionOperation(
-	_ context.Context,
+	ctx context.Context,
 	operationID string,
 	nextState string,
 	failure *contractv1.ContractError,
 ) (contractv1.Operation, error) {
+	if store.transition != nil {
+		return store.transition(ctx, operationID, nextState, failure)
+	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	operation := store.operations[operationID]

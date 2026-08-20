@@ -15,14 +15,16 @@ import (
 )
 
 type stubBackend struct {
-	snapshot contractv1.StatusSnapshot
-	status   error
-	doctor   apiclient.DoctorReport
-	start    func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	stop     func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
-	create   func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	adopt    func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	archive  func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	snapshot   contractv1.StatusSnapshot
+	status     error
+	readStatus func() (contractv1.StatusSnapshot, error)
+	doctor     apiclient.DoctorReport
+	start      func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
+	stop       func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+	create     func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
+	adopt      func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
+	archive    func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	prepare    func(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
 }
 
 func (b stubBackend) CreateWorktree(
@@ -55,7 +57,20 @@ func (b stubBackend) AdoptWorktree(
 	return b.adopt(ctx, request)
 }
 
+func (b stubBackend) PrepareWorktree(
+	ctx context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if b.prepare == nil {
+		return contractv1.MutationReceipt{}, errors.New("prepare is not configured")
+	}
+	return b.prepare(ctx, request)
+}
+
 func (b stubBackend) Status(context.Context) (contractv1.StatusSnapshot, error) {
+	if b.readStatus != nil {
+		return b.readStatus()
+	}
 	return b.snapshot, b.status
 }
 
@@ -291,6 +306,263 @@ func TestApplicationStartBuildsIdempotentMutation(t *testing.T) {
 	}
 }
 
+func TestApplicationStartDotResolvesTheContainingWorktree(t *testing.T) {
+	backend := stubBackend{
+		snapshot: cliStatusSnapshot(),
+		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if request.WorktreeID != "worktree_feature" || request.TargetID != "testing" ||
+				len(request.ServiceIDs) != 2 || request.ServiceIDs[0] != "app" || request.ServiceIDs[1] != "api" {
+				t.Fatalf("start request: %+v", request)
+			}
+			return cliTestReceipt(request.RequestID, "environment_feature", time.Now()), nil
+		},
+	}
+	application := Application{
+		Backend:      backend,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a/services/api", nil },
+		NewRequestID: func() (string, error) { return "request_current", nil },
+	}
+	if code := application.Run(context.Background(), []string{
+		"start", ".", "app", "api", "--target", "testing",
+	}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+}
+
+func TestApplicationStartDotWaitRetriesDiscoveryAndDaemonRestart(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	statusCalls := 0
+	startCalls := 0
+	backend := stubBackend{
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				discoveryPending := snapshot
+				discoveryPending.Repositories = []contractv1.Repository{snapshot.Repositories[0]}
+				discoveryPending.Repositories[0].Worktrees = []contractv1.Worktree{snapshot.Repositories[0].Worktrees[0]}
+				return discoveryPending, nil
+			}
+			if statusCalls == 2 {
+				return snapshot, nil
+			}
+			completed := snapshot
+			completed.Environments[1].DesiredState = "running"
+			completed.Environments[1].ObservedState = "running"
+			completed.Environments[1].Health = "healthy"
+			completed.Environments[1].Services = []contractv1.Service{
+				{ID: "app", DesiredState: "running", ObservedState: "running", Health: "healthy", Run: &contractv1.ServiceRun{ID: "run_start"}},
+				{ID: "api", DesiredState: "running", ObservedState: "running", Health: "healthy", Run: &contractv1.ServiceRun{ID: "run_start"}},
+			}
+			completed.Operations = []contractv1.Operation{{ID: "operation_start", State: "succeeded"}}
+			return completed, nil
+		},
+		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			startCalls++
+			if startCalls == 1 {
+				return contractv1.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_start",
+				RunID: "run_start", AcceptedAt: time.Now(), EnvironmentID: "environment_feature",
+			}, nil
+		},
+	}
+	application := Application{
+		Backend: backend, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) { return "request_start", nil },
+	}
+	if code := application.Run(context.Background(), []string{"start", ".", "app", "api", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if statusCalls != 3 || startCalls != 2 {
+		t.Fatalf("status calls=%d start calls=%d", statusCalls, startCalls)
+	}
+}
+
+func TestApplicationPrepareDotHydratesCurrentWorktreeAndWaitsForReadiness(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	statusCalls := 0
+	backend := stubBackend{
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				discoveryPending := snapshot
+				discoveryPending.Repositories = []contractv1.Repository{snapshot.Repositories[0]}
+				discoveryPending.Repositories[0].Worktrees = []contractv1.Worktree{snapshot.Repositories[0].Worktrees[0]}
+				return discoveryPending, nil
+			}
+			if statusCalls == 2 {
+				return snapshot, nil
+			}
+			completed := snapshot
+			completed.Repositories[0].Worktrees[1].Workspace = &contractv1.WorkspaceStatus{
+				Ownership: "adopted", State: "ready", Fingerprint: "fingerprint_01", PreparedAt: time.Now(),
+				Toolchains: []contractv1.WorkspaceToolchain{},
+			}
+			completed.Operations = []contractv1.Operation{{ID: "operation_01", Kind: "workspace.prepare", State: "succeeded"}}
+			return completed, nil
+		},
+		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.Validate() != nil || request.WorktreeID != "worktree_feature" ||
+				request.IdempotencyKey != "cli:request_prepare" {
+				t.Fatalf("prepare request: %+v", request)
+			}
+			return cliTestReceipt(request.RequestID, "", time.Now()), nil
+		},
+	}
+	application := Application{
+		Backend: backend, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a/services/api", nil },
+		NewRequestID: func() (string, error) { return "request_prepare", nil },
+	}
+	if code := application.Run(context.Background(), []string{"prepare", ".", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if statusCalls != 3 {
+		t.Fatalf("status calls: %d", statusCalls)
+	}
+}
+
+func TestApplicationPrepareWaitRetriesAcrossDaemonInventoryRestart(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	prepareCalls := 0
+	backend := stubBackend{
+		snapshot: snapshot,
+		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+			prepareCalls++
+			if prepareCalls == 1 {
+				return contractv1.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+			}
+			return cliTestReceipt(request.RequestID, "", time.Now()), nil
+		},
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			ready := snapshot
+			ready.Repositories[0].Worktrees[1].Workspace = &contractv1.WorkspaceStatus{
+				Ownership: "adopted", State: "ready", Fingerprint: "fingerprint_01", PreparedAt: time.Now(),
+				Toolchains: []contractv1.WorkspaceToolchain{},
+			}
+			ready.Operations = []contractv1.Operation{{ID: "operation_01", State: "succeeded"}}
+			return ready, nil
+		},
+	}
+	application := Application{
+		Backend: backend, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) { return "request_prepare", nil },
+	}
+	if code := application.Run(context.Background(), []string{"prepare", ".", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if prepareCalls != 2 {
+		t.Fatalf("prepare calls: %d", prepareCalls)
+	}
+}
+
+func TestApplicationPrepareWaitResubmitsAfterInterruptedOperation(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	statusCalls := 0
+	prepareCalls := 0
+	requestIDs := []string{"request_prepare_1", "request_prepare_2"}
+	requestIndex := 0
+	backend := stubBackend{
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return snapshot, nil
+			}
+			observed := snapshot
+			if statusCalls == 2 {
+				observed.Operations = []contractv1.Operation{{
+					ID: "operation_prepare_1", State: "failed",
+					Error: &contractv1.ContractError{
+						Code: "DAEMON_RESTARTED", Message: "The daemon restarted before the operation completed.", Retryable: true,
+					},
+				}}
+				return observed, nil
+			}
+			observed.Repositories[0].Worktrees[1].Workspace = &contractv1.WorkspaceStatus{
+				Ownership: "adopted", State: "ready", Fingerprint: "fingerprint_01", PreparedAt: time.Now(),
+				Toolchains: []contractv1.WorkspaceToolchain{},
+			}
+			observed.Operations = []contractv1.Operation{{ID: "operation_prepare_2", State: "succeeded"}}
+			return observed, nil
+		},
+		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+			prepareCalls++
+			expectedRequestID := requestIDs[prepareCalls-1]
+			if request.RequestID != expectedRequestID || request.IdempotencyKey != "cli:"+expectedRequestID {
+				t.Fatalf("prepare request: %+v", request)
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_prepare_" + string(rune('0'+prepareCalls)), AcceptedAt: time.Now(),
+			}, nil
+		},
+	}
+	application := Application{
+		Backend: backend, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd: func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) {
+			requestID := requestIDs[requestIndex]
+			requestIndex++
+			return requestID, nil
+		},
+	}
+	if code := application.Run(context.Background(), []string{"prepare", ".", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if prepareCalls != 2 || statusCalls != 3 {
+		t.Fatalf("prepare calls=%d status calls=%d", prepareCalls, statusCalls)
+	}
+}
+
+func TestApplicationPrepareWaitEmitsStructuredFailure(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	statusCalls := 0
+	backend := stubBackend{
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return snapshot, nil
+			}
+			failed := snapshot
+			failed.Operations = []contractv1.Operation{{
+				ID: "operation_prepare", State: "failed", Error: &contractv1.ContractError{
+					Code: "WORKSPACE_NOT_READY", Message: "The workspace could not be verified.",
+					Retryable: true, NextAction: "inspect_workspace_diagnostics",
+				},
+			}}
+			return failed, nil
+		},
+		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_prepare", AcceptedAt: time.Now(),
+			}, nil
+		},
+	}
+	var output bytes.Buffer
+	application := Application{
+		Backend: backend, Stdout: &output, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) { return "request_prepare", nil },
+	}
+	if code := application.Run(context.Background(), []string{
+		"prepare", ".", "--wait", "--json", "--idempotency-key", "prepare:explicit",
+	}); code != ExitFailure {
+		t.Fatalf("exit code: %d", code)
+	}
+	var failure errorOutput
+	if err := json.Unmarshal(output.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != apiclient.ErrorCode("WORKSPACE_NOT_READY") ||
+		failure.Error.NextAction != "inspect_workspace_diagnostics" {
+		t.Fatalf("failure: %+v", failure)
+	}
+}
+
 func TestApplicationStopUsesGeneratedIdempotencyKey(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 14, 15, 30, 0, 0, time.UTC)
 	backend := stubBackend{
@@ -312,6 +584,161 @@ func TestApplicationStopUsesGeneratedIdempotencyKey(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "operation_01") || !strings.Contains(output.String(), "environment_01") {
 		t.Fatalf("stop output: %s", output.String())
+	}
+}
+
+func TestApplicationStopDotWaitsForOwnedResourcesToDisappear(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	snapshot.Environments[1].Revision = 23
+	snapshot.Environments[1].PortLeases = []contractv1.PortLease{{ID: "port_feature"}}
+	statusCalls := 0
+	backend := stubBackend{
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return snapshot, nil
+			}
+			completed := snapshot
+			completed.Environments[1].DesiredState = "stopped"
+			completed.Environments[1].ObservedState = "stopped"
+			completed.Environments[1].PortLeases = []contractv1.PortLease{}
+			completed.Environments[1].InfrastructureLeases = []contractv1.InfrastructureLease{}
+			completed.Operations = []contractv1.Operation{{
+				ID: "operation_01", EnvironmentID: "environment_feature", State: "succeeded",
+			}}
+			return completed, nil
+		},
+		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if environmentID != "environment_feature" || request.ExpectedEnvironmentRevision != nil {
+				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
+			}
+			return cliTestReceipt(request.RequestID, environmentID, time.Now()), nil
+		},
+	}
+	application := Application{
+		Backend: backend, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) { return "request_cleanup", nil },
+	}
+	if code := application.Run(context.Background(), []string{"stop", ".", "--if-running", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if statusCalls != 2 {
+		t.Fatalf("status calls: %d", statusCalls)
+	}
+}
+
+func TestApplicationStopDotWaitRetriesDiscoveryAndSubmissionAcrossDaemonRestart(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	statusCalls := 0
+	stopCalls := 0
+	backend := stubBackend{
+		readStatus: func() (contractv1.StatusSnapshot, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return contractv1.StatusSnapshot{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+			}
+			if statusCalls == 2 {
+				return snapshot, nil
+			}
+			completed := snapshot
+			completed.Environments[1].DesiredState = "stopped"
+			completed.Environments[1].ObservedState = "stopped"
+			completed.Environments[1].PortLeases = []contractv1.PortLease{}
+			completed.Environments[1].InfrastructureLeases = []contractv1.InfrastructureLease{}
+			completed.Operations = []contractv1.Operation{{ID: "operation_stop", State: "succeeded"}}
+			return completed, nil
+		},
+		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			stopCalls++
+			if environmentID != "environment_feature" || request.RequestID != "request_cleanup" ||
+				request.IdempotencyKey != "cli:request_cleanup" {
+				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
+			}
+			if stopCalls == 1 {
+				return contractv1.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+			}
+			return contractv1.MutationReceipt{
+				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+				OperationID: "operation_stop", EnvironmentID: environmentID, AcceptedAt: time.Now(),
+			}, nil
+		},
+	}
+	application := Application{
+		Backend: backend, PollInterval: time.Millisecond, WaitTimeout: time.Second,
+		Getwd:        func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) { return "request_cleanup", nil },
+	}
+	if code := application.Run(context.Background(), []string{"stop", ".", "--if-running", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if statusCalls != 3 || stopCalls != 2 {
+		t.Fatalf("status calls=%d stop calls=%d", statusCalls, stopCalls)
+	}
+}
+
+func TestApplicationStopDotPreservesExplicitExpectedRevision(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	backend := stubBackend{
+		snapshot: snapshot,
+		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			if environmentID != "environment_feature" || request.ExpectedEnvironmentRevision == nil ||
+				*request.ExpectedEnvironmentRevision != 17 {
+				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
+			}
+			return cliTestReceipt(request.RequestID, environmentID, time.Now()), nil
+		},
+	}
+	application := Application{
+		Backend: backend, Getwd: func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+		NewRequestID: func() (string, error) { return "request_cleanup", nil },
+	}
+	if code := application.Run(context.Background(), []string{"stop", ".", "--expected-revision", "17"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+}
+
+func TestApplicationStopDotIfRunningIsAnIdempotentNoOp(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	snapshot.Environments = snapshot.Environments[:1]
+	stopCalls := 0
+	var output bytes.Buffer
+	application := Application{
+		Backend: stubBackend{
+			snapshot: snapshot,
+			stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+				stopCalls++
+				return contractv1.MutationReceipt{}, nil
+			},
+		},
+		Stdout: &output,
+		Getwd:  func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+	}
+	if code := application.Run(context.Background(), []string{"stop", ".", "--if-running", "--wait"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	if stopCalls != 0 || !strings.Contains(output.String(), "No Switchyard environment is running") {
+		t.Fatalf("stop calls=%d output=%q", stopCalls, output.String())
+	}
+}
+
+func TestApplicationStopDotIfRunningJSONEmitsNoOpResult(t *testing.T) {
+	snapshot := cliStatusSnapshot()
+	snapshot.Environments = snapshot.Environments[:1]
+	var output bytes.Buffer
+	application := Application{
+		Backend: stubBackend{snapshot: snapshot}, Stdout: &output,
+		Getwd: func() (string, error) { return "/Developer/worktrees/feature-a", nil },
+	}
+	if code := application.Run(context.Background(), []string{"stop", ".", "--if-running", "--json"}); code != ExitSuccess {
+		t.Fatalf("exit code: %d", code)
+	}
+	var result noRunningEnvironmentOutput
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.SchemaVersion != contractv1.SchemaVersion || result.Outcome != "alreadyStopped" {
+		t.Fatalf("result: %+v", result)
 	}
 }
 
@@ -379,6 +806,10 @@ func TestApplicationRejectsMalformedMutationArgumentsWithoutBackendCall(t *testi
 		{"start", "worktree", "service", "--expected-revision", "-1"},
 		{"start", "worktree", "service", "--json", "--json"},
 		{"stop", "environment", "--all"},
+		{"start", "worktree", "service", "--if-running"},
+		{"status", "--wait"},
+		{"stop", "environment", "--wait", "--wait"},
+		{"stop", "environment", "--if-running"},
 	}
 	for _, arguments := range tests {
 		var stderr bytes.Buffer

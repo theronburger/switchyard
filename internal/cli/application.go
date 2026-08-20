@@ -37,6 +37,7 @@ type WorkspaceBackend interface {
 	CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
 	AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
 	ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	PrepareWorktree(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
 }
 
 type LiveBackend struct {
@@ -88,12 +89,21 @@ func (b LiveBackend) AdoptWorktree(
 	return b.Connector.AdoptWorktree(ctx, request)
 }
 
+func (b LiveBackend) PrepareWorktree(
+	ctx context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	return b.Connector.PrepareWorktree(ctx, request)
+}
+
 type Application struct {
 	Backend      Backend
 	Stdout       io.Writer
 	Stderr       io.Writer
 	NewRequestID func() (string, error)
 	Getwd        func() (string, error)
+	PollInterval time.Duration
+	WaitTimeout  time.Duration
 }
 
 type parsedCommand struct {
@@ -106,6 +116,8 @@ type parsedCommand struct {
 	ExpectedRevision  *int64
 	StartPoint        string
 	All               bool
+	Wait              bool
+	IfRunning         bool
 }
 
 type errorOutput struct {
@@ -127,6 +139,11 @@ type errorOutputDetails struct {
 	LogReference   string              `json:"logReference,omitempty"`
 	NextAction     string              `json:"nextAction,omitempty"`
 	ExitCode       *int                `json:"exitCode,omitempty"`
+}
+
+type noRunningEnvironmentOutput struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Outcome       string `json:"outcome"`
 }
 
 func (a Application) Run(ctx context.Context, arguments []string) int {
@@ -191,6 +208,17 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		}
 		return ExitSuccess
 	case "start":
+		actionContext, cancel := a.actionContext(ctx, command.Wait)
+		defer cancel()
+		selector := command.Positionals[0]
+		worktreeID := command.Positionals[0]
+		if worktreeID == "." {
+			resolvedID, err := a.resolveCurrentWorktree(actionContext, command.Wait)
+			if err != nil {
+				return writeCurrentWorktreeFailure(stdout, stderr, command.JSON, err)
+			}
+			worktreeID = resolvedID
+		}
 		requestID, err := a.requestID()
 		if err != nil {
 			return writeFailure(stdout, stderr, command.JSON, err)
@@ -199,20 +227,44 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := a.Backend.StartEnvironment(ctx, contractv1.StartEnvironmentRequest{
+		receipt, err := a.submitStart(actionContext, contractv1.StartEnvironmentRequest{
 			MutationRequest: contractv1.MutationRequest{
 				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
 				IdempotencyKey: idempotencyKey, ExpectedEnvironmentRevision: command.ExpectedRevision,
 			},
-			WorktreeID: command.Positionals[0], TargetID: command.TargetID,
+			WorktreeID: worktreeID, TargetID: command.TargetID,
 			ConfirmedTargetID: command.ConfirmedTargetID,
 			ServiceIDs:        append([]string(nil), command.Positionals[1:]...),
-		})
+		}, command.Wait && selector == ".")
 		if err != nil {
 			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		if command.Wait {
+			if err := a.waitForMutation(actionContext, receipt, "start", "", command.Positionals[1:]); err != nil {
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
 		}
 		return writeReceipt(stdout, receipt, command.JSON)
 	case "stop":
+		actionContext, cancel := a.actionContext(ctx, command.Wait)
+		defer cancel()
+		environmentID := command.Positionals[0]
+		if environmentID == "." {
+			environment, err := a.resolveCurrentEnvironment(actionContext, command.Wait)
+			if err != nil {
+				if command.IfRunning && errors.Is(err, statusview.ErrEnvironmentNotFound) {
+					return writeNoRunningEnvironment(stdout, command.JSON)
+				}
+				if apiclient.CodeOf(err) != apiclient.ErrorUnknown {
+					return writeFailure(stdout, stderr, command.JSON, err)
+				}
+				return writeStatusSelectionFailure(stdout, stderr, command.JSON, err)
+			}
+			if command.IfRunning && environmentStopped(environment) {
+				return writeNoRunningEnvironment(stdout, command.JSON)
+			}
+			environmentID = environment.ID
+		}
 		requestID, err := a.requestID()
 		if err != nil {
 			return writeFailure(stdout, stderr, command.JSON, err)
@@ -221,16 +273,65 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := a.Backend.StopEnvironment(ctx, command.Positionals[0], contractv1.StopEnvironmentRequest{
+		receipt, err := a.submitStop(actionContext, environmentID, contractv1.StopEnvironmentRequest{
 			MutationRequest: contractv1.MutationRequest{
 				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
 				IdempotencyKey: idempotencyKey, ExpectedEnvironmentRevision: command.ExpectedRevision,
 			},
-		})
+		}, command.Wait)
 		if err != nil {
 			return writeFailure(stdout, stderr, command.JSON, err)
 		}
+		if command.Wait {
+			if err := a.waitForMutation(actionContext, receipt, "stop", "", nil); err != nil {
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
+		}
 		return writeReceipt(stdout, receipt, command.JSON)
+	case "prepare":
+		backend, available := a.Backend.(WorkspaceBackend)
+		if !available {
+			return writeFailure(stdout, stderr, command.JSON, fmt.Errorf("workspace actions are unavailable"))
+		}
+		actionContext, cancel := a.actionContext(ctx, command.Wait)
+		defer cancel()
+		worktreeID := command.Positionals[0]
+		if worktreeID == "." {
+			resolvedID, err := a.resolveCurrentWorktree(actionContext, command.Wait)
+			if err != nil {
+				return writeCurrentWorktreeFailure(stdout, stderr, command.JSON, err)
+			}
+			worktreeID = resolvedID
+		}
+		for {
+			requestID, err := a.requestID()
+			if err != nil {
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
+			idempotencyKey := command.IdempotencyKey
+			if idempotencyKey == "" {
+				idempotencyKey = "cli:" + requestID
+			}
+			receipt, err := a.submitPrepare(actionContext, backend, contractv1.PrepareWorktreeRequest{
+				MutationRequest: contractv1.MutationRequest{
+					SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+				},
+				WorktreeID: worktreeID,
+			}, command.Wait)
+			if err != nil {
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
+			if !command.Wait {
+				return writeReceipt(stdout, receipt, command.JSON)
+			}
+			if err := a.waitForMutation(actionContext, receipt, "prepare", worktreeID, nil); err != nil {
+				if command.IdempotencyKey == "" && retryableInterruptedPreparation(err) && actionContext.Err() == nil {
+					continue
+				}
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
+			return writeReceipt(stdout, receipt, command.JSON)
+		}
 	case "create-worktree":
 		backend, available := a.Backend.(WorkspaceBackend)
 		if !available {
@@ -305,13 +406,181 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 	}
 }
 
+func (a Application) resolveCurrentWorktree(ctx context.Context, wait bool) (string, error) {
+	if !wait {
+		snapshot, err := a.Backend.Status(ctx)
+		if err != nil {
+			return "", err
+		}
+		worktreeContext, _, err := a.resolveStatusContext(snapshot, parsedCommand{Name: "status"})
+		if err != nil {
+			return "", err
+		}
+		return worktreeContext.Worktree.ID, nil
+	}
+	waitContext, cancel := context.WithTimeout(ctx, a.waitTimeout())
+	defer cancel()
+	var lastErr error
+	for {
+		snapshot, err := a.Backend.Status(waitContext)
+		if err == nil {
+			worktreeContext, _, selectionErr := a.resolveStatusContext(snapshot, parsedCommand{Name: "status"})
+			if selectionErr == nil {
+				return worktreeContext.Worktree.ID, nil
+			}
+			if !errors.Is(selectionErr, statusview.ErrWorktreeNotFound) {
+				return "", selectionErr
+			}
+			lastErr = selectionErr
+		} else if retryableDaemonDiscoveryError(err) {
+			lastErr = err
+		} else {
+			return "", err
+		}
+		if err := a.waitForNextPoll(waitContext); err != nil {
+			if lastErr != nil {
+				return "", lastErr
+			}
+			return "", err
+		}
+	}
+}
+
+func (a Application) submitStart(
+	ctx context.Context,
+	request contractv1.StartEnvironmentRequest,
+	retryDiscovery bool,
+) (contractv1.MutationReceipt, error) {
+	for {
+		receipt, err := a.Backend.StartEnvironment(ctx, request)
+		if err == nil || !retryDiscovery ||
+			(!retryableDaemonDiscoveryError(err) && apiclient.CodeOf(err) != apiclient.ErrorCode("WORKTREE_NOT_FOUND")) {
+			return receipt, err
+		}
+		if waitErr := a.waitForNextPoll(ctx); waitErr != nil {
+			return contractv1.MutationReceipt{}, err
+		}
+	}
+}
+
+func (a Application) resolveCurrentEnvironment(
+	ctx context.Context,
+	retryDiscovery bool,
+) (contractv1.Environment, error) {
+	var lastErr error
+	for {
+		snapshot, err := a.Backend.Status(ctx)
+		if err == nil {
+			worktreeContext, _, selectionErr := a.resolveStatusContext(snapshot, parsedCommand{Name: "status"})
+			switch {
+			case selectionErr == nil && len(worktreeContext.Environments) == 1:
+				return worktreeContext.Environments[0], nil
+			case selectionErr == nil && len(worktreeContext.Environments) == 0:
+				return contractv1.Environment{}, statusview.ErrEnvironmentNotFound
+			case selectionErr == nil:
+				return contractv1.Environment{}, statusview.ErrWorktreeAmbiguous
+			case retryDiscovery && errors.Is(selectionErr, statusview.ErrWorktreeNotFound):
+				lastErr = selectionErr
+			default:
+				return contractv1.Environment{}, selectionErr
+			}
+		} else if retryDiscovery && retryableDaemonDiscoveryError(err) {
+			lastErr = err
+		} else {
+			return contractv1.Environment{}, err
+		}
+		if waitErr := a.waitForNextPoll(ctx); waitErr != nil {
+			if lastErr != nil {
+				return contractv1.Environment{}, lastErr
+			}
+			return contractv1.Environment{}, waitErr
+		}
+	}
+}
+
+func (a Application) submitStop(
+	ctx context.Context,
+	environmentID string,
+	request contractv1.StopEnvironmentRequest,
+	retryDiscovery bool,
+) (contractv1.MutationReceipt, error) {
+	for {
+		receipt, err := a.Backend.StopEnvironment(ctx, environmentID, request)
+		if err == nil || !retryDiscovery || !retryableDaemonDiscoveryError(err) {
+			return receipt, err
+		}
+		if waitErr := a.waitForNextPoll(ctx); waitErr != nil {
+			return contractv1.MutationReceipt{}, err
+		}
+	}
+}
+
+func (a Application) submitPrepare(
+	ctx context.Context,
+	backend WorkspaceBackend,
+	request contractv1.PrepareWorktreeRequest,
+	wait bool,
+) (contractv1.MutationReceipt, error) {
+	if !wait {
+		return backend.PrepareWorktree(ctx, request)
+	}
+	waitContext, cancel := context.WithTimeout(ctx, a.waitTimeout())
+	defer cancel()
+	for {
+		receipt, err := backend.PrepareWorktree(waitContext, request)
+		if err == nil {
+			return receipt, nil
+		}
+		if !retryableDaemonDiscoveryError(err) && apiclient.CodeOf(err) != apiclient.ErrorCode("WORKTREE_NOT_FOUND") {
+			return contractv1.MutationReceipt{}, err
+		}
+		if waitErr := a.waitForNextPoll(waitContext); waitErr != nil {
+			return contractv1.MutationReceipt{}, err
+		}
+	}
+}
+
+func retryableDaemonDiscoveryError(err error) bool {
+	switch apiclient.CodeOf(err) {
+	case apiclient.ErrorDaemonUnavailable,
+		apiclient.ErrorRuntimeDescriptorUnavailable,
+		apiclient.ErrorRuntimeDescriptorStale:
+		return true
+	default:
+		return false
+	}
+}
+
+func retryableInterruptedPreparation(err error) bool {
+	switch apiclient.CodeOf(err) {
+	case apiclient.ErrorCode("DAEMON_RESTARTED"), apiclient.ErrorCode("WORKSPACE_ACTION_INTERRUPTED"):
+		return true
+	default:
+		return false
+	}
+}
+
+func (a Application) actionContext(ctx context.Context, wait bool) (context.Context, context.CancelFunc) {
+	if !wait {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, a.waitTimeout())
+}
+
+func (a Application) waitTimeout() time.Duration {
+	if a.WaitTimeout > 0 {
+		return a.WaitTimeout
+	}
+	return defaultWaitTimeout
+}
+
 func parseArguments(arguments []string) (parsedCommand, bool) {
 	if len(arguments) < 1 {
 		return parsedCommand{}, false
 	}
 	command := parsedCommand{Name: arguments[0]}
 	if command.Name != "status" && command.Name != "doctor" &&
-		command.Name != "start" && command.Name != "stop" &&
+		command.Name != "start" && command.Name != "stop" && command.Name != "prepare" &&
 		command.Name != "create-worktree" && command.Name != "adopt-worktree" &&
 		command.Name != "archive-worktree" {
 		return parsedCommand{}, false
@@ -329,6 +598,16 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 				return parsedCommand{}, false
 			}
 			command.All = true
+		case "--wait":
+			if command.Wait {
+				return parsedCommand{}, false
+			}
+			command.Wait = true
+		case "--if-running":
+			if command.IfRunning {
+				return parsedCommand{}, false
+			}
+			command.IfRunning = true
 		case "--idempotency-key":
 			if command.IdempotencyKey != "" || index+1 >= len(arguments) {
 				return parsedCommand{}, false
@@ -383,31 +662,39 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 	case "status":
 		if len(command.Positionals) > 1 || (command.All && len(command.Positionals) != 0) ||
 			command.TargetID != "" || command.ConfirmedTargetID != "" ||
-			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" {
+			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" ||
+			command.Wait || command.IfRunning {
 			return parsedCommand{}, false
 		}
 	case "doctor":
 		if len(command.Positionals) != 0 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
-			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" {
+			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" ||
+			command.Wait || command.IfRunning {
 			return parsedCommand{}, false
 		}
 	case "start":
-		if len(command.Positionals) < 2 || len(command.Positionals) > 33 || command.StartPoint != "" || command.All {
+		if len(command.Positionals) < 2 || len(command.Positionals) > 33 || command.StartPoint != "" || command.All ||
+			command.IfRunning {
 			return parsedCommand{}, false
 		}
 	case "stop":
 		if len(command.Positionals) != 1 || command.TargetID != "" || command.ConfirmedTargetID != "" ||
-			command.StartPoint != "" || command.All {
+			command.StartPoint != "" || command.All || (command.IfRunning && command.Positionals[0] != ".") {
+			return parsedCommand{}, false
+		}
+	case "prepare":
+		if len(command.Positionals) != 1 || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.ExpectedRevision != nil || command.StartPoint != "" || command.All || command.IfRunning {
 			return parsedCommand{}, false
 		}
 	case "create-worktree":
 		if len(command.Positionals) != 2 || command.TargetID != "" || command.ConfirmedTargetID != "" ||
-			command.ExpectedRevision != nil || command.All {
+			command.ExpectedRevision != nil || command.All || command.Wait || command.IfRunning {
 			return parsedCommand{}, false
 		}
 	case "adopt-worktree", "archive-worktree":
 		if len(command.Positionals) != 1 || command.TargetID != "" || command.ConfirmedTargetID != "" ||
-			command.ExpectedRevision != nil || command.StartPoint != "" || command.All {
+			command.ExpectedRevision != nil || command.StartPoint != "" || command.All || command.Wait || command.IfRunning {
 			return parsedCommand{}, false
 		}
 	}
@@ -476,8 +763,9 @@ func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "usage:")
 	_, _ = fmt.Fprintln(writer, "  switchyard status [worktree-id|branch|path] [--all] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard doctor [--json]")
-	_, _ = fmt.Fprintln(writer, "  switchyard start <worktree-id> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--json]")
-	_, _ = fmt.Fprintln(writer, "  switchyard stop <environment-id> [--expected-revision N] [--idempotency-key KEY] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard start <worktree-id|.> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--wait] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard stop <environment-id|.> [--expected-revision N] [--idempotency-key KEY] [--if-running] [--wait] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard prepare <worktree-id|.> [--idempotency-key KEY] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard create-worktree <repository-id> <branch> [--base REF] [--idempotency-key KEY] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard adopt-worktree <worktree-id> [--idempotency-key KEY] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard archive-worktree <worktree-id> [--idempotency-key KEY] [--json]")
@@ -622,7 +910,10 @@ func writeWorktreeStatusText(writer io.Writer, status statusview.WorktreeContext
 func writeStatusSelectionFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
 	code := apiclient.ErrorCode("WORKTREE_NOT_FOUND")
 	message := "The requested Switchyard worktree was not found."
-	if errors.Is(err, statusview.ErrWorktreeAmbiguous) {
+	if errors.Is(err, statusview.ErrEnvironmentNotFound) {
+		code = apiclient.ErrorCode("ENVIRONMENT_NOT_FOUND")
+		message = "This worktree does not have a Switchyard environment."
+	} else if errors.Is(err, statusview.ErrWorktreeAmbiguous) {
 		code = apiclient.ErrorCode("WORKTREE_AMBIGUOUS")
 		message = "The worktree selector matches more than one Switchyard worktree."
 	} else if errors.Is(err, statusview.ErrInvalidSelector) {
@@ -638,6 +929,24 @@ func writeStatusSelectionFailure(stdout, stderr io.Writer, jsonOutput bool, err 
 		_, _ = fmt.Fprintln(stderr, message)
 	}
 	return ExitFailure
+}
+
+func writeNoRunningEnvironment(writer io.Writer, jsonOutput bool) int {
+	if jsonOutput {
+		return encodeJSON(writer, noRunningEnvironmentOutput{
+			SchemaVersion: contractv1.SchemaVersion, Outcome: "alreadyStopped",
+		})
+	}
+	_, _ = fmt.Fprintln(writer, "No Switchyard environment is running for this worktree.")
+	return ExitSuccess
+}
+
+func writeCurrentWorktreeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
+	if errors.Is(err, statusview.ErrWorktreeNotFound) || errors.Is(err, statusview.ErrWorktreeAmbiguous) ||
+		errors.Is(err, statusview.ErrInvalidSelector) {
+		return writeStatusSelectionFailure(stdout, stderr, jsonOutput, err)
+	}
+	return writeFailure(stdout, stderr, jsonOutput, err)
 }
 
 func gitSummary(state contractv1.WorktreeState) string {

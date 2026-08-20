@@ -4,6 +4,12 @@ All notable changes are documented here. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-08-20
+
+### Added
+
+- Codex local-environment integration through restart-tolerant, cached `sy prepare . --wait`, current-worktree `sy start .`, and race-safe, idempotent `sy stop . --if-running --wait` commands.
+
 ## [v0.1.0] - 2026-08-19
 
 ### Added

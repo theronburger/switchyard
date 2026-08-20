@@ -603,6 +603,16 @@ func (request AdoptWorktreeRequest) Validate() error {
 	return nil
 }
 
+func (request PrepareWorktreeRequest) Validate() error {
+	if err := request.MutationRequest.Validate(); err != nil {
+		return err
+	}
+	if request.ExpectedEnvironmentRevision != nil || !validOpaqueValue(request.WorktreeID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("worktree preparation request is invalid")
+	}
+	return nil
+}
+
 func (receipt MutationReceipt) Validate() error {
 	if receipt.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema version: got %d, want %d", receipt.SchemaVersion, SchemaVersion)

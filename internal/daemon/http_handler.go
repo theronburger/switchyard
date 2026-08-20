@@ -32,6 +32,7 @@ type WorkspaceActions interface {
 	CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
 	AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
 	ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	PrepareWorktree(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
 }
 
 type OperationDiagnosticsSource interface {

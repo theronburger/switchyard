@@ -214,7 +214,7 @@ func buildEnvironmentRuntime(
 		return nil, err
 	}
 	workspaceActions, err := daemon.NewWorkspaceActionService(daemon.WorkspaceActionServiceConfig{
-		Lifecycle: ctx, Store: store, Backend: managedManager,
+		Lifecycle: ctx, Store: store, Backend: managedManager, Ensurer: workspaceCoordinator,
 		Resolver: newManagedWorkspaceResolver(store, discovered), Restart: restart,
 	})
 	if err != nil {

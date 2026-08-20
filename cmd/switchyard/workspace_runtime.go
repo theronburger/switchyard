@@ -119,6 +119,18 @@ func (resolver managedWorkspaceResolver) ResolveAdopt(
 	}, nil
 }
 
+func (resolver managedWorkspaceResolver) ResolvePrepare(
+	_ context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (string, error) {
+	if _, found := resolver.worktrees[request.WorktreeID]; !found {
+		return "", workspaceActionError(
+			http.StatusNotFound, "WORKTREE_NOT_FOUND", "The requested worktree is not available.",
+		)
+	}
+	return request.WorktreeID, nil
+}
+
 func newManagedWorkspaceManager(
 	paths applicationPaths,
 	discovered repositoryInventory,

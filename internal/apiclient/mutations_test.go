@@ -85,7 +85,7 @@ func TestClientStartsAndStopsEnvironmentAfterHandshake(t *testing.T) {
 	}
 }
 
-func TestClientCreatesAdoptsAndArchivesWorktreesAfterHandshake(t *testing.T) {
+func TestClientCreatesAdoptsArchivesAndPreparesWorktreesAfterHandshake(t *testing.T) {
 	now := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
 	token := testToken()
 	snapshot := validSnapshot(now)
@@ -124,6 +124,13 @@ func TestClientCreatesAdoptsAndArchivesWorktreesAfterHandshake(t *testing.T) {
 				t.Errorf("adopt mutation: %+v", mutation)
 			}
 			writeTestJSON(t, response, validClientReceipt(mutation.RequestID, "", now))
+		case "/v1/worktrees/worktree_01/prepare":
+			var mutation contractv1.PrepareWorktreeRequest
+			decodeTestRequest(t, request, &mutation)
+			if mutation.Validate() != nil || mutation.WorktreeID != "worktree_01" {
+				t.Errorf("prepare mutation: %+v", mutation)
+			}
+			writeTestJSON(t, response, validClientReceipt(mutation.RequestID, "", now))
 		default:
 			http.NotFound(response, request)
 		}
@@ -158,7 +165,16 @@ func TestClientCreatesAdoptsAndArchivesWorktreesAfterHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(paths, ","); got != "/v1/worktrees,/v1/worktrees/worktree_01/adopt,/v1/worktrees/worktree_01/archive" {
+	_, err = client.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(paths, ","); got != "/v1/worktrees,/v1/worktrees/worktree_01/adopt,/v1/worktrees/worktree_01/archive,/v1/worktrees/worktree_01/prepare" {
 		t.Fatalf("workspace paths: %s", got)
 	}
 }
@@ -189,6 +205,15 @@ func TestClientRejectsInvalidMutationBeforeTransport(t *testing.T) {
 	})
 	if CodeOf(err) != ErrorActionRequestInvalid {
 		t.Fatalf("archive error: got %q", CodeOf(err))
+	}
+	_, err = client.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request", IdempotencyKey: "key",
+		},
+		WorktreeID: "../foreign",
+	})
+	if CodeOf(err) != ErrorActionRequestInvalid {
+		t.Fatalf("prepare error: got %q", CodeOf(err))
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("invalid mutation made %d transport calls", calls.Load())

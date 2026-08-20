@@ -94,6 +94,21 @@ func (c *Client) AdoptWorktree(
 	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/adopt", request)
 }
 
+func (c *Client) PrepareWorktree(
+	ctx context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	if !safeMutationPathID(request.WorktreeID) || request.Validate() != nil {
+		return contractv1.MutationReceipt{}, newCodedError(
+			ErrorActionRequestInvalid, fmt.Errorf("worktree preparation request is invalid"),
+		)
+	}
+	if _, err := c.Handshake(ctx); err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/prepare", request)
+}
+
 func (c *Client) postMutation(
 	ctx context.Context,
 	path string,
@@ -218,6 +233,17 @@ func (c Connector) AdoptWorktree(
 		return contractv1.MutationReceipt{}, err
 	}
 	return client.AdoptWorktree(ctx, request)
+}
+
+func (c Connector) PrepareWorktree(
+	ctx context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	client, err := c.Client()
+	if err != nil {
+		return contractv1.MutationReceipt{}, err
+	}
+	return client.PrepareWorktree(ctx, request)
 }
 
 func decodeSingleJSON(contents []byte, destination any) error {

@@ -362,3 +362,25 @@ func TestStartEnvironmentRequestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 		})
 	}
 }
+
+func TestPrepareWorktreeRequestValidation(t *testing.T) {
+	request := PrepareWorktreeRequest{
+		MutationRequest: MutationRequest{
+			SchemaVersion: SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:test",
+		},
+		WorktreeID: "worktree_test",
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	revision := int64(1)
+	request.ExpectedEnvironmentRevision = &revision
+	if err := request.Validate(); err == nil {
+		t.Fatal("environment revision was accepted for workspace preparation")
+	}
+	request.ExpectedEnvironmentRevision = nil
+	request.WorktreeID = " bad"
+	if err := request.Validate(); err == nil {
+		t.Fatal("unsafe worktree id was accepted")
+	}
+}

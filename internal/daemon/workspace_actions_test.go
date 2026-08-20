@@ -71,6 +71,22 @@ func (fakeWorkspaceActionResolver) ResolveAdopt(
 	}, nil
 }
 
+func (fakeWorkspaceActionResolver) ResolvePrepare(
+	_ context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (string, error) {
+	return request.WorktreeID, nil
+}
+
+func noOpWorkspaceEnsurer() fakeWorkspaceEnsurer {
+	return fakeWorkspaceEnsurer{ensure: func(
+		_ context.Context,
+		request workspacecontrol.EnsureRequest,
+	) (workspacecontrol.Result, error) {
+		return workspacecontrol.Result{WorktreeID: request.WorktreeID}, nil
+	}}
+}
+
 func TestWorkspaceActionServiceIsIdempotentAndRestartsOnlyAfterSuccess(t *testing.T) {
 	store := newFakeActionOperationStore()
 	var createCalls atomic.Int32
@@ -91,7 +107,7 @@ func TestWorkspaceActionServiceIsIdempotentAndRestartsOnlyAfterSuccess(t *testin
 		},
 	}
 	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
-		Lifecycle: context.Background(), Store: store, Backend: backend,
+		Lifecycle: context.Background(), Store: store, Backend: backend, Ensurer: noOpWorkspaceEnsurer(),
 		Resolver: fakeWorkspaceActionResolver{}, Restart: func() { restarts.Add(1) },
 		NewID: func(string) (string, error) { return "operation_01", nil },
 	})
@@ -135,7 +151,7 @@ func TestWorkspaceActionServiceReportsSafeArchiveFailureWithoutRestart(t *testin
 		},
 	}
 	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
-		Lifecycle: context.Background(), Store: store, Backend: backend,
+		Lifecycle: context.Background(), Store: store, Backend: backend, Ensurer: noOpWorkspaceEnsurer(),
 		Resolver: fakeWorkspaceActionResolver{}, Restart: func() { restarts.Add(1) },
 		NewID: func(string) (string, error) { return "operation_01", nil },
 	})
@@ -189,7 +205,7 @@ func TestWorkspaceActionServiceAdoptsAndRestartsAfterSuccess(t *testing.T) {
 		},
 	}
 	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
-		Lifecycle: context.Background(), Store: store, Backend: backend,
+		Lifecycle: context.Background(), Store: store, Backend: backend, Ensurer: noOpWorkspaceEnsurer(),
 		Resolver: fakeWorkspaceActionResolver{}, Restart: func() { restarts.Add(1) },
 		NewID: func(string) (string, error) { return "operation_adopt", nil },
 	})
@@ -217,6 +233,172 @@ func TestWorkspaceActionServiceAdoptsAndRestartsAfterSuccess(t *testing.T) {
 	if adoptCalls.Load() != 1 || restarts.Load() != 1 || operation.Kind != workspaceAdoptOperation ||
 		operation.State != string(domain.OperationSucceeded) {
 		t.Fatalf("adoption: calls=%d restarts=%d operation=%+v", adoptCalls.Load(), restarts.Load(), operation)
+	}
+}
+
+func TestWorkspaceActionServicePreparesWithoutRestartingInventory(t *testing.T) {
+	store := newFakeActionOperationStore()
+	var ensureCalls atomic.Int32
+	var restarts atomic.Int32
+	ensurer := fakeWorkspaceEnsurer{ensure: func(
+		_ context.Context,
+		request workspacecontrol.EnsureRequest,
+	) (workspacecontrol.Result, error) {
+		ensureCalls.Add(1)
+		if request.OperationID != "operation_prepare" || request.WorktreeID != "worktree_01" {
+			t.Fatalf("ensure request: %+v", request)
+		}
+		return workspacecontrol.Result{WorktreeID: request.WorktreeID, State: workspacecontrol.StateReady}, nil
+	}}
+	backend := fakeManagedWorkspaceBackend{
+		create: func(context.Context, workspacecontrol.CreateManagedRequest) (workspacecontrol.ManagedResult, error) {
+			return workspacecontrol.ManagedResult{}, nil
+		},
+		archive: func(context.Context, workspacecontrol.ArchiveManagedRequest) (workspacecontrol.ManagedResult, error) {
+			return workspacecontrol.ManagedResult{}, nil
+		},
+	}
+	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
+		Lifecycle: context.Background(), Store: store, Backend: backend, Ensurer: ensurer,
+		Resolver: fakeWorkspaceActionResolver{}, Restart: func() { restarts.Add(1) },
+		NewID: func(string) (string, error) { return "operation_prepare", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.CloseAndWait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.ReadOperation(context.Background(), receipt.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensureCalls.Load() != 1 || restarts.Load() != 0 || operation.Kind != workspacePrepareOperation ||
+		operation.State != string(domain.OperationSucceeded) {
+		t.Fatalf("preparation: ensures=%d restarts=%d operation=%+v", ensureCalls.Load(), restarts.Load(), operation)
+	}
+}
+
+func TestWorkspaceActionServiceRecordsPreparationFailure(t *testing.T) {
+	store := newFakeActionOperationStore()
+	ensurer := fakeWorkspaceEnsurer{ensure: func(
+		context.Context,
+		workspacecontrol.EnsureRequest,
+	) (workspacecontrol.Result, error) {
+		return workspacecontrol.Result{}, workspacecontrol.ErrStepFailed
+	}}
+	backend := fakeManagedWorkspaceBackend{
+		create: func(context.Context, workspacecontrol.CreateManagedRequest) (workspacecontrol.ManagedResult, error) {
+			return workspacecontrol.ManagedResult{}, nil
+		},
+		archive: func(context.Context, workspacecontrol.ArchiveManagedRequest) (workspacecontrol.ManagedResult, error) {
+			return workspacecontrol.ManagedResult{}, nil
+		},
+	}
+	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
+		Lifecycle: context.Background(), Store: store, Backend: backend, Ensurer: ensurer,
+		Resolver: fakeWorkspaceActionResolver{}, NewID: func(string) (string, error) { return "operation_prepare", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.CloseAndWait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.ReadOperation(context.Background(), receipt.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation.State != string(domain.OperationFailed) || operation.Error == nil ||
+		operation.Error.Code != "WORKSPACE_ACTION_FAILED" || operation.Error.ResourceID != "worktree_01" {
+		t.Fatalf("failed preparation: %+v", operation)
+	}
+}
+
+func TestWorkspaceActionServicePreservesCancellationWhenInitialTransitionIsInterrupted(t *testing.T) {
+	store := newFakeActionOperationStore()
+	transitionStarted := make(chan struct{})
+	lifecycle, cancelLifecycle := context.WithCancel(context.Background())
+	store.transition = func(
+		ctx context.Context,
+		operationID string,
+		nextState string,
+		failure *contractv1.ContractError,
+	) (contractv1.Operation, error) {
+		if nextState == string(domain.OperationRunning) {
+			close(transitionStarted)
+			<-ctx.Done()
+			return contractv1.Operation{}, ctx.Err()
+		}
+		store.mutex.Lock()
+		defer store.mutex.Unlock()
+		operation := store.operations[operationID]
+		operation.State = nextState
+		operation.Error = failure
+		store.operations[operationID] = operation
+		return operation, nil
+	}
+	service, err := NewWorkspaceActionService(WorkspaceActionServiceConfig{
+		Lifecycle: lifecycle, Store: store,
+		Backend: fakeManagedWorkspaceBackend{
+			create: func(context.Context, workspacecontrol.CreateManagedRequest) (workspacecontrol.ManagedResult, error) {
+				return workspacecontrol.ManagedResult{}, nil
+			},
+			archive: func(context.Context, workspacecontrol.ArchiveManagedRequest) (workspacecontrol.ManagedResult, error) {
+				return workspacecontrol.ManagedResult{}, nil
+			},
+		},
+		Ensurer: noOpWorkspaceEnsurer(), Resolver: fakeWorkspaceActionResolver{},
+		NewID: func(string) (string, error) { return "operation_prepare", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+		},
+		WorktreeID: "worktree_01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-transitionStarted
+	cancelLifecycle()
+	waitContext, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := service.CloseAndWait(waitContext); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.ReadOperation(context.Background(), receipt.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation.State != string(domain.OperationFailed) || operation.Error == nil ||
+		operation.Error.Code != "WORKSPACE_ACTION_INTERRUPTED" || operation.Error.NextAction != "retry" {
+		t.Fatalf("interrupted operation: %+v", operation)
 	}
 }
 

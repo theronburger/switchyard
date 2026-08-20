@@ -23,6 +23,7 @@ type workspaceActionBackend struct {
 	create  func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
 	adopt   func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
 	archive func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	prepare func(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
 }
 
 func (backend workspaceActionBackend) CreateWorktree(
@@ -46,6 +47,13 @@ func (backend workspaceActionBackend) AdoptWorktree(
 	return backend.adopt(ctx, request)
 }
 
+func (backend workspaceActionBackend) PrepareWorktree(
+	ctx context.Context,
+	request contractv1.PrepareWorktreeRequest,
+) (contractv1.MutationReceipt, error) {
+	return backend.prepare(ctx, request)
+}
+
 func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
 	backend := workspaceActionBackend{
@@ -65,6 +73,12 @@ func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T
 		archive: func(_ context.Context, request contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
 			if request.WorktreeID != "worktree_01" {
 				t.Fatalf("archive request: %+v", request)
+			}
+			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
+		},
+		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+			if request.WorktreeID != "worktree_01" {
+				t.Fatalf("prepare request: %+v", request)
 			}
 			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
 		},
@@ -99,12 +113,26 @@ func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T
 	if archive.Code != http.StatusAccepted {
 		t.Fatalf("archive status=%d body=%s", archive.Code, archive.Body.String())
 	}
+	prepare := serveMutation(t, handler, "/v1/worktrees/worktree_01/prepare", map[string]any{
+		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_prepare",
+		"idempotencyKey": "prepare:test", "worktreeId": "worktree_01",
+	})
+	if prepare.Code != http.StatusAccepted {
+		t.Fatalf("prepare status=%d body=%s", prepare.Code, prepare.Body.String())
+	}
 	mismatch := serveMutation(t, handler, "/v1/worktrees/worktree_01/archive", map[string]any{
 		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_mismatch",
 		"idempotencyKey": "archive:mismatch", "worktreeId": "worktree_02",
 	})
 	if mismatch.Code != http.StatusBadRequest {
 		t.Fatalf("mismatched archive status=%d body=%s", mismatch.Code, mismatch.Body.String())
+	}
+	prepareMismatch := serveMutation(t, handler, "/v1/worktrees/worktree_01/prepare", map[string]any{
+		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_prepare_mismatch",
+		"idempotencyKey": "prepare:mismatch", "worktreeId": "worktree_02",
+	})
+	if prepareMismatch.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched prepare status=%d body=%s", prepareMismatch.Code, prepareMismatch.Body.String())
 	}
 }
 

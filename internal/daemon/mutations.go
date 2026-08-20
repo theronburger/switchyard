@@ -39,6 +39,10 @@ func (handler *apiHandler) mutation(response http.ResponseWriter, request *http.
 		handler.archiveWorktree(response, request, worktreeID)
 		return true
 	}
+	if worktreeID, matches := prepareWorktreePath(request.URL.Path); matches {
+		handler.prepareWorktree(response, request, worktreeID)
+		return true
+	}
 	if request.URL.Path == "/v1/environments" {
 		handler.startEnvironment(response, request)
 		return true
@@ -49,6 +53,30 @@ func (handler *apiHandler) mutation(response http.ResponseWriter, request *http.
 	}
 	handler.stopEnvironment(response, request, environmentID)
 	return true
+}
+
+func (handler *apiHandler) prepareWorktree(
+	response http.ResponseWriter,
+	request *http.Request,
+	worktreeID string,
+) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+		return
+	}
+	var mutation contractv1.PrepareWorktreeRequest
+	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil ||
+		mutation.WorktreeID != worktreeID {
+		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree preparation request is invalid", false)
+		return
+	}
+	if handler.config.WorkspaceActions == nil {
+		writeError(response, http.StatusServiceUnavailable, "ACTIONS_UNAVAILABLE", "Workspace actions are unavailable", true)
+		return
+	}
+	receipt, err := handler.config.WorkspaceActions.PrepareWorktree(request.Context(), mutation)
+	handler.writeMutationResult(response, receipt, err)
 }
 
 func (handler *apiHandler) adoptWorktree(
@@ -217,6 +245,10 @@ func archiveWorktreePath(path string) (string, bool) {
 
 func adoptWorktreePath(path string) (string, bool) {
 	return worktreeActionPath(path, "adopt")
+}
+
+func prepareWorktreePath(path string) (string, bool) {
+	return worktreeActionPath(path, "prepare")
 }
 
 func worktreeActionPath(path string, action string) (string, bool) {

@@ -36,3 +36,23 @@ func TestManagedWorkspaceResolverAdoptsOnlyKnownNonPrimaryWorktrees(t *testing.T
 		}
 	}
 }
+
+func TestManagedWorkspaceResolverPreparesAnyKnownWorktree(t *testing.T) {
+	resolver := newManagedWorkspaceResolver(nil, repositoryInventory{Repositories: []contractv1.Repository{{
+		ID: "repository_01", Worktrees: []contractv1.Worktree{
+			{ID: "worktree_primary", Path: "/repo", IsPrimary: true},
+			{ID: "worktree_adopted", Path: "/external/worktree"},
+		},
+	}}})
+	for _, worktreeID := range []string{"worktree_primary", "worktree_adopted"} {
+		resolved, err := resolver.ResolvePrepare(context.Background(), contractv1.PrepareWorktreeRequest{WorktreeID: worktreeID})
+		if err != nil || resolved != worktreeID {
+			t.Fatalf("worktree=%s resolved=%s err=%v", worktreeID, resolved, err)
+		}
+	}
+	_, err := resolver.ResolvePrepare(context.Background(), contractv1.PrepareWorktreeRequest{WorktreeID: "missing"})
+	var actionError *daemon.ActionError
+	if !errors.As(err, &actionError) || actionError.Contract.Code != "WORKTREE_NOT_FOUND" {
+		t.Fatalf("missing error: %v", err)
+	}
+}

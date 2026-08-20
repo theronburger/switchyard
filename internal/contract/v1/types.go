@@ -313,6 +313,11 @@ type AdoptWorktreeRequest struct {
 	WorktreeID string `json:"worktreeId"`
 }
 
+type PrepareWorktreeRequest struct {
+	MutationRequest
+	WorktreeID string `json:"worktreeId"`
+}
+
 type MutationReceipt struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	RequestID     string    `json:"requestId"`
