@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"time"
 
@@ -42,8 +43,20 @@ func (err ConfigurationRejectedError) Error() string { return err.Reason }
 
 const maximumRejectionReasonBytes = 512
 
+var (
+	// rejectionQuotedValue matches the backtick-quoted scalar the YAML decoder
+	// echoes in "cannot unmarshal !!str `value` into ..." errors.
+	rejectionQuotedValue = regexp.MustCompile("`[^`]*`")
+	rejectionUserPath    = regexp.MustCompile(`/Users/[^/\s]+`)
+)
+
+// rejected bounds a compiler or loader error into a reason that names keys,
+// fields, lines, and YAML structure but never a scalar value from the file or
+// an account path: the desired file may hold a pasted secret by mistake, and
+// the reason is published to every client that reads configuration status.
 func rejected(err error) error {
-	reason := err.Error()
+	reason := rejectionQuotedValue.ReplaceAllString(err.Error(), "`[value]`")
+	reason = rejectionUserPath.ReplaceAllString(reason, "/Users/[redacted]")
 	if len(reason) > maximumRejectionReasonBytes {
 		reason = reason[:maximumRejectionReasonBytes]
 	}

@@ -377,3 +377,35 @@ func TestConfigurationServiceRefusesUnsafeOrMalformedDesiredFiles(t *testing.T) 
 		}
 	})
 }
+
+// TestConfigurationRejectionNeverEchoesScalarValues proves the published
+// rejection reason names structure only: the YAML decoder's echo of a bad
+// scalar and any account path are removed before the reason leaves the daemon.
+func TestConfigurationRejectionNeverEchoesScalarValues(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newConfigurationServiceFixture(t, `schemaVersion: 1
+machine:
+  ports: {first: 30000, last: 49999}
+  execution: {inheritedEnvironment: [], shellDefault: deny}
+secretProviders: {}
+repositories:
+  alpha:
+    enabled: hunter2secret
+    displayName: Alpha
+    root: /Users/someone/alpha
+`)
+	status, err := service.Status(ctx)
+	if err != nil || status.Desired == nil || status.Desired.Problem == "" {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	if strings.Contains(status.Desired.Problem, "hunter2") || strings.Contains(status.Desired.Problem, "someone") {
+		t.Fatalf("rejection reason echoed file contents: %q", status.Desired.Problem)
+	}
+	if !strings.Contains(status.Desired.Problem, "enabled") && !strings.Contains(status.Desired.Problem, "line") {
+		t.Fatalf("rejection reason lost its structural hint: %q", status.Desired.Problem)
+	}
+	if _, err := service.Validate(ctx, contractv2.ConfigurationValidationRequest{SchemaVersion: contractv2.SchemaVersion}); err == nil ||
+		strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "someone") {
+		t.Fatalf("validation error echoed file contents: %v", err)
+	}
+}
