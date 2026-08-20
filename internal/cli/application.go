@@ -46,6 +46,11 @@ type ConfigurationBackend interface {
 	AcceptConfiguration(context.Context, contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error)
 }
 
+type CleanupBackend interface {
+	PlanCleanup(context.Context, contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error)
+	ApplyCleanup(context.Context, contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error)
+}
+
 type LiveBackend struct {
 	Connector apiclient.Connector
 	Now       func() time.Time
@@ -112,6 +117,14 @@ func (b LiveBackend) ValidateConfiguration(ctx context.Context, request contract
 
 func (b LiveBackend) AcceptConfiguration(ctx context.Context, request contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error) {
 	return b.Connector.AcceptConfiguration(ctx, request)
+}
+
+func (b LiveBackend) PlanCleanup(ctx context.Context, request contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error) {
+	return b.Connector.PlanCleanup(ctx, request)
+}
+
+func (b LiveBackend) ApplyCleanup(ctx context.Context, request contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error) {
+	return b.Connector.ApplyCleanup(ctx, request)
 }
 
 type Application struct {
@@ -184,6 +197,38 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		return ExitUsage
 	}
 	switch command.Name {
+	case "cleanup-plan", "cleanup-apply":
+		backend, available := a.Backend.(CleanupBackend)
+		if !available {
+			return writeFailure(stdout, stderr, command.JSON, errors.New("cleanup actions are unavailable"))
+		}
+		if command.Name == "cleanup-plan" {
+			scope := contractv1.CleanupScope{Kind: "global"}
+			if len(command.Positionals) == 2 {
+				scope = contractv1.CleanupScope{Kind: command.Positionals[0], ID: command.Positionals[1]}
+			}
+			plan, err := backend.PlanCleanup(ctx, contractv1.CleanupPlanRequest{SchemaVersion: contractv1.SchemaVersion, Scope: scope})
+			if err != nil {
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
+			if command.JSON {
+				return encodeJSON(stdout, plan)
+			}
+			writeCleanupPlan(stdout, plan)
+			return ExitSuccess
+		}
+		result, err := backend.ApplyCleanup(ctx, contractv1.CleanupApplyRequest{
+			SchemaVersion: contractv1.SchemaVersion, PlanID: command.Positionals[0],
+			ExpectedRevision: *command.ExpectedRevision, CandidateIDs: command.Positionals[1:],
+		})
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		if command.JSON {
+			return encodeJSON(stdout, result)
+		}
+		writeCleanupResult(stdout, result)
+		return ExitSuccess
 	case "configuration", "validate-configuration", "accept-configuration":
 		backend, available := a.Backend.(ConfigurationBackend)
 		if !available {
@@ -633,6 +678,7 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 	command := parsedCommand{Name: arguments[0]}
 	if command.Name != "status" && command.Name != "doctor" &&
 		command.Name != "configuration" && command.Name != "validate-configuration" && command.Name != "accept-configuration" &&
+		command.Name != "cleanup-plan" && command.Name != "cleanup-apply" &&
 		command.Name != "start" && command.Name != "stop" && command.Name != "prepare" &&
 		command.Name != "create-worktree" && command.Name != "adopt-worktree" &&
 		command.Name != "archive-worktree" {
@@ -712,6 +758,19 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 		}
 	}
 	switch command.Name {
+	case "cleanup-plan":
+		if (len(command.Positionals) != 0 && len(command.Positionals) != 2) ||
+			(len(command.Positionals) == 2 && command.Positionals[0] != "repository" && command.Positionals[0] != "worktree") ||
+			command.All || command.TargetID != "" || command.ConfirmedTargetID != "" || command.IdempotencyKey != "" ||
+			command.ExpectedRevision != nil || command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
+	case "cleanup-apply":
+		if len(command.Positionals) < 1 || len(command.Positionals) > 1025 || command.ExpectedRevision == nil || *command.ExpectedRevision < 1 ||
+			command.All || command.TargetID != "" || command.ConfirmedTargetID != "" || command.IdempotencyKey != "" ||
+			command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
 	case "configuration":
 		if len(command.Positionals) != 0 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
 			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" || command.Wait || command.IfRunning {
@@ -834,6 +893,8 @@ func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "  switchyard configuration [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard validate-configuration [--expected-revision N] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard accept-configuration <digest> [--expected-revision N] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard cleanup-plan [repository|worktree ID] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard cleanup-apply <plan-id> [candidate-id...] --expected-revision N [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard start <worktree-id|.> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard stop <environment-id|.> [--expected-revision N] [--idempotency-key KEY] [--if-running] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard prepare <worktree-id|.> [--idempotency-key KEY] [--wait] [--json]")
@@ -852,6 +913,23 @@ func writeConfigurationStatus(writer io.Writer, status contractv1.ConfigurationS
 		_, _ = fmt.Fprintf(writer, "Compiler: %s\n", status.Candidate.CompilerVersion)
 		_, _ = fmt.Fprintf(writer, "Repositories: %d\n", len(status.Candidate.RepositoryDigests))
 	}
+}
+
+func writeCleanupPlan(writer io.Writer, plan contractv1.CleanupPlan) {
+	_, _ = fmt.Fprintf(writer, "Cleanup plan %s at revision %d: %d removable, %d protected.\n", plan.ID, plan.Revision, len(plan.Candidates), len(plan.Protected))
+	for _, candidate := range plan.Candidates {
+		_, _ = fmt.Fprintf(writer, "  %s  %d bytes  %s\n", candidate.ID, candidate.Bytes, candidate.Path)
+	}
+}
+
+func writeCleanupResult(writer io.Writer, result contractv1.CleanupResult) {
+	removed := 0
+	for _, removal := range result.Removals {
+		if removal.Removed {
+			removed++
+		}
+	}
+	_, _ = fmt.Fprintf(writer, "Applied cleanup plan %s: %d of %d selected resources removed.\n", result.PlanID, removed, len(result.Removals))
 }
 
 func writeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {

@@ -45,6 +45,11 @@ type ConfigurationActions interface {
 	Accept(context.Context, contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error)
 }
 
+type CleanupActions interface {
+	Plan(context.Context, contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error)
+	Apply(context.Context, contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error)
+}
+
 type HandlerConfig struct {
 	Token                string
 	DaemonInstanceID     string
@@ -56,6 +61,7 @@ type HandlerConfig struct {
 	WorkspaceActions     WorkspaceActions
 	OperationDiagnostics OperationDiagnosticsSource
 	Configuration        ConfigurationActions
+	Cleanup              CleanupActions
 }
 
 type errorResponse struct {
@@ -130,6 +136,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		}
 		handler.events(response, request)
 	default:
+		if handler.cleanup(response, request) {
+			return
+		}
 		if handler.configuration(response, request) {
 			return
 		}

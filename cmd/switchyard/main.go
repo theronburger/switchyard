@@ -217,6 +217,10 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
+	cleanupJournal, err := state.NewWorkspaceJournal(store)
+	if err != nil {
+		return err
+	}
 	handler, err := daemon.NewHTTPHandler(daemon.HandlerConfig{
 		Token:                token,
 		DaemonInstanceID:     instanceID,
@@ -228,6 +232,9 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		OperationDiagnostics: operationDiagnostics,
 		Configuration: &daemon.ConfigurationService{
 			Store: store, Path: paths.configuration, CompilerVersion: version, Restart: restartDaemon,
+		},
+		Cleanup: &daemon.CleanupService{
+			Store: store, Workspaces: cleanupJournal, RuntimeRoot: filepath.Join(paths.directory, "runtime"),
 		},
 	})
 	if err != nil {

@@ -346,6 +346,66 @@ type ConfigurationStatus struct {
 	Candidate        *ConfigurationCandidate `json:"candidate,omitempty"`
 }
 
+type CleanupScope struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id,omitempty"`
+}
+
+type CleanupPlanRequest struct {
+	SchemaVersion int          `json:"schemaVersion"`
+	Scope         CleanupScope `json:"scope"`
+}
+
+type CleanupApplyRequest struct {
+	SchemaVersion    int      `json:"schemaVersion"`
+	PlanID           string   `json:"planId"`
+	ExpectedRevision int64    `json:"expectedRevision"`
+	CandidateIDs     []string `json:"candidateIds"`
+}
+
+type CleanupCandidate struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	ProfileKey  string `json:"profileKey"`
+	WorktreeID  string `json:"worktreeId"`
+	Fingerprint string `json:"fingerprint"`
+	Bytes       int64  `json:"bytes"`
+	Path        string `json:"path"`
+}
+
+type CleanupProtection struct {
+	Kind       string `json:"kind"`
+	Path       string `json:"path"`
+	Reason     string `json:"reason"`
+	ProfileKey string `json:"profileKey,omitempty"`
+	WorktreeID string `json:"worktreeId,omitempty"`
+}
+
+type CleanupPlan struct {
+	SchemaVersion int                 `json:"schemaVersion"`
+	ID            string              `json:"id"`
+	Revision      int64               `json:"revision"`
+	Scope         CleanupScope        `json:"scope"`
+	Candidates    []CleanupCandidate  `json:"candidates"`
+	Protected     []CleanupProtection `json:"protected"`
+	CreatedAt     time.Time           `json:"createdAt"`
+	ExpiresAt     time.Time           `json:"expiresAt"`
+}
+
+type CleanupRemoval struct {
+	CandidateID string `json:"candidateId"`
+	Removed     bool   `json:"removed"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+type CleanupResult struct {
+	SchemaVersion int              `json:"schemaVersion"`
+	PlanID        string           `json:"planId"`
+	PlanRevision  int64            `json:"planRevision"`
+	Removals      []CleanupRemoval `json:"removals"`
+	CompletedAt   time.Time        `json:"completedAt"`
+}
+
 type MutationReceipt struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	RequestID     string    `json:"requestId"`

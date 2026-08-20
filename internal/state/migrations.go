@@ -179,6 +179,23 @@ CREATE TABLE configuration_head (
 );
 `,
 	},
+	{
+		version: 8,
+		sql: `
+CREATE TABLE cleanup_plans (
+    revision INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    schema_version INTEGER NOT NULL,
+    plan_json BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+
+CREATE INDEX cleanup_plans_expiration
+    ON cleanup_plans(expires_at, consumed_at);
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {

@@ -19,6 +19,7 @@ const (
 	maximumChangedFiles        = 1_000_000
 	maximumPullRequestChecks   = 128
 	maximumDisplayTextBytes    = 2_048
+	maximumCleanupPathBytes    = 8_192
 )
 
 func (snapshot StatusSnapshot) Validate() error {
@@ -674,6 +675,88 @@ func validDigest(value string) bool {
 		}
 	}
 	return true
+}
+
+func (request CleanupPlanRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion || !validCleanupScope(request.Scope) {
+		return fmt.Errorf("cleanup plan request is invalid")
+	}
+	return nil
+}
+
+func (request CleanupApplyRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion || !validOpaqueValue(request.PlanID, maximumOpaqueIDBytes) ||
+		request.ExpectedRevision < 1 || request.CandidateIDs == nil || len(request.CandidateIDs) > 1024 {
+		return fmt.Errorf("cleanup apply request is invalid")
+	}
+	seen := make(map[string]struct{}, len(request.CandidateIDs))
+	for _, id := range request.CandidateIDs {
+		if !validOpaqueValue(id, maximumOpaqueIDBytes) {
+			return fmt.Errorf("cleanup candidate id is invalid")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("cleanup candidate id is duplicated")
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+func validCleanupScope(scope CleanupScope) bool {
+	switch scope.Kind {
+	case "global":
+		return scope.ID == ""
+	case "repository", "worktree":
+		return validOpaqueValue(scope.ID, maximumOpaqueIDBytes)
+	default:
+		return false
+	}
+}
+
+func (plan CleanupPlan) Validate() error {
+	if plan.SchemaVersion != SchemaVersion || !validOpaqueValue(plan.ID, maximumOpaqueIDBytes) ||
+		plan.Revision < 1 || !validCleanupScope(plan.Scope) || plan.Candidates == nil || plan.Protected == nil ||
+		plan.CreatedAt.IsZero() || !plan.ExpiresAt.After(plan.CreatedAt) || len(plan.Candidates) > 10_000 || len(plan.Protected) > 10_000 {
+		return fmt.Errorf("cleanup plan is invalid")
+	}
+	seen := make(map[string]struct{}, len(plan.Candidates))
+	for _, candidate := range plan.Candidates {
+		if !validOpaqueValue(candidate.ID, maximumOpaqueIDBytes) || candidate.Kind != "private-preparation" ||
+			!validOpaqueValue(candidate.ProfileKey, maximumOpaqueIDBytes) || !validOpaqueValue(candidate.WorktreeID, maximumOpaqueIDBytes) ||
+			!workspaceFingerprintPattern.MatchString(candidate.Fingerprint) || candidate.Bytes < 0 || candidate.Path == "" || len(candidate.Path) > maximumCleanupPathBytes {
+			return fmt.Errorf("cleanup candidate is invalid")
+		}
+		if _, duplicate := seen[candidate.ID]; duplicate {
+			return fmt.Errorf("cleanup candidate is duplicated")
+		}
+		seen[candidate.ID] = struct{}{}
+	}
+	for _, protected := range plan.Protected {
+		if protected.Kind != "private-preparation" || protected.Path == "" || len(protected.Path) > maximumCleanupPathBytes ||
+			(protected.Reason != "current" && protected.Reason != "unverified" && protected.Reason != "foreign-or-modified") {
+			return fmt.Errorf("cleanup protection is invalid")
+		}
+	}
+	return nil
+}
+
+func (result CleanupResult) Validate() error {
+	if result.SchemaVersion != SchemaVersion || !validOpaqueValue(result.PlanID, maximumOpaqueIDBytes) ||
+		result.PlanRevision < 1 || result.Removals == nil || len(result.Removals) > 1024 || result.CompletedAt.IsZero() {
+		return fmt.Errorf("cleanup result is invalid")
+	}
+	seen := make(map[string]struct{}, len(result.Removals))
+	for _, removal := range result.Removals {
+		if !validOpaqueValue(removal.CandidateID, maximumOpaqueIDBytes) ||
+			(removal.Removed && removal.Reason != "") || (!removal.Removed && removal.Reason != "not-in-plan" && removal.Reason != "changed-or-protected") {
+			return fmt.Errorf("cleanup removal is invalid")
+		}
+		if _, duplicate := seen[removal.CandidateID]; duplicate {
+			return fmt.Errorf("cleanup removal is duplicated")
+		}
+		seen[removal.CandidateID] = struct{}{}
+	}
+	return nil
 }
 
 func (receipt MutationReceipt) Validate() error {
