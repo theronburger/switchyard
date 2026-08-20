@@ -632,8 +632,13 @@ func (request ConfigurationAcceptanceRequest) Validate() error {
 func (candidate ConfigurationCandidate) Validate() error {
 	if candidate.SchemaVersion != SchemaVersion || !validDigest(candidate.Digest) ||
 		!validDigest(candidate.SourceDigest) || candidate.CompilerVersion == "" ||
-		candidate.RepositoryDigests == nil || candidate.StagedAt.IsZero() {
+		candidate.RepositoryDigests == nil || candidate.ExecutableDigests == nil || candidate.StagedAt.IsZero() {
 		return fmt.Errorf("configuration candidate is invalid")
+	}
+	for path, digest := range candidate.ExecutableDigests {
+		if path == "" || len(path) > maximumCleanupPathBytes || !validDigest(digest) {
+			return fmt.Errorf("configuration executable digest is invalid")
+		}
 	}
 	for key, digest := range candidate.RepositoryDigests {
 		if !validOpaqueValue(key, maximumOpaqueIDBytes) || !validDigest(digest) {

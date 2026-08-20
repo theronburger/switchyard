@@ -86,8 +86,20 @@ func validateExecutionPlan(
 		commandIDs[preparation.ID] = struct{}{}
 		commandRunDirectories = append(commandRunDirectories, preparation.RunDirectory)
 	}
-	if plan.Projection != nil && plan.Projection.ID == "" {
-		return ErrInvalidRequest
+	if plan.Projection != nil {
+		if plan.Projection.ID == "" {
+			return ErrInvalidRequest
+		}
+		seenArtifacts := make(map[string]struct{}, len(plan.Projection.ArtifactIDs))
+		for _, artifactID := range plan.Projection.ArtifactIDs {
+			if artifactID == "" {
+				return ErrInvalidRequest
+			}
+			if _, duplicate := seenArtifacts[artifactID]; duplicate {
+				return ErrInvalidRequest
+			}
+			seenArtifacts[artifactID] = struct{}{}
+		}
 	}
 	for _, goal := range plan.Infrastructure {
 		if !goal.Kind.Valid() || goal.Name == "" || goal.Identity.Validate() != nil ||

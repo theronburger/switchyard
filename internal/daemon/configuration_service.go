@@ -93,5 +93,6 @@ func candidateContract(candidate state.ConfigurationCandidate) *contractv1.Confi
 		SchemaVersion: contractv1.SchemaVersion, Digest: candidate.Digest,
 		SourceDigest: candidate.SourceDigest, CompilerVersion: candidate.CompilerVersion,
 		RepositoryDigests: candidate.RepositoryDigests, StagedAt: candidate.StagedAt,
+		ExecutableDigests: candidate.ExecutableDigests,
 	}
 }

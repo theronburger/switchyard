@@ -80,18 +80,118 @@ func Parse(contents []byte) (Loaded, error) {
 	if err != nil {
 		return Loaded{}, fmt.Errorf("canonicalize configuration: %w", err)
 	}
+	executableDigests, repositoryExecutables, err := fingerprintExecutables(document)
+	if err != nil {
+		return Loaded{}, err
+	}
 	repositoryDigests := make(map[string]string, len(document.Repositories))
 	for _, key := range sortedRepositoryKeys(document.Repositories) {
 		repositoryPayload, err := json.Marshal(document.Repositories[key])
 		if err != nil {
 			return Loaded{}, fmt.Errorf("canonicalize repository %q: %w", key, err)
 		}
-		repositoryDigests[key] = digest(repositoryPayload)
+		identity, err := json.Marshal(struct {
+			Profile     json.RawMessage   `json:"profile"`
+			Executables map[string]string `json:"executables"`
+		}{Profile: repositoryPayload, Executables: repositoryExecutables[key]})
+		if err != nil {
+			return Loaded{}, fmt.Errorf("canonicalize repository identity %q: %w", key, err)
+		}
+		repositoryDigests[key] = digest(identity)
+	}
+	identity, err := json.Marshal(struct {
+		Configuration json.RawMessage   `json:"configuration"`
+		Executables   map[string]string `json:"executables"`
+	}{Configuration: payload, Executables: executableDigests})
+	if err != nil {
+		return Loaded{}, fmt.Errorf("canonicalize execution identity: %w", err)
 	}
 	return Loaded{
-		Document: document, CanonicalPayload: payload, Digest: digest(payload),
-		SourceDigest: digest(contents), RepositoryDigests: repositoryDigests,
+		Document: document, CanonicalPayload: payload, Digest: digest(identity),
+		SourceDigest: digest(contents), RepositoryDigests: repositoryDigests, ExecutableDigests: executableDigests,
 	}, nil
+}
+
+func fingerprintExecutables(document Document) (map[string]string, map[string]map[string]string, error) {
+	all := make(map[string]string)
+	byRepository := make(map[string]map[string]string, len(document.Repositories))
+	for key, repository := range document.Repositories {
+		paths := make(map[string]struct{})
+		for _, step := range repository.Preparation.Steps {
+			paths[step.Executable] = struct{}{}
+		}
+		for _, toolchain := range repository.Toolchains {
+			if toolchain.Executable != "" {
+				paths[toolchain.Executable] = struct{}{}
+			}
+			if toolchain.Provision != nil {
+				paths[toolchain.Provision.Executable] = struct{}{}
+			}
+		}
+		for _, service := range repository.Services {
+			if service.IsAvailable() {
+				paths[service.Command.Executable] = struct{}{}
+			}
+			for _, command := range service.Prepare {
+				paths[command.Executable] = struct{}{}
+			}
+		}
+		for _, action := range repository.Actions {
+			if action.Command != nil {
+				paths[action.Command.Executable] = struct{}{}
+			}
+		}
+		digests := make(map[string]string, len(paths))
+		ordered := make([]string, 0, len(paths))
+		for path := range paths {
+			if path != "" {
+				ordered = append(ordered, path)
+			}
+		}
+		sort.Strings(ordered)
+		for _, path := range ordered {
+			fingerprint, found := all[path]
+			if !found {
+				var err error
+				fingerprint, err = fingerprintExecutable(path)
+				if err != nil {
+					return nil, nil, fmt.Errorf("fingerprint repository %q executable: %w", key, err)
+				}
+				all[path] = fingerprint
+			}
+			digests[path] = fingerprint
+		}
+		byRepository[key] = digests
+	}
+	return all, byRepository, nil
+}
+
+func fingerprintExecutable(path string) (string, error) {
+	if !cleanAbsolutePath(path) {
+		return "", errors.New("executable path is invalid")
+	}
+	descriptor, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", err
+	}
+	file := os.NewFile(uintptr(descriptor), path)
+	if file == nil {
+		_ = unix.Close(descriptor)
+		return "", errors.New("open executable")
+	}
+	defer func() { _ = file.Close() }()
+	var metadata unix.Stat_t
+	if err := unix.Fstat(descriptor, &metadata); err != nil {
+		return "", err
+	}
+	if metadata.Mode&unix.S_IFMT != unix.S_IFREG || metadata.Mode&0o111 == 0 || metadata.Size < 0 || metadata.Size > 512*1024*1024 {
+		return "", errors.New("executable is not a bounded regular executable file")
+	}
+	hasher := sha256.New()
+	if _, err := io.CopyN(hasher, file, metadata.Size); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func readPrivateRegularFile(path string) ([]byte, error) {
@@ -226,8 +326,292 @@ func validateDocument(document Document) error {
 		if err := validatePreparation(key, repository.Preparation); err != nil {
 			return err
 		}
+		if err := validateRepositoryRuntime(key, repository); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func validateRepositoryRuntime(repositoryKey string, repository Repository) error {
+	for id, target := range repository.Targets {
+		risk := target.Risk
+		if risk == "" {
+			risk = "local"
+		}
+		if !identifierPattern.MatchString(id) ||
+			(risk != "local" && risk != "remote-read" && risk != "remote-write") ||
+			validateValueEnvironment(target.Environment, "target") != nil {
+			return fmt.Errorf("repository %q target %q is invalid", repositoryKey, id)
+		}
+		if risk == "remote-write" && !target.WarnOnStart {
+			return fmt.Errorf("repository %q remote-write target %q must warn on start", repositoryKey, id)
+		}
+	}
+	for id, value := range repository.Values {
+		if !identifierPattern.MatchString(id) || value.Kind == "" ||
+			(value.Kind != "text-file" && value.Kind != "dotenv" && value.Kind != "json-pointer" && value.Kind != "yaml-scalar") ||
+			(value.Root != "repository" && value.Root != "worktree") || !safeRelativePath(value.Path) {
+			return fmt.Errorf("repository %q value %q is invalid", repositoryKey, id)
+		}
+	}
+	for id, cache := range repository.Caches {
+		if !identifierPattern.MatchString(id) || (cache.Directory != "" && !safeRelativePath(cache.Directory)) {
+			return fmt.Errorf("repository %q cache %q is invalid", repositoryKey, id)
+		}
+	}
+	for id, toolchain := range repository.Toolchains {
+		if !identifierPattern.MatchString(id) || strings.TrimSpace(toolchain.RequestedVersion) == "" ||
+			(toolchain.Executable == "" && toolchain.Provision == nil) {
+			return fmt.Errorf("repository %q toolchain %q is invalid", repositoryKey, id)
+		}
+		if toolchain.Executable != "" && !cleanAbsolutePath(toolchain.Executable) {
+			return fmt.Errorf("repository %q toolchain %q executable is invalid", repositoryKey, id)
+		}
+		if toolchain.Provision != nil && validateCommand(*toolchain.Provision, repository, "toolchain") != nil {
+			return fmt.Errorf("repository %q toolchain %q provision command is invalid", repositoryKey, id)
+		}
+	}
+	for id, artifact := range repository.Artifacts {
+		if !identifierPattern.MatchString(id) || len(artifact.Content) > 256*1024 || strings.ContainsRune(artifact.Content, 0) {
+			return fmt.Errorf("repository %q artifact %q is invalid", repositoryKey, id)
+		}
+	}
+	for id, infrastructure := range repository.Infrastructure {
+		if !identifierPattern.MatchString(id) || infrastructure.Kind != "container" ||
+			strings.TrimSpace(infrastructure.Image) == "" || strings.ContainsAny(infrastructure.Image, "\x00\r\n") {
+			return fmt.Errorf("repository %q infrastructure %q is invalid", repositoryKey, id)
+		}
+		for bindingID, binding := range infrastructure.ContainerPorts {
+			service, found := repository.Services[binding.Service]
+			_, portFound := service.Ports[binding.Purpose]
+			if !identifierPattern.MatchString(bindingID) || !found || !portFound || binding.ContainerPort < 1 || binding.ContainerPort > 65535 {
+				return fmt.Errorf("repository %q infrastructure %q port is invalid", repositoryKey, id)
+			}
+		}
+	}
+	for id, service := range repository.Services {
+		if err := validateService(repositoryKey, id, service, repository); err != nil {
+			return err
+		}
+	}
+	if err := validateServiceGraph(repository.Services); err != nil {
+		return fmt.Errorf("repository %q service dependencies are invalid: %w", repositoryKey, err)
+	}
+	for id, action := range repository.Actions {
+		if !identifierPattern.MatchString(id) || strings.TrimSpace(action.DisplayName) == "" ||
+			(action.Scope != "machine" && action.Scope != "repository" && action.Scope != "worktree" && action.Scope != "environment" && action.Scope != "service") ||
+			(action.Risk != "local" && action.Risk != "remote-read" && action.Risk != "remote-write") ||
+			((action.Command == nil) == (action.Lifecycle == "")) {
+			return fmt.Errorf("repository %q action %q is invalid", repositoryKey, id)
+		}
+		if action.Command != nil && validateCommand(*action.Command, repository, "action") != nil {
+			return fmt.Errorf("repository %q action %q command is invalid", repositoryKey, id)
+		}
+		switch action.Lifecycle {
+		case "", "prepare", "start", "stop", "cleanup":
+		default:
+			return fmt.Errorf("repository %q action %q lifecycle is invalid", repositoryKey, id)
+		}
+	}
+	if repository.Cleanup.PreparationRetention < 0 || repository.Cleanup.PreparationRetention > 100 {
+		return fmt.Errorf("repository %q cleanup retention is invalid", repositoryKey)
+	}
+	return nil
+}
+
+func validateService(repositoryKey, id string, service Service, repository Repository) error {
+	if !identifierPattern.MatchString(id) || strings.TrimSpace(service.DisplayName) == "" || strings.TrimSpace(service.Kind) == "" {
+		return fmt.Errorf("repository %q service %q is invalid", repositoryKey, id)
+	}
+	if !service.IsAvailable() {
+		if strings.TrimSpace(service.UnavailableReason) == "" {
+			return fmt.Errorf("repository %q unavailable service %q needs a reason", repositoryKey, id)
+		}
+		return nil
+	}
+	if service.Command.Executable == "" || validateCommand(service.Command, repository, "service") != nil ||
+		validateValueEnvironment(service.Environment, "service") != nil {
+		return fmt.Errorf("repository %q service %q command is invalid", repositoryKey, id)
+	}
+	seenDependencies := make(map[string]struct{}, len(service.Dependencies))
+	for _, dependency := range service.Dependencies {
+		if dependency == id || repository.Services[dependency].DisplayName == "" {
+			return fmt.Errorf("repository %q service %q dependency is invalid", repositoryKey, id)
+		}
+		if _, duplicate := seenDependencies[dependency]; duplicate {
+			return fmt.Errorf("repository %q service %q dependency is duplicated", repositoryKey, id)
+		}
+		seenDependencies[dependency] = struct{}{}
+	}
+	for purpose, port := range service.Ports {
+		if !identifierPattern.MatchString(purpose) || len(port.Preferred) > 16 {
+			return fmt.Errorf("repository %q service %q port is invalid", repositoryKey, id)
+		}
+		seenPorts := make(map[int]struct{}, len(port.Preferred))
+		for _, preferred := range port.Preferred {
+			if preferred < 1024 || preferred > 65535 {
+				return fmt.Errorf("repository %q service %q preferred port is invalid", repositoryKey, id)
+			}
+			if _, duplicate := seenPorts[preferred]; duplicate {
+				return fmt.Errorf("repository %q service %q preferred port is duplicated", repositoryKey, id)
+			}
+			seenPorts[preferred] = struct{}{}
+		}
+		if port.Publish != nil && (strings.TrimSpace(port.Publish.Name) == "" ||
+			(port.Publish.Scheme != "http" && port.Publish.Scheme != "https") ||
+			(port.Publish.Path != "" && !strings.HasPrefix(port.Publish.Path, "/"))) {
+			return fmt.Errorf("repository %q service %q published URL is invalid", repositoryKey, id)
+		}
+	}
+	for _, command := range service.Prepare {
+		if validateCommand(command, repository, "preparation") != nil {
+			return fmt.Errorf("repository %q service %q preparation is invalid", repositoryKey, id)
+		}
+	}
+	for _, probe := range append(append([]Probe{}, service.Readiness...), service.Health...) {
+		_, portFound := service.Ports[probe.Port]
+		if (probe.Kind != "tcp" && probe.Kind != "http") || !portFound ||
+			(probe.Kind == "http" && probe.Path != "" && !strings.HasPrefix(probe.Path, "/")) {
+			return fmt.Errorf("repository %q service %q probe is invalid", repositoryKey, id)
+		}
+		for _, accepted := range probe.AcceptedStatuses {
+			if accepted.Minimum < 100 || accepted.Maximum > 599 || accepted.Minimum > accepted.Maximum {
+				return fmt.Errorf("repository %q service %q probe status is invalid", repositoryKey, id)
+			}
+		}
+	}
+	for _, infrastructure := range service.Infrastructure {
+		if _, found := repository.Infrastructure[infrastructure]; !found {
+			return fmt.Errorf("repository %q service %q infrastructure is unknown", repositoryKey, id)
+		}
+	}
+	for _, artifact := range service.Artifacts {
+		if _, found := repository.Artifacts[artifact]; !found {
+			return fmt.Errorf("repository %q service %q artifact is unknown", repositoryKey, id)
+		}
+	}
+	return nil
+}
+
+func validateCommand(command Command, repository Repository, kind string) error {
+	if !cleanAbsolutePath(command.Executable) || command.WorkingDirectory == "" || !safeRelativePath(command.WorkingDirectory) {
+		return errors.New("command paths are invalid")
+	}
+	duration, err := time.ParseDuration(command.Timeout)
+	if err != nil || duration <= 0 || duration > 30*time.Minute {
+		return errors.New("command timeout is invalid")
+	}
+	if len(command.Arguments) > 1024 || validateValueEnvironment(command.Environment, kind) != nil {
+		return errors.New("command arguments or environment are invalid")
+	}
+	for _, argument := range command.Arguments {
+		if validateValueRef(argument, repository) != nil {
+			return errors.New("command argument is invalid")
+		}
+	}
+	for _, value := range command.Environment {
+		if validateValueRef(value, repository) != nil {
+			return errors.New("command environment is invalid")
+		}
+	}
+	return nil
+}
+
+func validateValueEnvironment(environment map[string]ValueRef, _ string) error {
+	for name := range environment {
+		if !environmentNamePattern.MatchString(name) || name == "HOME" || name == "PATH" || name == "TMPDIR" {
+			return errors.New("environment name is invalid")
+		}
+	}
+	return nil
+}
+
+func validateValueRef(value ValueRef, repository Repository) error {
+	count := 0
+	if value.Literal != nil {
+		count++
+		if strings.ContainsRune(*value.Literal, 0) {
+			return errors.New("literal contains NUL")
+		}
+	}
+	for _, reference := range []string{value.Target, value.Artifact, value.Cache, value.Value} {
+		if reference != "" {
+			count++
+		}
+	}
+	if value.Port != nil {
+		count++
+		if !identifierPattern.MatchString(value.Port.Purpose) ||
+			(value.Port.Service != "" && !identifierPattern.MatchString(value.Port.Service)) {
+			return errors.New("port reference is invalid")
+		}
+	}
+	for _, path := range []*string{value.WorktreePath, value.RuntimePath} {
+		if path != nil {
+			count++
+			if !safeRelativePath(*path) {
+				return errors.New("path reference is invalid")
+			}
+		}
+	}
+	if count != 1 {
+		return errors.New("value reference must select exactly one source")
+	}
+	if value.Artifact != "" {
+		if _, found := repository.Artifacts[value.Artifact]; !found {
+			return errors.New("artifact reference is unknown")
+		}
+	}
+	if value.Cache != "" {
+		if _, found := repository.Caches[value.Cache]; !found {
+			return errors.New("cache reference is unknown")
+		}
+	}
+	if value.Value != "" {
+		if _, found := repository.Values[value.Value]; !found {
+			return errors.New("value reference is unknown")
+		}
+	}
+	return nil
+}
+
+func validateServiceGraph(services map[string]Service) error {
+	visiting := make(map[string]bool, len(services))
+	visited := make(map[string]bool, len(services))
+	var visit func(string) error
+	visit = func(id string) error {
+		if visiting[id] {
+			return errors.New("dependency cycle")
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dependency := range services[id].Dependencies {
+			if err := visit(dependency); err != nil {
+				return err
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return nil
+	}
+	for id := range services {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cleanAbsolutePath(path string) bool {
+	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path && path != string(filepath.Separator) && !strings.ContainsRune(path, 0)
+}
+
+func safeRelativePath(path string) bool {
+	return path != "" && !filepath.IsAbs(path) && filepath.Clean(path) == path && path != ".." &&
+		!strings.HasPrefix(path, ".."+string(filepath.Separator)) && !strings.ContainsRune(path, 0)
 }
 
 func validatePreparation(repositoryKey string, preparation Preparation) error {

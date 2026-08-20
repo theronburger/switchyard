@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/theronburger/switchyard/internal/configuration"
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/daemon"
@@ -16,9 +17,11 @@ type managedWorkspaceSnapshotStore interface {
 }
 
 type managedWorkspaceResolver struct {
-	store        managedWorkspaceSnapshotStore
-	repositories map[string]contractv1.Repository
-	worktrees    map[string]managedWorkspaceTarget
+	store                       managedWorkspaceSnapshotStore
+	repositories                map[string]contractv1.Repository
+	worktrees                   map[string]managedWorkspaceTarget
+	configurationPath           string
+	acceptedConfigurationDigest string
 }
 
 type managedWorkspaceTarget struct {
@@ -123,6 +126,14 @@ func (resolver managedWorkspaceResolver) ResolvePrepare(
 	_ context.Context,
 	request contractv1.PrepareWorktreeRequest,
 ) (string, error) {
+	if resolver.configurationPath != "" {
+		desired, err := configuration.LoadFile(resolver.configurationPath)
+		if err != nil || desired.Digest != resolver.acceptedConfigurationDigest {
+			return "", workspaceActionError(
+				http.StatusConflict, "CONFIGURATION_NOT_ACCEPTED", "Validate and accept the current private configuration before preparing new work.",
+			)
+		}
+	}
 	if _, found := resolver.worktrees[request.WorktreeID]; !found {
 		return "", workspaceActionError(
 			http.StatusNotFound, "WORKTREE_NOT_FOUND", "The requested worktree is not available.",

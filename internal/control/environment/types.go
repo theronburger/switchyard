@@ -55,7 +55,8 @@ const (
 )
 
 type ProjectionRequest struct {
-	ID string
+	ID          string
+	ArtifactIDs []string
 }
 
 type ProjectionChange struct {

@@ -72,7 +72,7 @@ func buildEnvironmentRuntime(
 	restart func(),
 ) (*environmentRuntime, error) {
 	if len(discovered.Profiles) > 0 {
-		return buildConfiguredWorkspaceRuntime(ctx, store, paths, discovered, restart)
+		return buildConfiguredProfileRuntime(ctx, store, paths, instanceID, discovered, restart)
 	}
 	environments, registrations, workspaceRegistrations, err := marketplaceRegistrations(
 		ctx, paths, instanceID, discovered.Repositories,

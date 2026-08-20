@@ -44,6 +44,9 @@ func discoverAcceptedRepositoryInventory(
 	discovered := discoverConfiguredRepositoryInventory(
 		ctx, observedAt, document, configuredGitExecutable(),
 	)
+	discovered.FirstPort = document.Machine.Ports.First
+	discovered.LastPort = document.Machine.Ports.Last
+	discovered.AcceptedConfigurationDigest = accepted.Digest
 	for repositoryID, key := range discovered.ProfileKeys {
 		discovered.ProfileDigests[repositoryID] = accepted.RepositoryDigests[key]
 	}
@@ -135,6 +138,8 @@ func discoverConfiguredRepositories(
 		if discovered.discovery.Repository != nil {
 			repository := *discovered.discovery.Repository
 			repository.DisplayName = discovered.profile.DisplayName
+			runtime := configuredRuntimeCatalog(discovered.profile)
+			repository.Runtime = &runtime
 			observationTime := observedAt.UTC()
 			repository.Observation = &contractv1.RepositoryObservation{
 				ObservedAt: &observationTime, LastAttemptAt: observationTime,
@@ -162,4 +167,42 @@ func discoverConfiguredRepositories(
 	result.Alerts = deduplicateInventoryAlerts(result.Alerts)
 	sort.Slice(result.Alerts, func(left, right int) bool { return result.Alerts[left].ID < result.Alerts[right].ID })
 	return result
+}
+
+func configuredRuntimeCatalog(profile configuration.Repository) contractv1.RepositoryRuntime {
+	runtime := contractv1.RepositoryRuntime{
+		DefaultTargetID: profile.DefaultTarget, Targets: []contractv1.RuntimeTarget{}, Services: []contractv1.RuntimeService{},
+	}
+	targetIDs := make([]string, 0, len(profile.Targets))
+	for id := range profile.Targets {
+		targetIDs = append(targetIDs, id)
+	}
+	sort.Strings(targetIDs)
+	for _, id := range targetIDs {
+		target := profile.Targets[id]
+		displayName := target.DisplayName
+		if displayName == "" {
+			displayName = id
+		}
+		risk := target.Risk
+		if risk == "" {
+			risk = "local"
+		}
+		runtime.Targets = append(runtime.Targets, contractv1.RuntimeTarget{
+			ID: id, DisplayName: displayName, Risk: risk, WarnOnStart: target.WarnOnStart,
+		})
+	}
+	serviceIDs := make([]string, 0, len(profile.Services))
+	for id := range profile.Services {
+		serviceIDs = append(serviceIDs, id)
+	}
+	sort.Strings(serviceIDs)
+	for _, id := range serviceIDs {
+		service := profile.Services[id]
+		runtime.Services = append(runtime.Services, contractv1.RuntimeService{
+			ID: id, DisplayName: service.DisplayName, Kind: service.Kind,
+			Available: service.IsAvailable(), UnavailableReason: service.UnavailableReason,
+		})
+	}
+	return runtime
 }

@@ -40,7 +40,7 @@ func TestConfigurationHTTPValidatesAndAcceptsExactCandidate(t *testing.T) {
 			}
 			return contractv1.ConfigurationStatus{SchemaVersion: 1, State: "pending", Candidate: &contractv1.ConfigurationCandidate{
 				SchemaVersion: 1, Digest: digest, SourceDigest: sourceDigest, CompilerVersion: "compiler-v1",
-				RepositoryDigests: map[string]string{"sample": digest}, StagedAt: time.Now().UTC(),
+				RepositoryDigests: map[string]string{"sample": digest}, ExecutableDigests: map[string]string{}, StagedAt: time.Now().UTC(),
 			}}
 		},
 		accept: func(request contractv1.ConfigurationAcceptanceRequest) contractv1.ConfigurationStatus {

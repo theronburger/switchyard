@@ -161,3 +161,14 @@ func TestParseRejectsTrustedEnvironmentOverride(t *testing.T) {
 		t.Fatal("trusted environment override was accepted")
 	}
 }
+
+func TestParseRejectsUnknownNestedServiceField(t *testing.T) {
+	configured := strings.Replace(validConfiguration, "services: {}", `services:
+      web:
+        displayName: Web
+        kind: web
+        mystery: true`, 1)
+	if _, err := Parse([]byte(configured)); err == nil {
+		t.Fatal("unknown nested service field was accepted")
+	}
+}

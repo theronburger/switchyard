@@ -335,6 +335,7 @@ type ConfigurationCandidate struct {
 	SourceDigest      string            `json:"sourceDigest"`
 	CompilerVersion   string            `json:"compilerVersion"`
 	RepositoryDigests map[string]string `json:"repositoryDigests"`
+	ExecutableDigests map[string]string `json:"executableDigests"`
 	StagedAt          time.Time         `json:"stagedAt"`
 }
 

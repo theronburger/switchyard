@@ -26,6 +26,7 @@ type ConfigurationCandidate struct {
 	CompilerVersion   string
 	CanonicalPayload  json.RawMessage
 	RepositoryDigests map[string]string
+	ExecutableDigests map[string]string
 	StagedAt          time.Time
 }
 
@@ -51,6 +52,10 @@ func (store *Store) StageConfiguration(
 	if err != nil {
 		return ConfigurationCandidate{}, fmt.Errorf("encode repository digests: %w", err)
 	}
+	executableDigests, err := json.Marshal(loaded.ExecutableDigests)
+	if err != nil {
+		return ConfigurationCandidate{}, fmt.Errorf("encode executable digests: %w", err)
+	}
 
 	transaction, err := store.database.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
@@ -63,11 +68,12 @@ func (store *Store) StageConfiguration(
 	stagedAt := store.now().UTC()
 	result, err := transaction.ExecContext(ctx, `
 INSERT INTO configuration_candidates(
-    digest, schema_version, source_digest, compiler_version, payload_json, repository_digests_json, staged_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    digest, schema_version, source_digest, compiler_version, payload_json, repository_digests_json,
+    executable_digests_json, staged_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(digest) DO NOTHING`,
 		loaded.Digest, configuration.SchemaVersion, loaded.SourceDigest, compilerVersion,
-		[]byte(loaded.CanonicalPayload), repositoryDigests, stagedAt.Format(timeFormat),
+		[]byte(loaded.CanonicalPayload), repositoryDigests, executableDigests, stagedAt.Format(timeFormat),
 	)
 	if err != nil {
 		return ConfigurationCandidate{}, fmt.Errorf("stage configuration: %w", err)
@@ -85,7 +91,8 @@ ON CONFLICT(digest) DO NOTHING`,
 			existing.SourceDigest != loaded.SourceDigest ||
 			existing.CompilerVersion != compilerVersion ||
 			!bytes.Equal(existing.CanonicalPayload, loaded.CanonicalPayload) ||
-			!maps.Equal(existing.RepositoryDigests, loaded.RepositoryDigests) {
+			!maps.Equal(existing.RepositoryDigests, loaded.RepositoryDigests) ||
+			!maps.Equal(existing.ExecutableDigests, loaded.ExecutableDigests) {
 			return ConfigurationCandidate{}, errors.New("staged configuration digest has different metadata")
 		}
 		stagedAt = existing.StagedAt
@@ -97,7 +104,8 @@ ON CONFLICT(digest) DO NOTHING`,
 		Digest: loaded.Digest, SchemaVersion: configuration.SchemaVersion,
 		SourceDigest: loaded.SourceDigest, CompilerVersion: compilerVersion,
 		CanonicalPayload:  append(json.RawMessage(nil), loaded.CanonicalPayload...),
-		RepositoryDigests: cloneStringMap(loaded.RepositoryDigests), StagedAt: stagedAt,
+		RepositoryDigests: cloneStringMap(loaded.RepositoryDigests),
+		ExecutableDigests: cloneStringMap(loaded.ExecutableDigests), StagedAt: stagedAt,
 	}, nil
 }
 
@@ -124,13 +132,17 @@ func (store *Store) AcceptConfiguration(
 	if err != nil {
 		return ConfigurationRevision{}, fmt.Errorf("encode accepted repository digests: %w", err)
 	}
+	executableDigests, err := json.Marshal(candidate.ExecutableDigests)
+	if err != nil {
+		return ConfigurationRevision{}, fmt.Errorf("encode accepted executable digests: %w", err)
+	}
 	if _, err := transaction.ExecContext(ctx, `
 INSERT INTO configuration_revisions(
     revision, digest, schema_version, source_digest, compiler_version, payload_json,
-    repository_digests_json, accepted_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    repository_digests_json, executable_digests_json, accepted_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		revision, candidate.Digest, candidate.SchemaVersion, candidate.SourceDigest,
-		candidate.CompilerVersion, []byte(candidate.CanonicalPayload), repositoryDigests,
+		candidate.CompilerVersion, []byte(candidate.CanonicalPayload), repositoryDigests, executableDigests,
 		acceptedAt.Format(timeFormat),
 	); err != nil {
 		return ConfigurationRevision{}, fmt.Errorf("persist accepted configuration: %w", err)
@@ -151,16 +163,16 @@ ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision`, revision); e
 
 func (store *Store) ReadAcceptedConfiguration(ctx context.Context) (ConfigurationRevision, error) {
 	var revision ConfigurationRevision
-	var payload, repositoryDigests []byte
+	var payload, repositoryDigests, executableDigests []byte
 	var acceptedAt string
 	err := store.database.QueryRowContext(ctx, `
 SELECT r.revision, r.digest, r.schema_version, r.source_digest, r.compiler_version,
-       r.payload_json, r.repository_digests_json, r.accepted_at
+       r.payload_json, r.repository_digests_json, r.executable_digests_json, r.accepted_at
 FROM configuration_head AS h
 JOIN configuration_revisions AS r ON r.revision = h.revision
 WHERE h.singleton = 1`).Scan(
 		&revision.Revision, &revision.Digest, &revision.SchemaVersion, &revision.SourceDigest,
-		&revision.CompilerVersion, &payload, &repositoryDigests, &acceptedAt,
+		&revision.CompilerVersion, &payload, &repositoryDigests, &executableDigests, &acceptedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConfigurationRevision{}, ErrConfigurationNotAccepted
@@ -174,6 +186,9 @@ WHERE h.singleton = 1`).Scan(
 	}
 	if err := json.Unmarshal(repositoryDigests, &revision.RepositoryDigests); err != nil {
 		return ConfigurationRevision{}, fmt.Errorf("decode accepted repository digests: %w", err)
+	}
+	if err := json.Unmarshal(executableDigests, &revision.ExecutableDigests); err != nil {
+		return ConfigurationRevision{}, fmt.Errorf("decode accepted executable digests: %w", err)
 	}
 	revision.CanonicalPayload = append(json.RawMessage(nil), payload...)
 	revision.AcceptedAt = parsedTime
@@ -196,15 +211,15 @@ func requireConfigurationRevision(ctx context.Context, transaction *sql.Tx, expe
 
 func readConfigurationCandidate(ctx context.Context, transaction *sql.Tx, digest string) (ConfigurationCandidate, error) {
 	var candidate ConfigurationCandidate
-	var payload, repositoryDigests []byte
+	var payload, repositoryDigests, executableDigests []byte
 	var stagedAt string
 	err := transaction.QueryRowContext(ctx, `
 SELECT digest, schema_version, source_digest, compiler_version, payload_json,
-       repository_digests_json, staged_at
+       repository_digests_json, executable_digests_json, staged_at
 FROM configuration_candidates
 WHERE digest = ?`, digest).Scan(
 		&candidate.Digest, &candidate.SchemaVersion, &candidate.SourceDigest, &candidate.CompilerVersion,
-		&payload, &repositoryDigests, &stagedAt,
+		&payload, &repositoryDigests, &executableDigests, &stagedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConfigurationCandidate{}, ErrConfigurationCandidateMissing
@@ -218,6 +233,9 @@ WHERE digest = ?`, digest).Scan(
 	}
 	if err := json.Unmarshal(repositoryDigests, &candidate.RepositoryDigests); err != nil {
 		return ConfigurationCandidate{}, fmt.Errorf("decode repository digests: %w", err)
+	}
+	if err := json.Unmarshal(executableDigests, &candidate.ExecutableDigests); err != nil {
+		return ConfigurationCandidate{}, fmt.Errorf("decode executable digests: %w", err)
 	}
 	candidate.CanonicalPayload = append(json.RawMessage(nil), payload...)
 	candidate.StagedAt = parsedTime

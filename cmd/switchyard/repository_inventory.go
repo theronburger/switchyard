@@ -27,14 +27,17 @@ const gitExecutableOverride = "SWITCHYARD_GIT_EXECUTABLE"
 const marketplaceBaseReference = "origin/main"
 
 type repositoryInventory struct {
-	Repositories   []contractv1.Repository
-	Alerts         []contractv1.Alert
-	Configurations map[string]controlconfig.RepositoryConfiguration
-	Profiles       map[string]configuration.Repository
-	ProfileKeys    map[string]string
-	ProfileDigests map[string]string
-	Complete       bool
-	AttemptedAt    time.Time
+	Repositories                []contractv1.Repository
+	Alerts                      []contractv1.Alert
+	Configurations              map[string]controlconfig.RepositoryConfiguration
+	Profiles                    map[string]configuration.Repository
+	ProfileKeys                 map[string]string
+	ProfileDigests              map[string]string
+	AcceptedConfigurationDigest string
+	FirstPort                   int
+	LastPort                    int
+	Complete                    bool
+	AttemptedAt                 time.Time
 }
 
 func restoreWorkspaceInventory(

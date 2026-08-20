@@ -196,6 +196,16 @@ CREATE INDEX cleanup_plans_expiration
     ON cleanup_plans(expires_at, consumed_at);
 `,
 	},
+	{
+		version: 9,
+		sql: `
+ALTER TABLE configuration_candidates
+    ADD COLUMN executable_digests_json BLOB NOT NULL DEFAULT '{}';
+
+ALTER TABLE configuration_revisions
+    ADD COLUMN executable_digests_json BLOB NOT NULL DEFAULT '{}';
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {
