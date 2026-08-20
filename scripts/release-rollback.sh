@@ -73,8 +73,10 @@ if [ "$mode" != "--apply" ]; then
 fi
 
 command -v gh >/dev/null 2>&1 || { echo "gh is required for --apply" >&2; exit 1; }
-gh release view "$tag" --repo "$repository" --json isDraft,isPrerelease,assets \
-	--jq 'if .isDraft then error("refusing: \(env.TAG) is a draft") else . end' >/dev/null
+if [ "$(gh release view "$tag" --repo "$repository" --json isDraft --jq '.isDraft')" != "false" ]; then
+	echo "refusing: $tag is a draft or could not be inspected" >&2
+	exit 1
+fi
 gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].name' | grep -Fxq "appcast.xml" \
 	|| { echo "refusing: $tag has no appcast.xml asset" >&2; exit 1; }
 gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].name' | grep -Fxq "$archive" \
