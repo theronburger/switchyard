@@ -187,3 +187,39 @@ func TestParseRejectsUnknownNestedServiceField(t *testing.T) {
 		t.Fatal("unknown nested service field was accepted")
 	}
 }
+
+func TestParseValidatesProfileActions(t *testing.T) {
+	withActions := func(actions string) string {
+		return strings.Replace(validConfiguration, "    actions: {}\n", "    actions:\n"+actions, 1)
+	}
+	accepted := []string{
+		"      tidy:\n        displayName: Tidy\n        scope: worktree\n        risk: local\n        command:\n          executable: /bin/echo\n          arguments: [{literal: tidy}]\n          workingDirectory: .\n          environment: {}\n          timeout: 1m\n",
+		"      warm:\n        displayName: Prepare\n        scope: worktree\n        risk: local\n        lifecycle: prepare\n",
+		"      halt:\n        displayName: Stop\n        scope: environment\n        risk: local\n        lifecycle: stop\n",
+		"      sweep:\n        displayName: Cleanup\n        scope: repository\n        risk: local\n        lifecycle: cleanup\n",
+	}
+	for _, actions := range accepted {
+		if _, err := Parse([]byte(withActions(actions))); err != nil {
+			t.Fatalf("accepted action rejected: %v\n%s", err, actions)
+		}
+	}
+	rejected := []string{
+		// lifecycle stop must address an environment
+		"      halt:\n        displayName: Stop\n        scope: worktree\n        risk: local\n        lifecycle: stop\n",
+		// lifecycle prepare cannot address a service
+		"      warm:\n        displayName: Prepare\n        scope: service\n        risk: local\n        lifecycle: prepare\n",
+		// both command and lifecycle
+		"      both:\n        displayName: Both\n        scope: worktree\n        risk: local\n        lifecycle: prepare\n        command:\n          executable: /bin/echo\n          arguments: []\n          workingDirectory: .\n          environment: {}\n          timeout: 1m\n",
+		// relative executable is never a shell lookup
+		"      rel:\n        displayName: Rel\n        scope: worktree\n        risk: local\n        command:\n          executable: echo\n          arguments: []\n          workingDirectory: .\n          environment: {}\n          timeout: 1m\n",
+		// unknown risk
+		"      risky:\n        displayName: Risky\n        scope: worktree\n        risk: destructive\n        command:\n          executable: /bin/echo\n          arguments: []\n          workingDirectory: .\n          environment: {}\n          timeout: 1m\n",
+		// timeout beyond the bound
+		"      slow:\n        displayName: Slow\n        scope: worktree\n        risk: local\n        command:\n          executable: /bin/echo\n          arguments: []\n          workingDirectory: .\n          environment: {}\n          timeout: 31m\n",
+	}
+	for _, actions := range rejected {
+		if _, err := Parse([]byte(withActions(actions))); err == nil {
+			t.Fatalf("invalid action accepted:\n%s", actions)
+		}
+	}
+}

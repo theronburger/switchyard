@@ -407,6 +407,39 @@ type CleanupResult struct {
 	CompletedAt   time.Time        `json:"completedAt"`
 }
 
+// ProfileAction is the repository-neutral public view of one accepted profile
+// action. It never exposes the executable, arguments, or environment.
+type ProfileAction struct {
+	ID                   string `json:"id"`
+	RepositoryID         string `json:"repositoryId"`
+	ProfileKey           string `json:"profileKey"`
+	ProfileDigest        string `json:"profileDigest"`
+	DisplayName          string `json:"displayName"`
+	Scope                string `json:"scope"`
+	Risk                 string `json:"risk"`
+	Kind                 string `json:"kind"`
+	Lifecycle            string `json:"lifecycle,omitempty"`
+	RequiresConfirmation bool   `json:"requiresConfirmation"`
+}
+
+type ProfileActionList struct {
+	SchemaVersion  int             `json:"schemaVersion"`
+	AcceptedDigest string          `json:"acceptedDigest,omitempty"`
+	Actions        []ProfileAction `json:"actions"`
+}
+
+// RunProfileActionRequest executes one accepted profile action against an
+// exact target. The identifiers present must match the action's scope.
+type RunProfileActionRequest struct {
+	MutationRequest
+	RepositoryID      string `json:"repositoryId"`
+	ActionID          string `json:"actionId"`
+	WorktreeID        string `json:"worktreeId,omitempty"`
+	EnvironmentID     string `json:"environmentId,omitempty"`
+	ServiceID         string `json:"serviceId,omitempty"`
+	ConfirmedActionID string `json:"confirmedActionId,omitempty"`
+}
+
 type MutationReceipt struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	RequestID     string    `json:"requestId"`

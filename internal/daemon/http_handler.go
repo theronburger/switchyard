@@ -62,6 +62,7 @@ type HandlerConfig struct {
 	OperationDiagnostics OperationDiagnosticsSource
 	Configuration        ConfigurationActions
 	Cleanup              CleanupActions
+	ProfileActions       ProfileActions
 }
 
 type errorResponse struct {
@@ -137,6 +138,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		handler.events(response, request)
 	default:
 		if handler.cleanup(response, request) {
+			return
+		}
+		if handler.profileActions(response, request) {
 			return
 		}
 		if handler.configuration(response, request) {

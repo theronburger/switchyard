@@ -14,6 +14,7 @@ import (
 
 	"github.com/theronburger/switchyard/internal/configuration"
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	actioncontrol "github.com/theronburger/switchyard/internal/control/action"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	profilecontrol "github.com/theronburger/switchyard/internal/control/profile"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
@@ -252,9 +253,26 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 			return nil, err
 		}
 	}
+	actionResolver, err := newConfiguredProfileActionResolver(discovered, registrations, store, paths.configuration)
+	if err != nil {
+		return nil, err
+	}
+	profileActionConfig := daemon.ProfileActionServiceConfig{
+		Lifecycle: ctx, Store: store, Resolver: actionResolver, Runner: actioncontrol.ExactRunner{},
+		Environment: actions,
+	}
+	if workspaceActions != nil {
+		profileActionConfig.Workspace = workspaceActions
+	}
+	profileActions, err := daemon.NewProfileActionService(profileActionConfig)
+	if err != nil {
+		return nil, err
+	}
 	observerDone := make(chan error, 1)
 	go func() { observerDone <- observer.Run(ctx) }()
-	return &environmentRuntime{actions: actions, workspaceActions: workspaceActions, observerDone: observerDone}, nil
+	return &environmentRuntime{
+		actions: actions, workspaceActions: workspaceActions, profileActions: profileActions, observerDone: observerDone,
+	}, nil
 }
 
 func configuredProfilesUseInfrastructure(discovered repositoryInventory) bool {

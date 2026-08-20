@@ -25,6 +25,7 @@ const (
 type environmentRuntime struct {
 	actions          *daemon.EnvironmentActionService
 	workspaceActions *daemon.WorkspaceActionService
+	profileActions   *daemon.ProfileActionService
 	observerDone     <-chan error
 }
 
@@ -35,6 +36,9 @@ func (runtime *environmentRuntime) CloseAndWait(ctx context.Context) error {
 	}
 	if runtime.workspaceActions != nil {
 		actionError = errors.Join(actionError, runtime.workspaceActions.CloseAndWait(ctx))
+	}
+	if runtime.profileActions != nil {
+		actionError = errors.Join(actionError, runtime.profileActions.CloseAndWait(ctx))
 	}
 	var observerError error
 	if runtime.observerDone != nil {

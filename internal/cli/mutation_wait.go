@@ -120,6 +120,10 @@ func mutationVisible(
 	resourceID string,
 	serviceIDs []string,
 ) bool {
+	if kind == "action" {
+		// A profile action's terminal operation state is its completion proof.
+		return true
+	}
 	if kind == "prepare" {
 		for _, repository := range snapshot.Repositories {
 			for _, worktree := range repository.Worktrees {

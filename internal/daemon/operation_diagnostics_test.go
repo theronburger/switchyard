@@ -111,3 +111,40 @@ func TestOperationDiagnosticsReaderDistinguishesMissingOperationFromStoreFailure
 		t.Fatalf("store failure: %v", err)
 	}
 }
+
+func TestOperationDiagnosticsReaderResolvesProfileActionLogs(t *testing.T) {
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	logReference := "sample/operation_09"
+	logDirectory := filepath.Join(runtimeRoot, "actions", filepath.FromSlash(logReference))
+	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDirectory, "stderr.log"), []byte("lint failed: token=visible\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An environment-scoped action's diagnostics come from the actions root,
+	// not from the environment run directory.
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+		ID: "operation_09", Kind: ProfileActionOperationKind, EnvironmentID: "env_01",
+		Error: &contractv1.ContractError{LogReference: logReference},
+	}}, runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := reader.ReadOperationDiagnostics(context.Background(), "operation_09", 256)
+	if err != nil || len(diagnostics.Excerpts) != 1 || !strings.Contains(diagnostics.Excerpts[0].Content, "lint failed") ||
+		strings.Contains(diagnostics.Excerpts[0].Content, "token=visible") {
+		t.Fatalf("action diagnostics: %+v err=%v", diagnostics, err)
+	}
+	// The same reference on a non-action operation must not escape into the actions root.
+	other, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+		ID: "operation_10", Kind: "environment.start", EnvironmentID: "env_01",
+		Error: &contractv1.ContractError{LogReference: "../../actions/" + logReference},
+	}}, runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.ReadOperationDiagnostics(context.Background(), "operation_10", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+		t.Fatalf("traversal into the actions root was allowed: %v", err)
+	}
+}

@@ -70,7 +70,7 @@ func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 	if operation.EnvironmentID == "" || operation.Error == nil || operation.Error.LogReference == "" {
 		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
-	logDirectory, valid := reader.logDirectory(operation.EnvironmentID, operation.Error.LogReference)
+	logDirectory, valid := reader.logDirectory(operation.Kind, operation.EnvironmentID, operation.Error.LogReference)
 	if !valid || !ownedLogDirectory(reader.runtimeRoot, logDirectory) {
 		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
@@ -91,7 +91,7 @@ func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 	return diagnostics, nil
 }
 
-func (reader *OperationDiagnosticsReader) logDirectory(environmentID, reference string) (string, bool) {
+func (reader *OperationDiagnosticsReader) logDirectory(kind, environmentID, reference string) (string, bool) {
 	if strings.ContainsRune(reference, 0) || filepath.IsAbs(reference) {
 		return "", false
 	}
@@ -99,7 +99,14 @@ func (reader *OperationDiagnosticsReader) logDirectory(environmentID, reference 
 	if cleanReference == "." || cleanReference == ".." || strings.HasPrefix(cleanReference, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	directory := filepath.Join(reader.runtimeRoot, "environments", environmentID, "runs", cleanReference)
+	var directory string
+	if kind == ProfileActionOperationKind {
+		// Command actions log under the private actions root, keyed by profile
+		// and operation, independent of any environment run directory.
+		directory = filepath.Join(reader.runtimeRoot, "actions", cleanReference)
+	} else {
+		directory = filepath.Join(reader.runtimeRoot, "environments", environmentID, "runs", cleanReference)
+	}
 	return directory, pathContainedBy(reader.runtimeRoot, directory)
 }
 

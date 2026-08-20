@@ -46,6 +46,11 @@ type ConfigurationBackend interface {
 	AcceptConfiguration(context.Context, contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error)
 }
 
+type ProfileActionBackend interface {
+	ListProfileActions(context.Context) (contractv1.ProfileActionList, error)
+	RunProfileAction(context.Context, contractv1.RunProfileActionRequest) (contractv1.MutationReceipt, error)
+}
+
 type CleanupBackend interface {
 	PlanCleanup(context.Context, contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error)
 	ApplyCleanup(context.Context, contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error)
@@ -119,6 +124,14 @@ func (b LiveBackend) AcceptConfiguration(ctx context.Context, request contractv1
 	return b.Connector.AcceptConfiguration(ctx, request)
 }
 
+func (b LiveBackend) ListProfileActions(ctx context.Context) (contractv1.ProfileActionList, error) {
+	return b.Connector.ListProfileActions(ctx)
+}
+
+func (b LiveBackend) RunProfileAction(ctx context.Context, request contractv1.RunProfileActionRequest) (contractv1.MutationReceipt, error) {
+	return b.Connector.RunProfileAction(ctx, request)
+}
+
 func (b LiveBackend) PlanCleanup(ctx context.Context, request contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error) {
 	return b.Connector.PlanCleanup(ctx, request)
 }
@@ -146,6 +159,10 @@ type parsedCommand struct {
 	IdempotencyKey    string
 	ExpectedRevision  *int64
 	StartPoint        string
+	WorktreeID        string
+	EnvironmentID     string
+	ServiceID         string
+	ConfirmedActionID string
 	All               bool
 	Wait              bool
 	IfRunning         bool
@@ -197,6 +214,23 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		return ExitUsage
 	}
 	switch command.Name {
+	case "actions", "action":
+		backend, available := a.Backend.(ProfileActionBackend)
+		if !available {
+			return writeFailure(stdout, stderr, command.JSON, errors.New("profile actions are unavailable"))
+		}
+		if command.Name == "actions" {
+			list, err := backend.ListProfileActions(ctx)
+			if err != nil {
+				return writeFailure(stdout, stderr, command.JSON, err)
+			}
+			if command.JSON {
+				return encodeJSON(stdout, list)
+			}
+			writeProfileActions(stdout, list)
+			return ExitSuccess
+		}
+		return a.runProfileAction(ctx, backend, command, stdout, stderr)
 	case "cleanup-plan", "cleanup-apply":
 		backend, available := a.Backend.(CleanupBackend)
 		if !available {
@@ -503,6 +537,58 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 	}
 }
 
+func (a Application) runProfileAction(
+	ctx context.Context,
+	backend ProfileActionBackend,
+	command parsedCommand,
+	stdout, stderr io.Writer,
+) int {
+	actionContext, cancel := a.actionContext(ctx, command.Wait)
+	defer cancel()
+	worktreeID := command.WorktreeID
+	if worktreeID == "." {
+		resolvedID, err := a.resolveCurrentWorktree(actionContext, command.Wait)
+		if err != nil {
+			return writeCurrentWorktreeFailure(stdout, stderr, command.JSON, err)
+		}
+		worktreeID = resolvedID
+	}
+	environmentID := command.EnvironmentID
+	if environmentID == "." {
+		environment, err := a.resolveCurrentEnvironment(actionContext, command.Wait)
+		if err != nil {
+			return writeStatusSelectionFailure(stdout, stderr, command.JSON, err)
+		}
+		environmentID = environment.ID
+	}
+	requestID, err := a.requestID()
+	if err != nil {
+		return writeFailure(stdout, stderr, command.JSON, err)
+	}
+	idempotencyKey := command.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = "cli:" + requestID
+	}
+	receipt, err := backend.RunProfileAction(actionContext, contractv1.RunProfileActionRequest{
+		MutationRequest: contractv1.MutationRequest{
+			SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+			ExpectedEnvironmentRevision: command.ExpectedRevision,
+		},
+		RepositoryID: command.Positionals[0], ActionID: command.Positionals[1],
+		WorktreeID: worktreeID, EnvironmentID: environmentID, ServiceID: command.ServiceID,
+		ConfirmedActionID: command.ConfirmedActionID,
+	})
+	if err != nil {
+		return writeFailure(stdout, stderr, command.JSON, err)
+	}
+	if command.Wait {
+		if err := a.waitForMutation(actionContext, receipt, "action", "", nil); err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+	}
+	return writeReceipt(stdout, receipt, command.JSON)
+}
+
 func (a Application) resolveCurrentWorktree(ctx context.Context, wait bool) (string, error) {
 	if !wait {
 		snapshot, err := a.Backend.Status(ctx)
@@ -676,7 +762,7 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 		return parsedCommand{}, false
 	}
 	command := parsedCommand{Name: arguments[0]}
-	if command.Name != "status" && command.Name != "doctor" &&
+	if command.Name != "status" && command.Name != "doctor" && command.Name != "actions" && command.Name != "action" &&
 		command.Name != "configuration" && command.Name != "validate-configuration" && command.Name != "accept-configuration" &&
 		command.Name != "cleanup-plan" && command.Name != "cleanup-apply" &&
 		command.Name != "start" && command.Name != "stop" && command.Name != "prepare" &&
@@ -741,6 +827,37 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 				return parsedCommand{}, false
 			}
 			command.ExpectedRevision = &revision
+		case "--worktree", "--environment", "--service", "--confirm-action":
+			if index+1 >= len(arguments) {
+				return parsedCommand{}, false
+			}
+			index++
+			value := arguments[index]
+			if value == "" || strings.HasPrefix(value, "-") {
+				return parsedCommand{}, false
+			}
+			switch argument {
+			case "--worktree":
+				if command.WorktreeID != "" {
+					return parsedCommand{}, false
+				}
+				command.WorktreeID = value
+			case "--environment":
+				if command.EnvironmentID != "" {
+					return parsedCommand{}, false
+				}
+				command.EnvironmentID = value
+			case "--service":
+				if command.ServiceID != "" {
+					return parsedCommand{}, false
+				}
+				command.ServiceID = value
+			case "--confirm-action":
+				if command.ConfirmedActionID != "" {
+					return parsedCommand{}, false
+				}
+				command.ConfirmedActionID = value
+			}
 		case "--base":
 			if command.StartPoint != "" || index+1 >= len(arguments) {
 				return parsedCommand{}, false
@@ -757,7 +874,25 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 			command.Positionals = append(command.Positionals, argument)
 		}
 	}
+	if command.Name != "action" &&
+		(command.WorktreeID != "" || command.EnvironmentID != "" || command.ServiceID != "" || command.ConfirmedActionID != "") {
+		return parsedCommand{}, false
+	}
 	switch command.Name {
+	case "actions":
+		if len(command.Positionals) != 0 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
+	case "action":
+		if len(command.Positionals) != 2 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.StartPoint != "" || command.IfRunning ||
+			(command.WorktreeID != "" && command.EnvironmentID != "") ||
+			(command.ServiceID != "" && command.EnvironmentID == "") ||
+			(command.ExpectedRevision != nil && command.EnvironmentID == "") ||
+			(command.ConfirmedActionID != "" && command.ConfirmedActionID != command.Positionals[1]) {
+			return parsedCommand{}, false
+		}
 	case "cleanup-plan":
 		if (len(command.Positionals) != 0 && len(command.Positionals) != 2) ||
 			(len(command.Positionals) == 2 && command.Positionals[0] != "repository" && command.Positionals[0] != "worktree") ||
@@ -893,6 +1028,8 @@ func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "  switchyard configuration [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard validate-configuration [--expected-revision N] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard accept-configuration <digest> [--expected-revision N] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard actions [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard action <repository-id> <action-id> [--worktree ID|.] [--environment ID|.] [--service ID] [--confirm-action ACTION] [--expected-revision N] [--idempotency-key KEY] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard cleanup-plan [repository|worktree ID] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard cleanup-apply <plan-id> [candidate-id...] --expected-revision N [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard start <worktree-id|.> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--wait] [--json]")
@@ -912,6 +1049,25 @@ func writeConfigurationStatus(writer io.Writer, status contractv1.ConfigurationS
 		_, _ = fmt.Fprintf(writer, "Candidate digest: %s\n", status.Candidate.Digest)
 		_, _ = fmt.Fprintf(writer, "Compiler: %s\n", status.Candidate.CompilerVersion)
 		_, _ = fmt.Fprintf(writer, "Repositories: %d\n", len(status.Candidate.RepositoryDigests))
+	}
+}
+
+func writeProfileActions(writer io.Writer, list contractv1.ProfileActionList) {
+	if len(list.Actions) == 0 {
+		_, _ = fmt.Fprintln(writer, "No accepted profile actions.")
+		return
+	}
+	for _, action := range list.Actions {
+		detail := action.Kind
+		if action.Lifecycle != "" {
+			detail += ":" + action.Lifecycle
+		}
+		confirmation := ""
+		if action.RequiresConfirmation {
+			confirmation = " (confirmation required)"
+		}
+		_, _ = fmt.Fprintf(writer, "%s %s  %s  scope=%s risk=%s %s%s\n",
+			action.RepositoryID, action.ID, action.DisplayName, action.Scope, action.Risk, detail, confirmation)
 	}
 }
 

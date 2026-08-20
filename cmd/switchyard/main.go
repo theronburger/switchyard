@@ -229,6 +229,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		StatusSource:         store,
 		EnvironmentActions:   runtime.actions,
 		WorkspaceActions:     runtime.workspaceActions,
+		ProfileActions:       runtime.profileActions,
 		OperationDiagnostics: operationDiagnostics,
 		Configuration: &daemon.ConfigurationService{
 			Store: store, Path: paths.configuration, CompilerVersion: version, Restart: restartDaemon,

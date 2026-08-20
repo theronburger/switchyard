@@ -427,8 +427,22 @@ func validateRepositoryRuntime(repositoryKey string, repository Repository) erro
 		if action.Command != nil && validateCommand(*action.Command, repository, "action") != nil {
 			return fmt.Errorf("repository %q action %q command is invalid", repositoryKey, id)
 		}
+		// Lifecycle actions dispatch existing dedicated operations, so their
+		// scope must name the resource that operation acts on.
 		switch action.Lifecycle {
-		case "", "prepare", "start", "stop", "cleanup":
+		case "":
+		case "prepare", "start":
+			if action.Scope != "worktree" {
+				return fmt.Errorf("repository %q action %q lifecycle scope is invalid", repositoryKey, id)
+			}
+		case "stop":
+			if action.Scope != "environment" {
+				return fmt.Errorf("repository %q action %q lifecycle scope is invalid", repositoryKey, id)
+			}
+		case "cleanup":
+			if action.Scope != "repository" && action.Scope != "worktree" {
+				return fmt.Errorf("repository %q action %q lifecycle scope is invalid", repositoryKey, id)
+			}
 		default:
 			return fmt.Errorf("repository %q action %q lifecycle is invalid", repositoryKey, id)
 		}

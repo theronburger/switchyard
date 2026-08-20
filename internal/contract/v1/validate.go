@@ -764,6 +764,88 @@ func (result CleanupResult) Validate() error {
 	return nil
 }
 
+func (action ProfileAction) Validate() error {
+	if !validOpaqueValue(action.ID, maximumOpaqueIDBytes) || !validOpaqueValue(action.RepositoryID, maximumOpaqueIDBytes) ||
+		!validOpaqueValue(action.ProfileKey, maximumOpaqueIDBytes) || !strings.HasPrefix(action.ProfileDigest, "sha256:") ||
+		!validOpaqueValue(action.DisplayName, maximumDisplayTextBytes) {
+		return fmt.Errorf("profile action identity is invalid")
+	}
+	switch action.Scope {
+	case "machine", "repository", "worktree", "environment", "service":
+	default:
+		return fmt.Errorf("profile action scope is invalid")
+	}
+	switch action.Risk {
+	case "local", "remote-read", "remote-write":
+	default:
+		return fmt.Errorf("profile action risk is invalid")
+	}
+	switch action.Kind {
+	case "command":
+		if action.Lifecycle != "" {
+			return fmt.Errorf("profile command action must not name a lifecycle")
+		}
+	case "lifecycle":
+		switch action.Lifecycle {
+		case "prepare", "start", "stop", "cleanup":
+		default:
+			return fmt.Errorf("profile lifecycle action is invalid")
+		}
+	default:
+		return fmt.Errorf("profile action kind is invalid")
+	}
+	if action.RequiresConfirmation != (action.Risk == "remote-write") {
+		return fmt.Errorf("profile action confirmation does not match its risk")
+	}
+	return nil
+}
+
+func (list ProfileActionList) Validate() error {
+	if list.SchemaVersion != SchemaVersion || list.Actions == nil || len(list.Actions) > 4096 ||
+		(list.AcceptedDigest != "" && !strings.HasPrefix(list.AcceptedDigest, "sha256:")) {
+		return fmt.Errorf("profile action list is invalid")
+	}
+	seen := make(map[string]struct{}, len(list.Actions))
+	for _, action := range list.Actions {
+		if err := action.Validate(); err != nil {
+			return err
+		}
+		key := action.RepositoryID + "\x00" + action.ID
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("profile action is duplicated")
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func (request RunProfileActionRequest) Validate() error {
+	if err := request.MutationRequest.Validate(); err != nil {
+		return err
+	}
+	if !validOpaqueValue(request.RepositoryID, maximumOpaqueIDBytes) || !validOpaqueValue(request.ActionID, maximumOpaqueIDBytes) {
+		return fmt.Errorf("profile action identity is invalid")
+	}
+	for _, optional := range []string{request.WorktreeID, request.EnvironmentID, request.ServiceID, request.ConfirmedActionID} {
+		if optional != "" && !validOpaqueValue(optional, maximumOpaqueIDBytes) {
+			return fmt.Errorf("profile action target is invalid")
+		}
+	}
+	if request.WorktreeID != "" && request.EnvironmentID != "" {
+		return fmt.Errorf("profile action target names both a worktree and an environment")
+	}
+	if request.ServiceID != "" && request.EnvironmentID == "" {
+		return fmt.Errorf("profile action service target requires an environment")
+	}
+	if request.ConfirmedActionID != "" && request.ConfirmedActionID != request.ActionID {
+		return fmt.Errorf("confirmed action id does not match action id")
+	}
+	if request.ExpectedEnvironmentRevision != nil && request.EnvironmentID == "" {
+		return fmt.Errorf("expected environment revision requires an environment target")
+	}
+	return nil
+}
+
 func (receipt MutationReceipt) Validate() error {
 	if receipt.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema version: got %d, want %d", receipt.SchemaVersion, SchemaVersion)
