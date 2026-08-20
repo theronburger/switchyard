@@ -686,7 +686,7 @@ private struct RepositoryInventoryCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(repository.displayName)
                     .font(.headline)
-                Text("\(repository.worktrees.count) worktrees · profile \(repository.adapter)")
+                Text("\(repository.worktrees.count) worktrees · profile \(repository.profileKey)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -703,7 +703,7 @@ private struct RepositoryInventoryCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true)
                 KeyValueRow(key: "Remote", value: repository.remote, monospaced: true)
-                KeyValueRow(key: "Profile key", value: repository.adapter, monospaced: true)
+                KeyValueRow(key: "Profile key", value: repository.profileKey, monospaced: true)
                 KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true)
                 if let runtime = repository.runtime {
                     KeyValueRow(key: "Default target", value: runtime.defaultTargetId)

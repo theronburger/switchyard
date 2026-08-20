@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestClientAuthenticatesHandshakeAndStatusWithoutOrigin(t *testing.T) {
@@ -32,7 +32,7 @@ func TestClientAuthenticatesHandshakeAndStatusWithoutOrigin(t *testing.T) {
 				SchemaVersion:           RuntimeDescriptorSchemaVersion,
 				DaemonInstanceID:        snapshot.Daemon.InstanceID,
 				DaemonVersion:           snapshot.Daemon.Version,
-				SupportedSchemaVersions: []int{contractv1.SchemaVersion},
+				SupportedSchemaVersions: []int{contractv2.SchemaVersion},
 			})
 		case "/v1/status":
 			writeTestJSON(t, response, snapshot)
@@ -65,7 +65,7 @@ func TestClientRejectsUnknownDaemonBeforeStatus(t *testing.T) {
 				SchemaVersion:           RuntimeDescriptorSchemaVersion,
 				DaemonInstanceID:        "daemon_foreign",
 				DaemonVersion:           snapshot.Daemon.Version,
-				SupportedSchemaVersions: []int{contractv1.SchemaVersion},
+				SupportedSchemaVersions: []int{contractv2.SchemaVersion},
 			})
 			return
 		}
@@ -120,7 +120,7 @@ func TestClientRejectsMissingSecurityHeaders(t *testing.T) {
 			SchemaVersion:           RuntimeDescriptorSchemaVersion,
 			DaemonInstanceID:        snapshot.Daemon.InstanceID,
 			DaemonVersion:           snapshot.Daemon.Version,
-			SupportedSchemaVersions: []int{contractv1.SchemaVersion},
+			SupportedSchemaVersions: []int{contractv2.SchemaVersion},
 		})
 	}))
 	defer server.Close()
@@ -157,7 +157,7 @@ func connectionForServer(
 	t *testing.T,
 	serverURL string,
 	token string,
-	snapshot contractv1.StatusSnapshot,
+	snapshot contractv2.StatusSnapshot,
 	now time.Time,
 ) Connection {
 	t.Helper()
@@ -177,21 +177,21 @@ func connectionForServer(
 	return connection
 }
 
-func validSnapshot(now time.Time) contractv1.StatusSnapshot {
-	return contractv1.StatusSnapshot{
-		SchemaVersion:    contractv1.SchemaVersion,
+func validSnapshot(now time.Time) contractv2.StatusSnapshot {
+	return contractv2.StatusSnapshot{
+		SchemaVersion:    contractv2.SchemaVersion,
 		SnapshotRevision: 42,
 		GeneratedAt:      now,
-		Daemon: contractv1.DaemonStatus{
+		Daemon: contractv2.DaemonStatus{
 			InstanceID: "daemon_test",
 			Version:    "0.1.0-dev",
 			State:      "ready",
 			StartedAt:  now.Add(-time.Hour),
 		},
-		Repositories: []contractv1.Repository{},
-		Environments: []contractv1.Environment{},
-		Operations:   []contractv1.Operation{},
-		Alerts:       []contractv1.Alert{},
+		Repositories: []contractv2.Repository{},
+		Environments: []contractv2.Environment{},
+		Operations:   []contractv2.Operation{},
+		Alerts:       []contractv2.Alert{},
 	}
 }
 

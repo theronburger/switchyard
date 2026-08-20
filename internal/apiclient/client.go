@@ -11,7 +11,7 @@ import (
 	"slices"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 	defaultRequestTimeout = 5 * time.Second
 )
 
-type Handshake = contractv1.Handshake
+type Handshake = contractv2.Handshake
 
 type ClientOptions struct {
 	Transport             http.RoundTripper
@@ -83,32 +83,32 @@ func (c *Client) Handshake(ctx context.Context) (Handshake, error) {
 			ErrorDaemonIncompatible,
 			fmt.Errorf("daemon version does not match client"))
 	}
-	if !slices.Contains(handshake.SupportedSchemaVersions, contractv1.SchemaVersion) {
+	if !slices.Contains(handshake.SupportedSchemaVersions, contractv2.SchemaVersion) {
 		return Handshake{}, newCodedError(
 			ErrorDaemonIncompatible,
-			fmt.Errorf("daemon does not support schema version %d", contractv1.SchemaVersion))
+			fmt.Errorf("daemon does not support schema version %d", contractv2.SchemaVersion))
 	}
 	return handshake, nil
 }
 
-func (c *Client) Status(ctx context.Context) (contractv1.StatusSnapshot, error) {
+func (c *Client) Status(ctx context.Context) (contractv2.StatusSnapshot, error) {
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.StatusSnapshot{}, err
+		return contractv2.StatusSnapshot{}, err
 	}
 	return c.statusAfterHandshake(ctx)
 }
 
-func (c *Client) statusAfterHandshake(ctx context.Context) (contractv1.StatusSnapshot, error) {
-	var snapshot contractv1.StatusSnapshot
+func (c *Client) statusAfterHandshake(ctx context.Context) (contractv2.StatusSnapshot, error) {
+	var snapshot contractv2.StatusSnapshot
 	if err := c.getJSON(ctx, "/v1/status", maximumStatusBytes, &snapshot); err != nil {
-		return contractv1.StatusSnapshot{}, err
+		return contractv2.StatusSnapshot{}, err
 	}
 	if err := snapshot.Validate(); err != nil {
-		return contractv1.StatusSnapshot{}, newCodedError(ErrorDaemonStatusInvalid, err)
+		return contractv2.StatusSnapshot{}, newCodedError(ErrorDaemonStatusInvalid, err)
 	}
 	if snapshot.Daemon.InstanceID != c.connection.descriptor.DaemonInstanceID ||
 		snapshot.Daemon.Version != c.connection.descriptor.DaemonVersion {
-		return contractv1.StatusSnapshot{}, newCodedError(
+		return contractv2.StatusSnapshot{}, newCodedError(
 			ErrorDaemonUnknown,
 			fmt.Errorf("status identity does not match runtime descriptor"))
 	}
@@ -179,10 +179,10 @@ func (c Connector) Client() (*Client, error) {
 	return NewClient(connection, c.ClientOptions), nil
 }
 
-func (c Connector) Status(ctx context.Context) (contractv1.StatusSnapshot, error) {
+func (c Connector) Status(ctx context.Context) (contractv2.StatusSnapshot, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.StatusSnapshot{}, err
+		return contractv2.StatusSnapshot{}, err
 	}
 	return client.Status(ctx)
 }

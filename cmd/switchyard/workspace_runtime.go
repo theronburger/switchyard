@@ -6,19 +6,19 @@ import (
 	"path/filepath"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 type managedWorkspaceSnapshotStore interface {
-	ReadSnapshot(context.Context) (contractv1.StatusSnapshot, error)
+	ReadSnapshot(context.Context) (contractv2.StatusSnapshot, error)
 }
 
 type managedWorkspaceResolver struct {
 	store                       managedWorkspaceSnapshotStore
-	repositories                map[string]contractv1.Repository
+	repositories                map[string]contractv2.Repository
 	worktrees                   map[string]managedWorkspaceTarget
 	configurationPath           string
 	acceptedConfigurationDigest string
@@ -35,7 +35,7 @@ func newManagedWorkspaceResolver(
 	discovered repositoryInventory,
 ) managedWorkspaceResolver {
 	resolver := managedWorkspaceResolver{
-		store: store, repositories: make(map[string]contractv1.Repository),
+		store: store, repositories: make(map[string]contractv2.Repository),
 		worktrees: make(map[string]managedWorkspaceTarget),
 	}
 	for _, repository := range discovered.Repositories {
@@ -51,7 +51,7 @@ func newManagedWorkspaceResolver(
 
 func (resolver managedWorkspaceResolver) ResolveCreate(
 	_ context.Context,
-	request contractv1.CreateWorktreeRequest,
+	request contractv2.CreateWorktreeRequest,
 ) (workspacecontrol.CreateManagedRequest, error) {
 	if _, found := resolver.repositories[request.RepositoryID]; !found {
 		return workspacecontrol.CreateManagedRequest{}, workspaceActionError(
@@ -65,7 +65,7 @@ func (resolver managedWorkspaceResolver) ResolveCreate(
 
 func (resolver managedWorkspaceResolver) ResolveArchive(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
+	request contractv2.ArchiveWorktreeRequest,
 ) (workspacecontrol.ArchiveManagedRequest, error) {
 	target, found := resolver.worktrees[request.WorktreeID]
 	if !found {
@@ -104,7 +104,7 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 
 func (resolver managedWorkspaceResolver) ResolveAdopt(
 	_ context.Context,
-	request contractv1.AdoptWorktreeRequest,
+	request contractv2.AdoptWorktreeRequest,
 ) (workspacecontrol.AdoptManagedRequest, error) {
 	target, found := resolver.worktrees[request.WorktreeID]
 	if !found {
@@ -124,7 +124,7 @@ func (resolver managedWorkspaceResolver) ResolveAdopt(
 
 func (resolver managedWorkspaceResolver) ResolvePrepare(
 	_ context.Context,
-	request contractv1.PrepareWorktreeRequest,
+	request contractv2.PrepareWorktreeRequest,
 ) (string, error) {
 	if resolver.configurationPath != "" {
 		desired, err := configuration.LoadFile(resolver.configurationPath)
@@ -190,8 +190,8 @@ func annotateWorkspaceInventory(
 			if manager.Owns(repository.ID, worktree.Path) {
 				ownership = "managed"
 			}
-			worktree.Workspace = &contractv1.WorkspaceStatus{
-				Ownership: ownership, State: "unprepared", Toolchains: []contractv1.WorkspaceToolchain{},
+			worktree.Workspace = &contractv2.WorkspaceStatus{
+				Ownership: ownership, State: "unprepared", Toolchains: []contractv2.WorkspaceToolchain{},
 			}
 		}
 	}
@@ -199,7 +199,7 @@ func annotateWorkspaceInventory(
 }
 
 func workspaceActionError(status int, code string, message string) error {
-	return &daemon.ActionError{Status: status, Contract: contractv1.ContractError{
+	return &daemon.ActionError{Status: status, Contract: contractv2.ContractError{
 		Code: code, Message: message,
 	}}
 }

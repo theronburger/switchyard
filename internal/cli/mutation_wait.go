@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/domain"
 )
 
@@ -22,7 +22,7 @@ var (
 
 func (a Application) waitForMutation(
 	ctx context.Context,
-	receipt contractv1.MutationReceipt,
+	receipt contractv2.MutationReceipt,
 	kind string,
 	resourceID string,
 	serviceIDs []string,
@@ -69,8 +69,8 @@ func (a Application) waitForMutation(
 	}
 }
 
-func mutationWaitTimeout(receipt contractv1.MutationReceipt, kind string) error {
-	contractError := contractv1.ContractError{
+func mutationWaitTimeout(receipt contractv2.MutationReceipt, kind string) error {
+	contractError := contractv2.ContractError{
 		Code: "WAIT_TIMEOUT", Message: "Timed out waiting for the accepted Switchyard operation to finish.",
 		Retryable: true, ResourceKind: "operation", ResourceID: receipt.OperationID,
 		Phase: kind, Diagnostic: "The operation may still be running in the daemon.",
@@ -79,7 +79,7 @@ func mutationWaitTimeout(receipt contractv1.MutationReceipt, kind string) error 
 	return &apiclient.CodedError{Code: apiclient.ErrorWaitTimeout, Contract: &contractError}
 }
 
-func operationFailure(operation contractv1.Operation, fallback error) error {
+func operationFailure(operation contractv2.Operation, fallback error) error {
 	if operation.Error == nil || operation.Error.Code == "" {
 		return fallback
 	}
@@ -104,18 +104,18 @@ func (a Application) waitForNextPoll(ctx context.Context) error {
 	}
 }
 
-func operationByID(snapshot contractv1.StatusSnapshot, operationID string) (contractv1.Operation, bool) {
+func operationByID(snapshot contractv2.StatusSnapshot, operationID string) (contractv2.Operation, bool) {
 	for _, operation := range snapshot.Operations {
 		if operation.ID == operationID {
 			return operation, true
 		}
 	}
-	return contractv1.Operation{}, false
+	return contractv2.Operation{}, false
 }
 
 func mutationVisible(
-	snapshot contractv1.StatusSnapshot,
-	receipt contractv1.MutationReceipt,
+	snapshot contractv2.StatusSnapshot,
+	receipt contractv2.MutationReceipt,
 	kind string,
 	resourceID string,
 	serviceIDs []string,
@@ -146,18 +146,18 @@ func mutationVisible(
 	return kind == "stop"
 }
 
-func environmentStopped(environment contractv1.Environment) bool {
+func environmentStopped(environment contractv2.Environment) bool {
 	return environment.DesiredState == string(domain.EnvironmentStopped) &&
 		environment.ObservedState == string(domain.EnvironmentStopped) &&
 		len(environment.PortLeases) == 0 && len(environment.InfrastructureLeases) == 0
 }
 
-func environmentStarted(environment contractv1.Environment, runID string, serviceIDs []string) bool {
+func environmentStarted(environment contractv2.Environment, runID string, serviceIDs []string) bool {
 	if runID == "" || environment.DesiredState != string(domain.EnvironmentRunning) ||
 		environment.ObservedState != string(domain.EnvironmentRunning) || environment.Health != "healthy" {
 		return false
 	}
-	services := make(map[string]contractv1.Service, len(environment.Services))
+	services := make(map[string]contractv2.Service, len(environment.Services))
 	for _, service := range environment.Services {
 		services[service.ID] = service
 	}

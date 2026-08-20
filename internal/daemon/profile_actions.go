@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	actioncontrol "github.com/theronburger/switchyard/internal/control/action"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/state"
@@ -31,8 +31,8 @@ type ProfileActionResolution struct {
 }
 
 type ProfileActionResolver interface {
-	ListActions(context.Context) (contractv1.ProfileActionList, error)
-	ResolveAction(context.Context, contractv1.RunProfileActionRequest) (ProfileActionResolution, error)
+	ListActions(context.Context) (contractv2.ProfileActionList, error)
+	ResolveAction(context.Context, contractv2.RunProfileActionRequest) (ProfileActionResolution, error)
 	CompileAction(context.Context, ProfileActionResolution, string) (actioncontrol.ExactCommand, error)
 }
 
@@ -79,58 +79,58 @@ func NewProfileActionService(config ProfileActionServiceConfig) (*ProfileActionS
 	}, nil
 }
 
-func (service *ProfileActionService) ListActions(ctx context.Context) (contractv1.ProfileActionList, error) {
+func (service *ProfileActionService) ListActions(ctx context.Context) (contractv2.ProfileActionList, error) {
 	if service == nil {
-		return contractv1.ProfileActionList{}, profileActionsUnavailable()
+		return contractv2.ProfileActionList{}, profileActionsUnavailable()
 	}
 	list, err := service.resolver.ListActions(ctx)
 	if err != nil {
-		return contractv1.ProfileActionList{}, safeResolutionError(err)
+		return contractv2.ProfileActionList{}, safeResolutionError(err)
 	}
 	if list.Actions == nil {
-		list.Actions = []contractv1.ProfileAction{}
+		list.Actions = []contractv2.ProfileAction{}
 	}
-	list.SchemaVersion = contractv1.SchemaVersion
+	list.SchemaVersion = contractv2.SchemaVersion
 	if err := list.Validate(); err != nil {
-		return contractv1.ProfileActionList{}, profileActionsUnavailable()
+		return contractv2.ProfileActionList{}, profileActionsUnavailable()
 	}
 	return list, nil
 }
 
 func (service *ProfileActionService) RunAction(
 	ctx context.Context,
-	request contractv1.RunProfileActionRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.RunProfileActionRequest,
+) (contractv2.MutationReceipt, error) {
 	if service == nil {
-		return contractv1.MutationReceipt{}, profileActionsUnavailable()
+		return contractv2.MutationReceipt{}, profileActionsUnavailable()
 	}
 	if request.Validate() != nil {
-		return contractv1.MutationReceipt{}, invalidProfileAction()
+		return contractv2.MutationReceipt{}, invalidProfileAction()
 	}
 	resolution, err := service.resolver.ResolveAction(ctx, request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
 	definition := resolution.Definition
 	if definition.Validate() != nil || definition.ID != request.ActionID || resolution.ProfileKey == "" ||
 		resolution.ProfileDigest == "" || resolution.AcceptedDigest == "" {
-		return contractv1.MutationReceipt{}, profileActionsUnavailable()
+		return contractv2.MutationReceipt{}, profileActionsUnavailable()
 	}
 	target := actioncontrol.Target{
 		RepositoryID: request.RepositoryID, WorktreeID: request.WorktreeID,
 		EnvironmentID: request.EnvironmentID, ServiceID: request.ServiceID,
 	}
 	if target != resolution.Target {
-		return contractv1.MutationReceipt{}, profileActionsUnavailable()
+		return contractv2.MutationReceipt{}, profileActionsUnavailable()
 	}
 	if err := actioncontrol.ValidateScope(definition.Scope, target); err != nil {
-		return contractv1.MutationReceipt{}, &ActionError{Status: http.StatusBadRequest, Contract: contractv1.ContractError{
+		return contractv2.MutationReceipt{}, &ActionError{Status: http.StatusBadRequest, Contract: contractv2.ContractError{
 			Code: "ACTION_SCOPE_MISMATCH", Message: "The action target does not match the action's declared scope.",
 			ResourceKind: "action", ResourceID: definition.ID, NextAction: "inspect_action_scope",
 		}}
 	}
 	if definition.RequiresConfirmation() && request.ConfirmedActionID != definition.ID {
-		return contractv1.MutationReceipt{}, &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+		return contractv2.MutationReceipt{}, &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 			Code: "ACTION_CONFIRMATION_REQUIRED", Message: "This action requires explicit confirmation for every run.",
 			ResourceKind: "action", ResourceID: definition.ID, NextAction: "confirm_action",
 		}}
@@ -143,71 +143,71 @@ func (service *ProfileActionService) RunAction(
 
 func (service *ProfileActionService) dispatchLifecycle(
 	ctx context.Context,
-	request contractv1.RunProfileActionRequest,
+	request contractv2.RunProfileActionRequest,
 	resolution ProfileActionResolution,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	definition := resolution.Definition
 	switch definition.Lifecycle {
 	case actioncontrol.LifecyclePrepare:
 		if definition.Scope != actioncontrol.ScopeWorktree || service.workspace == nil {
-			return contractv1.MutationReceipt{}, lifecycleUnsupported(definition)
+			return contractv2.MutationReceipt{}, lifecycleUnsupported(definition)
 		}
-		return service.workspace.PrepareWorktree(ctx, contractv1.PrepareWorktreeRequest{
+		return service.workspace.PrepareWorktree(ctx, contractv2.PrepareWorktreeRequest{
 			MutationRequest: request.MutationRequest, WorktreeID: request.WorktreeID,
 		})
 	case actioncontrol.LifecycleStart:
 		if definition.Scope != actioncontrol.ScopeWorktree || service.environment == nil || len(resolution.StartServiceIDs) == 0 {
-			return contractv1.MutationReceipt{}, lifecycleUnsupported(definition)
+			return contractv2.MutationReceipt{}, lifecycleUnsupported(definition)
 		}
-		return service.environment.StartEnvironment(ctx, contractv1.StartEnvironmentRequest{
+		return service.environment.StartEnvironment(ctx, contractv2.StartEnvironmentRequest{
 			MutationRequest: request.MutationRequest, WorktreeID: request.WorktreeID,
 			ServiceIDs: append([]string(nil), resolution.StartServiceIDs...),
 		})
 	case actioncontrol.LifecycleStop:
 		if definition.Scope != actioncontrol.ScopeEnvironment || service.environment == nil {
-			return contractv1.MutationReceipt{}, lifecycleUnsupported(definition)
+			return contractv2.MutationReceipt{}, lifecycleUnsupported(definition)
 		}
-		return service.environment.StopEnvironment(ctx, request.EnvironmentID, contractv1.StopEnvironmentRequest{
+		return service.environment.StopEnvironment(ctx, request.EnvironmentID, contractv2.StopEnvironmentRequest{
 			MutationRequest: request.MutationRequest,
 		})
 	case actioncontrol.LifecycleCleanup:
-		return contractv1.MutationReceipt{}, &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+		return contractv2.MutationReceipt{}, &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 			Code: "ACTION_REQUIRES_REVIEW", Message: "Cleanup is an inspectable plan followed by a revision-checked apply; it cannot run as an instant action.",
 			ResourceKind: "action", ResourceID: definition.ID, NextAction: "plan_cleanup",
 		}}
 	default:
-		return contractv1.MutationReceipt{}, lifecycleUnsupported(definition)
+		return contractv2.MutationReceipt{}, lifecycleUnsupported(definition)
 	}
 }
 
 func (service *ProfileActionService) runCommand(
 	ctx context.Context,
-	request contractv1.RunProfileActionRequest,
+	request contractv2.RunProfileActionRequest,
 	resolution ProfileActionResolution,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	if service.closed || service.lifecycle.Err() != nil {
-		return contractv1.MutationReceipt{}, profileActionsUnavailable()
+		return contractv2.MutationReceipt{}, profileActionsUnavailable()
 	}
 	operationID, err := service.newID("operation")
 	if err != nil {
-		return contractv1.MutationReceipt{}, profileActionsUnavailable()
+		return contractv2.MutationReceipt{}, profileActionsUnavailable()
 	}
 	command, err := service.resolver.CompileAction(ctx, resolution, operationID)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeCompileError(err)
+		return contractv2.MutationReceipt{}, safeCompileError(err)
 	}
 	// The fingerprint binds the idempotency key to the exact target and to the
 	// accepted revision, so a replay after re-acceptance is a conflict rather
 	// than a silent run of different behavior.
 	fingerprint, err := state.FingerprintRequest(struct {
-		Request        contractv1.RunProfileActionRequest `json:"request"`
+		Request        contractv2.RunProfileActionRequest `json:"request"`
 		ProfileDigest  string                             `json:"profileDigest"`
 		AcceptedDigest string                             `json:"acceptedDigest"`
 	}{Request: request, ProfileDigest: resolution.ProfileDigest, AcceptedDigest: resolution.AcceptedDigest})
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidProfileAction()
+		return contractv2.MutationReceipt{}, invalidProfileAction()
 	}
 	operation, created, err := service.store.CreateOperation(ctx, state.NewOperation{
 		ID: operationID, RequestID: request.RequestID, IdempotencyKey: request.IdempotencyKey,
@@ -216,7 +216,7 @@ func (service *ProfileActionService) runCommand(
 		ExpectedEnvironmentRevision: request.ExpectedEnvironmentRevision,
 	})
 	if err != nil {
-		return contractv1.MutationReceipt{}, operationCreationError(err)
+		return contractv2.MutationReceipt{}, operationCreationError(err)
 	}
 	if created {
 		service.workers.Add(1)
@@ -247,7 +247,7 @@ func (service *ProfileActionService) execute(operationID string, resolution Prof
 	}
 }
 
-func (service *ProfileActionService) fail(operationID string, failure contractv1.ContractError) {
+func (service *ProfileActionService) fail(operationID string, failure contractv2.ContractError) {
 	ctx, cancel := context.WithTimeout(context.Background(), actionFinalizationTimeout)
 	defer cancel()
 	_, _ = service.store.TransitionOperation(ctx, operationID, string(domain.OperationFailed), &failure)
@@ -279,8 +279,8 @@ func (service *ProfileActionService) CloseAndWait(ctx context.Context) error {
 // actionFailure builds a bounded failure. It deliberately carries no
 // executable, argument, environment, or output content; the log reference
 // points at Switchyard-owned bounded files.
-func actionFailure(actionID, logReference string, err error, outcome *actioncontrol.Outcome) contractv1.ContractError {
-	failure := contractv1.ContractError{
+func actionFailure(actionID, logReference string, err error, outcome *actioncontrol.Outcome) contractv2.ContractError {
+	failure := contractv2.ContractError{
 		Code: "ACTION_FAILED", Message: "The profile action could not be completed.", Retryable: true,
 		ResourceKind: "action", ResourceID: actionID, LogReference: logReference, NextAction: "inspect_operation_diagnostics",
 	}
@@ -315,7 +315,7 @@ func actionFailure(actionID, logReference string, err error, outcome *actioncont
 }
 
 func lifecycleUnsupported(definition actioncontrol.Definition) error {
-	return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+	return &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 		Code: "ACTION_LIFECYCLE_UNSUPPORTED", Message: "The lifecycle action cannot be dispatched at its declared scope.",
 		ResourceKind: "action", ResourceID: definition.ID, NextAction: "inspect_action_scope",
 	}}
@@ -326,20 +326,20 @@ func safeCompileError(err error) error {
 	if errors.As(err, &actionError) && validActionError(actionError) {
 		return actionError
 	}
-	return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+	return &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 		Code: "ACTION_NOT_COMPILABLE", Message: "The accepted action could not be compiled into an exact command for this target.",
 		NextAction: "inspect_action_scope",
 	}}
 }
 
 func invalidProfileAction() error {
-	return &ActionError{Status: http.StatusBadRequest, Contract: contractv1.ContractError{
+	return &ActionError{Status: http.StatusBadRequest, Contract: contractv2.ContractError{
 		Code: "INVALID_ACTION_REQUEST", Message: "The profile action request is invalid.",
 	}}
 }
 
 func profileActionsUnavailable() error {
-	return &ActionError{Status: http.StatusServiceUnavailable, Contract: contractv1.ContractError{
+	return &ActionError{Status: http.StatusServiceUnavailable, Contract: contractv2.ContractError{
 		Code: "ACTIONS_UNAVAILABLE", Message: "Profile actions are temporarily unavailable.", Retryable: true,
 	}}
 }

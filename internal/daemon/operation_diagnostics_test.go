@@ -8,16 +8,16 @@ import (
 	"strings"
 	"testing"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 type diagnosticOperationStore struct {
-	operation contractv1.Operation
+	operation contractv2.Operation
 	err       error
 }
 
-func (store diagnosticOperationStore) ReadOperation(context.Context, string) (contractv1.Operation, error) {
+func (store diagnosticOperationStore) ReadOperation(context.Context, string) (contractv2.Operation, error) {
 	return store.operation, store.err
 }
 
@@ -41,9 +41,9 @@ func TestOperationDiagnosticsReaderReturnsBoundedRedactedOwnedLogs(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_01", EnvironmentID: "env_01",
-		Error: &contractv1.ContractError{LogReference: logReference},
+		Error: &contractv2.ContractError{LogReference: logReference},
 	}}, runtimeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -77,9 +77,9 @@ func TestOperationDiagnosticsReaderRefusesUnownedOrInvalidPaths(t *testing.T) {
 	if err := os.Symlink(foreign, filepath.Join(logDirectory, "stderr.log")); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_01", EnvironmentID: "env_01",
-		Error: &contractv1.ContractError{LogReference: logReference},
+		Error: &contractv2.ContractError{LogReference: logReference},
 	}}, runtimeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -87,9 +87,9 @@ func TestOperationDiagnosticsReaderRefusesUnownedOrInvalidPaths(t *testing.T) {
 	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_01", 0); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
 		t.Fatalf("symlink diagnostics error: %v", err)
 	}
-	reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+	reader.store = diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_01", EnvironmentID: "env_01",
-		Error: &contractv1.ContractError{LogReference: "../../foreign"},
+		Error: &contractv2.ContractError{LogReference: "../../foreign"},
 	}}
 	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_01", 0); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
 		t.Fatalf("traversal diagnostics error: %v", err)
@@ -124,9 +124,9 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogs(t *testing.T) {
 	}
 	// An environment-scoped action's diagnostics come from the actions root,
 	// not from the environment run directory.
-	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_09", Kind: ProfileActionOperationKind, EnvironmentID: "env_01",
-		Error: &contractv1.ContractError{LogReference: logReference},
+		Error: &contractv2.ContractError{LogReference: logReference},
 	}}, runtimeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -137,9 +137,9 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogs(t *testing.T) {
 		t.Fatalf("action diagnostics: %+v err=%v", diagnostics, err)
 	}
 	// The same reference on a non-action operation must not escape into the actions root.
-	other, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+	other, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_10", Kind: "environment.start", EnvironmentID: "env_01",
-		Error: &contractv1.ContractError{LogReference: "../../actions/" + logReference},
+		Error: &contractv2.ContractError{LogReference: "../../actions/" + logReference},
 	}}, runtimeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -160,9 +160,9 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogsWithoutEnvironment(t
 		t.Fatal(err)
 	}
 	// Repository, worktree, and machine scoped actions never carry an environment.
-	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv1.Operation{
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_11", Kind: ProfileActionOperationKind,
-		Error: &contractv1.ContractError{LogReference: logReference},
+		Error: &contractv2.ContractError{LogReference: logReference},
 	}}, runtimeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -173,17 +173,17 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogsWithoutEnvironment(t
 		t.Fatalf("non-environment action diagnostics: %+v err=%v", diagnostics, err)
 	}
 	// Any other operation kind still needs an environment to locate its logs.
-	reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+	reader.store = diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_12", Kind: "environment.start",
-		Error: &contractv1.ContractError{LogReference: "run_01/preparations/service/command-0"},
+		Error: &contractv2.ContractError{LogReference: "run_01/preparations/service/command-0"},
 	}}
 	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_12", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
 		t.Fatalf("environment operation without environment was served: %v", err)
 	}
 	// A traversal reference on an environment-less action stays inside the actions root.
-	reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+	reader.store = diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_13", Kind: ProfileActionOperationKind,
-		Error: &contractv1.ContractError{LogReference: "../environments/env_01/runs/run_01"},
+		Error: &contractv2.ContractError{LogReference: "../environments/env_01/runs/run_01"},
 	}}
 	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_13", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
 		t.Fatalf("traversal out of the actions root was allowed: %v", err)
@@ -244,9 +244,9 @@ func TestOperationDiagnosticsReaderRefusesForeignProfileActionLogs(t *testing.T)
 		"shared log":           "sample/operation_23",
 		"missing":              "sample/operation_24",
 	} {
-		reader.store = diagnosticOperationStore{operation: contractv1.Operation{
+		reader.store = diagnosticOperationStore{operation: contractv2.Operation{
 			ID: "operation", Kind: ProfileActionOperationKind,
-			Error: &contractv1.ContractError{LogReference: reference},
+			Error: &contractv2.ContractError{LogReference: reference},
 		}}
 		if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation", 256); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
 			t.Fatalf("%s: expected ErrOperationDiagnosticsUnavailable, got %v", name, err)

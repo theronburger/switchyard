@@ -36,7 +36,7 @@ func TestProfilePlannerCompilesOnlyConfiguredBehavior(t *testing.T) {
 	}
 	plan, err := NewPlanBuilder(registry).Build(environmentcontrol.PlanningRequest{
 		EnvironmentID: registration.EnvironmentID, RunID: "run_01",
-		Intent:        environmentcontrol.PlanIntent{Adapter: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"web"}},
+		Intent:        environmentcontrol.PlanIntent{ProfileDigest: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"web"}},
 		AssignedPorts: []portlease.Lease{lease},
 	})
 	if err != nil {
@@ -108,7 +108,7 @@ func TestProfilePlannerStagesDependenciesBehindReadinessBarriers(t *testing.T) {
 	}
 	plan, err := NewPlanBuilder(registry).Build(environmentcontrol.PlanningRequest{
 		EnvironmentID: registration.EnvironmentID, RunID: "run_01",
-		Intent:        environmentcontrol.PlanIntent{Adapter: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"worker"}},
+		Intent:        environmentcontrol.PlanIntent{ProfileDigest: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"worker"}},
 		AssignedPorts: []portlease.Lease{{Key: portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: "web", Purpose: "http"}, Host: "127.0.0.1", Port: 31001}},
 	})
 	if err != nil {

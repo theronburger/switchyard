@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/domain"
 )
@@ -46,7 +46,7 @@ type fakeWorkspaceActionResolver struct{}
 
 func (fakeWorkspaceActionResolver) ResolveCreate(
 	_ context.Context,
-	request contractv1.CreateWorktreeRequest,
+	request contractv2.CreateWorktreeRequest,
 ) (workspacecontrol.CreateManagedRequest, error) {
 	return workspacecontrol.CreateManagedRequest{
 		RepositoryID: request.RepositoryID, Branch: request.Branch, StartPoint: request.StartPoint,
@@ -55,7 +55,7 @@ func (fakeWorkspaceActionResolver) ResolveCreate(
 
 func (fakeWorkspaceActionResolver) ResolveArchive(
 	_ context.Context,
-	request contractv1.ArchiveWorktreeRequest,
+	request contractv2.ArchiveWorktreeRequest,
 ) (workspacecontrol.ArchiveManagedRequest, error) {
 	return workspacecontrol.ArchiveManagedRequest{
 		RepositoryID: "repository_01", WorktreePath: "/tmp/" + request.WorktreeID,
@@ -64,7 +64,7 @@ func (fakeWorkspaceActionResolver) ResolveArchive(
 
 func (fakeWorkspaceActionResolver) ResolveAdopt(
 	_ context.Context,
-	request contractv1.AdoptWorktreeRequest,
+	request contractv2.AdoptWorktreeRequest,
 ) (workspacecontrol.AdoptManagedRequest, error) {
 	return workspacecontrol.AdoptManagedRequest{
 		RepositoryID: "repository_01", WorktreePath: "/tmp/" + request.WorktreeID,
@@ -73,7 +73,7 @@ func (fakeWorkspaceActionResolver) ResolveAdopt(
 
 func (fakeWorkspaceActionResolver) ResolvePrepare(
 	_ context.Context,
-	request contractv1.PrepareWorktreeRequest,
+	request contractv2.PrepareWorktreeRequest,
 ) (string, error) {
 	return request.WorktreeID, nil
 }
@@ -158,9 +158,9 @@ func TestWorkspaceActionServiceReportsSafeArchiveFailureWithoutRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := service.ArchiveWorktree(context.Background(), contractv1.ArchiveWorktreeRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_01", IdempotencyKey: "archive_01",
+	receipt, err := service.ArchiveWorktree(context.Background(), contractv2.ArchiveWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "archive_01",
 		},
 		WorktreeID: "worktree_01",
 	})
@@ -212,9 +212,9 @@ func TestWorkspaceActionServiceAdoptsAndRestartsAfterSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := service.AdoptWorktree(context.Background(), contractv1.AdoptWorktreeRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_adopt", IdempotencyKey: "adopt:key",
+	receipt, err := service.AdoptWorktree(context.Background(), contractv2.AdoptWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_adopt", IdempotencyKey: "adopt:key",
 		},
 		WorktreeID: "worktree_01",
 	})
@@ -266,9 +266,9 @@ func TestWorkspaceActionServicePreparesWithoutRestartingInventory(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := service.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+	receipt, err := service.PrepareWorktree(context.Background(), contractv2.PrepareWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
 		},
 		WorktreeID: "worktree_01",
 	})
@@ -313,9 +313,9 @@ func TestWorkspaceActionServiceRecordsPreparationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := service.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+	receipt, err := service.PrepareWorktree(context.Background(), contractv2.PrepareWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
 		},
 		WorktreeID: "worktree_01",
 	})
@@ -345,12 +345,12 @@ func TestWorkspaceActionServicePreservesCancellationWhenInitialTransitionIsInter
 		ctx context.Context,
 		operationID string,
 		nextState string,
-		failure *contractv1.ContractError,
-	) (contractv1.Operation, error) {
+		failure *contractv2.ContractError,
+	) (contractv2.Operation, error) {
 		if nextState == string(domain.OperationRunning) {
 			close(transitionStarted)
 			<-ctx.Done()
-			return contractv1.Operation{}, ctx.Err()
+			return contractv2.Operation{}, ctx.Err()
 		}
 		store.mutex.Lock()
 		defer store.mutex.Unlock()
@@ -376,9 +376,9 @@ func TestWorkspaceActionServicePreservesCancellationWhenInitialTransitionIsInter
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := service.PrepareWorktree(context.Background(), contractv1.PrepareWorktreeRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
+	receipt, err := service.PrepareWorktree(context.Background(), contractv2.PrepareWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_prepare", IdempotencyKey: "prepare:key",
 		},
 		WorktreeID: "worktree_01",
 	})
@@ -402,10 +402,10 @@ func TestWorkspaceActionServicePreservesCancellationWhenInitialTransitionIsInter
 	}
 }
 
-func validCreateWorktreeRequest() contractv1.CreateWorktreeRequest {
-	return contractv1.CreateWorktreeRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_01", IdempotencyKey: "create_01",
+func validCreateWorktreeRequest() contractv2.CreateWorktreeRequest {
+	return contractv2.CreateWorktreeRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "create_01",
 		},
 		RepositoryID: "repository_01", Branch: "feature/example",
 	}

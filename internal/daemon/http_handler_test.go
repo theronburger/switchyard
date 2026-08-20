@@ -10,26 +10,26 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const testToken = "test-token-that-never-appears-in-responses"
 
 type staticStatusSource struct {
-	snapshot contractv1.StatusSnapshot
+	snapshot contractv2.StatusSnapshot
 	err      error
 }
 
 type staticDiagnosticsSource struct {
-	diagnostics contractv1.OperationDiagnostics
+	diagnostics contractv2.OperationDiagnostics
 	err         error
 }
 
-func (source staticDiagnosticsSource) ReadOperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error) {
+func (source staticDiagnosticsSource) ReadOperationDiagnostics(context.Context, string, int) (contractv2.OperationDiagnostics, error) {
 	return source.diagnostics, source.err
 }
 
-func (source staticStatusSource) ReadSnapshot(context.Context) (contractv1.StatusSnapshot, error) {
+func (source staticStatusSource) ReadSnapshot(context.Context) (contractv2.StatusSnapshot, error) {
 	return source.snapshot, source.err
 }
 
@@ -73,14 +73,14 @@ func TestHandshakeReturnsExactSupportedVersion(t *testing.T) {
 	if got, want := response.Code, http.StatusOK; got != want {
 		t.Fatalf("status: got %d, want %d", got, want)
 	}
-	var handshake contractv1.Handshake
+	var handshake contractv2.Handshake
 	if err := json.Unmarshal(response.Body.Bytes(), &handshake); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := handshake.DaemonInstanceID, "daemon_01"; got != want {
 		t.Fatalf("daemon instance: got %q, want %q", got, want)
 	}
-	if len(handshake.SupportedSchemaVersions) != 1 || handshake.SupportedSchemaVersions[0] != contractv1.SchemaVersion {
+	if len(handshake.SupportedSchemaVersions) != 1 || handshake.SupportedSchemaVersions[0] != contractv2.SchemaVersion {
 		t.Fatalf("supported versions: got %v", handshake.SupportedSchemaVersions)
 	}
 }
@@ -95,7 +95,7 @@ func TestStatusReturnsAtomicContractSnapshot(t *testing.T) {
 	if got, expectedStatus := response.Code, http.StatusOK; got != expectedStatus {
 		t.Fatalf("status: got %d, want %d", got, expectedStatus)
 	}
-	var got contractv1.StatusSnapshot
+	var got contractv2.StatusSnapshot
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -139,10 +139,10 @@ func TestStatusHidesStorageFailure(t *testing.T) {
 }
 
 func TestOperationDiagnosticsReturnsOnlyExplicitBoundedRead(t *testing.T) {
-	diagnostics := contractv1.OperationDiagnostics{
-		SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_01",
+	diagnostics := contractv2.OperationDiagnostics{
+		SchemaVersion: contractv2.SchemaVersion, OperationID: "operation_01",
 		EnvironmentID: "env_01", LogReference: "run_01/preparations/service/command-0",
-		Excerpts: []contractv1.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: true, Redacted: true}},
+		Excerpts: []contractv2.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: true, Redacted: true}},
 	}
 	handler, err := NewHTTPHandler(HandlerConfig{
 		Token: testToken, DaemonInstanceID: "daemon_01", DaemonVersion: "0.1.0-dev", StartedAt: time.Now(),
@@ -157,7 +157,7 @@ func TestOperationDiagnosticsReturnsOnlyExplicitBoundedRead(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%s", response.Code, response.Body.String())
 	}
-	var got contractv1.OperationDiagnostics
+	var got contractv2.OperationDiagnostics
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil || got.OperationID != diagnostics.OperationID || len(got.Excerpts) != 1 {
 		t.Fatalf("diagnostics: %+v err=%v", got, err)
 	}
@@ -187,7 +187,7 @@ func TestOperationDiagnosticsMapsUnavailableWithoutLeakingDetails(t *testing.T) 
 	}
 }
 
-func newTestHandler(t *testing.T, snapshot contractv1.StatusSnapshot) http.Handler {
+func newTestHandler(t *testing.T, snapshot contractv2.StatusSnapshot) http.Handler {
 	t.Helper()
 	handler, err := NewHTTPHandler(HandlerConfig{
 		Token:            testToken,
@@ -208,20 +208,20 @@ func authenticatedRequest(method, path string) *http.Request {
 	return request
 }
 
-func validHTTPStatus() contractv1.StatusSnapshot {
-	return contractv1.StatusSnapshot{
-		SchemaVersion:    contractv1.SchemaVersion,
+func validHTTPStatus() contractv2.StatusSnapshot {
+	return contractv2.StatusSnapshot{
+		SchemaVersion:    contractv2.SchemaVersion,
 		SnapshotRevision: 1,
 		GeneratedAt:      time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC),
-		Daemon: contractv1.DaemonStatus{
+		Daemon: contractv2.DaemonStatus{
 			InstanceID: "daemon_01",
 			Version:    "0.1.0-dev",
 			State:      "ready",
 			StartedAt:  time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC),
 		},
-		Repositories: []contractv1.Repository{},
-		Environments: []contractv1.Environment{},
-		Operations:   []contractv1.Operation{},
-		Alerts:       []contractv1.Alert{},
+		Repositories: []contractv2.Repository{},
+		Environments: []contractv2.Environment{},
+		Operations:   []contractv2.Operation{},
+		Alerts:       []contractv2.Alert{},
 	}
 }

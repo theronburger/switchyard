@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
@@ -115,7 +115,7 @@ func stableInfrastructureLeaseID(identity containerhost.Identity) string {
 	return "infra_" + base64.RawURLEncoding.EncodeToString(digest[:12])
 }
 
-func environmentDisplayName(worktree contractv1.Worktree) string {
+func environmentDisplayName(worktree contractv2.Worktree) string {
 	if worktree.Branch != "" {
 		return worktree.Branch
 	}

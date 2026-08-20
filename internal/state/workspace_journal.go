@@ -10,11 +10,11 @@ import (
 	"io"
 	"sort"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 )
 
-const workspaceRecordSchemaVersion = 1
+const workspaceRecordSchemaVersion = 2
 
 var (
 	ErrWorkspaceRecordExists   = errors.New("workspace operation record already exists")
@@ -187,22 +187,22 @@ ON CONFLICT(worktree_id) DO UPDATE SET
 	return nil
 }
 
-func projectWorkspaceResult(snapshot *contractv1.StatusSnapshot, result workspacecontrol.Result) bool {
+func projectWorkspaceResult(snapshot *contractv2.StatusSnapshot, result workspacecontrol.Result) bool {
 	for repositoryIndex := range snapshot.Repositories {
 		for worktreeIndex := range snapshot.Repositories[repositoryIndex].Worktrees {
 			worktree := &snapshot.Repositories[repositoryIndex].Worktrees[worktreeIndex]
 			if worktree.ID != result.WorktreeID {
 				continue
 			}
-			toolchains := make([]contractv1.WorkspaceToolchain, len(result.Toolchains))
+			toolchains := make([]contractv2.WorkspaceToolchain, len(result.Toolchains))
 			for index, toolchain := range result.Toolchains {
-				toolchains[index] = contractv1.WorkspaceToolchain{
+				toolchains[index] = contractv2.WorkspaceToolchain{
 					ID: toolchain.ID, RequestedVersion: toolchain.RequestedVersion,
 					ResolvedVersion: toolchain.ResolvedVersion,
 				}
 			}
 			sort.Slice(toolchains, func(left, right int) bool { return toolchains[left].ID < toolchains[right].ID })
-			worktree.Workspace = &contractv1.WorkspaceStatus{
+			worktree.Workspace = &contractv2.WorkspaceStatus{
 				Ownership: string(result.Ownership), State: string(result.State),
 				Fingerprint: result.Fingerprint, PreparedAt: result.PreparedAt, Toolchains: toolchains,
 			}

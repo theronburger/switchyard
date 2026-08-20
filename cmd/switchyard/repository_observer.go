@@ -7,14 +7,14 @@ import (
 	"sort"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 const repositoryObserverSweep = 30 * time.Second
 
 type repositoryObserverStore interface {
-	UpdateSnapshot(context.Context, state.SnapshotUpdater) (contractv1.StatusSnapshot, bool, error)
+	UpdateSnapshot(context.Context, state.SnapshotUpdater) (contractv2.StatusSnapshot, bool, error)
 }
 
 type repositoryObserver struct {
@@ -84,7 +84,7 @@ func (observer *repositoryObserver) RefreshOnce(ctx context.Context) error {
 		)
 	}
 	topologyChanged := false
-	_, _, err := observer.store.UpdateSnapshot(ctx, func(snapshot *contractv1.StatusSnapshot) (bool, error) {
+	_, _, err := observer.store.UpdateSnapshot(ctx, func(snapshot *contractv2.StatusSnapshot) (bool, error) {
 		previousTopology := repositoryTopology(snapshot.Repositories)
 		canRestart := inventoryContainsEnvironmentWorktrees(discovered.Repositories, snapshot.Environments)
 		*snapshot = mergeRepositoryInventory(*snapshot, discovered)
@@ -99,8 +99,8 @@ func (observer *repositoryObserver) RefreshOnce(ctx context.Context) error {
 }
 
 func inventoryContainsEnvironmentWorktrees(
-	repositories []contractv1.Repository,
-	environments []contractv1.Environment,
+	repositories []contractv2.Repository,
+	environments []contractv2.Environment,
 ) bool {
 	for _, environment := range environments {
 		found := false
@@ -132,7 +132,7 @@ func markInventoryRefreshFailed(
 	})
 }
 
-func repositoryTopology(repositories []contractv1.Repository) []string {
+func repositoryTopology(repositories []contractv2.Repository) []string {
 	topology := make([]string, 0)
 	for _, repository := range repositories {
 		topology = append(topology, "repository:"+repository.ID)

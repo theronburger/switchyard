@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestClientListsAndRunsProfileActions(t *testing.T) {
@@ -18,7 +18,7 @@ func TestClientListsAndRunsProfileActions(t *testing.T) {
 	token := testToken()
 	snapshot := validSnapshot(now)
 	digest := "sha256:" + strings.Repeat("a", 64)
-	var runBody contractv1.RunProfileActionRequest
+	var runBody contractv2.RunProfileActionRequest
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		secureJSONHeaders(response)
 		switch request.URL.Path {
@@ -28,9 +28,9 @@ func TestClientListsAndRunsProfileActions(t *testing.T) {
 			if request.Method != http.MethodGet || request.Header.Get("Authorization") != "Bearer "+token {
 				t.Errorf("list request: %s", request.Method)
 			}
-			writeTestJSON(t, response, contractv1.ProfileActionList{
-				SchemaVersion: contractv1.SchemaVersion, AcceptedDigest: digest,
-				Actions: []contractv1.ProfileAction{{
+			writeTestJSON(t, response, contractv2.ProfileActionList{
+				SchemaVersion: contractv2.SchemaVersion, AcceptedDigest: digest,
+				Actions: []contractv2.ProfileAction{{
 					ID: "tidy", RepositoryID: "repository_01", ProfileKey: "sample", ProfileDigest: digest,
 					DisplayName: "Tidy", Scope: "worktree", Risk: "local", Kind: "command",
 				}},
@@ -41,8 +41,8 @@ func TestClientListsAndRunsProfileActions(t *testing.T) {
 				t.Errorf("run body: %v", err)
 			}
 			response.WriteHeader(http.StatusAccepted)
-			writeTestJSON(t, response, contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: runBody.RequestID, OperationID: "operation_01", AcceptedAt: now,
+			writeTestJSON(t, response, contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: runBody.RequestID, OperationID: "operation_01", AcceptedAt: now,
 			})
 		default:
 			t.Errorf("unexpected path %s", request.URL.Path)
@@ -54,15 +54,15 @@ func TestClientListsAndRunsProfileActions(t *testing.T) {
 	if err != nil || len(list.Actions) != 1 || list.Actions[0].ID != "tidy" {
 		t.Fatalf("list: %+v err=%v", list, err)
 	}
-	receipt, err := client.RunProfileAction(context.Background(), contractv1.RunProfileActionRequest{
-		MutationRequest: contractv1.MutationRequest{SchemaVersion: contractv1.SchemaVersion, RequestID: "request_01", IdempotencyKey: "key_01"},
+	receipt, err := client.RunProfileAction(context.Background(), contractv2.RunProfileActionRequest{
+		MutationRequest: contractv2.MutationRequest{SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "key_01"},
 		RepositoryID:    "repository_01", ActionID: "tidy", WorktreeID: "worktree_01",
 	})
 	if err != nil || receipt.OperationID != "operation_01" || runBody.WorktreeID != "worktree_01" || runBody.ActionID != "tidy" {
 		t.Fatalf("run: %+v err=%v body=%+v", receipt, err, runBody)
 	}
-	_, err = client.RunProfileAction(context.Background(), contractv1.RunProfileActionRequest{
-		MutationRequest: contractv1.MutationRequest{SchemaVersion: contractv1.SchemaVersion, RequestID: "request_02", IdempotencyKey: "key_02"},
+	_, err = client.RunProfileAction(context.Background(), contractv2.RunProfileActionRequest{
+		MutationRequest: contractv2.MutationRequest{SchemaVersion: contractv2.SchemaVersion, RequestID: "request_02", IdempotencyKey: "key_02"},
 		RepositoryID:    "repository_01", ActionID: "tidy", ServiceID: "web",
 	})
 	if CodeOf(err) != ErrorActionRequestInvalid {
@@ -80,7 +80,7 @@ func TestClientRejectsActionListOutsideTheFiniteVocabulary(t *testing.T) {
 			writeTestHandshake(t, response, snapshot)
 			return
 		}
-		_, _ = response.Write([]byte(`{"schemaVersion":1,"actions":[{"id":"tidy","repositoryId":"repository_01","profileKey":"sample","profileDigest":"sha256:` +
+		_, _ = response.Write([]byte(`{"schemaVersion":2,"actions":[{"id":"tidy","repositoryId":"repository_01","profileKey":"sample","profileDigest":"sha256:` +
 			strings.Repeat("a", 64) + `","displayName":"Tidy","scope":"worktree","risk":"destructive","kind":"command","requiresConfirmation":false}]}`))
 	}))
 	defer server.Close()

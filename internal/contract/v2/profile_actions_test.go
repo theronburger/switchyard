@@ -1,4 +1,4 @@
-package contractv1
+package contractv2
 
 import (
 	"strings"
@@ -64,7 +64,7 @@ func TestRunProfileActionRequestValidateBindsTargetShape(t *testing.T) {
 		"confirmation mismatch":        func(r *RunProfileActionRequest) { r.ConfirmedActionID = "other" },
 		"revision without environment": func(r *RunProfileActionRequest) { r.ExpectedEnvironmentRevision = &revision },
 		"whitespace identifier":        func(r *RunProfileActionRequest) { r.WorktreeID = " w" },
-		"wrong schema":                 func(r *RunProfileActionRequest) { r.SchemaVersion = 2 },
+		"wrong schema":                 func(r *RunProfileActionRequest) { r.SchemaVersion = SchemaVersion + 1 },
 		"missing idempotency":          func(r *RunProfileActionRequest) { r.IdempotencyKey = "" },
 	} {
 		request := base

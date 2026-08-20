@@ -4,12 +4,12 @@ import (
 	"context"
 	"net/http"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type ProfileActions interface {
-	ListActions(context.Context) (contractv1.ProfileActionList, error)
-	RunAction(context.Context, contractv1.RunProfileActionRequest) (contractv1.MutationReceipt, error)
+	ListActions(context.Context) (contractv2.ProfileActionList, error)
+	RunAction(context.Context, contractv2.RunProfileActionRequest) (contractv2.MutationReceipt, error)
 }
 
 func (handler *apiHandler) profileActions(response http.ResponseWriter, request *http.Request) bool {
@@ -30,7 +30,7 @@ func (handler *apiHandler) profileActions(response http.ResponseWriter, request 
 		}
 		list, err := handler.config.ProfileActions.ListActions(request.Context())
 		if err != nil {
-			handler.writeMutationResult(response, contractv1.MutationReceipt{}, err)
+			handler.writeMutationResult(response, contractv2.MutationReceipt{}, err)
 			return true
 		}
 		if list.Validate() != nil {
@@ -45,7 +45,7 @@ func (handler *apiHandler) profileActions(response http.ResponseWriter, request 
 			writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 			return true
 		}
-		var mutation contractv1.RunProfileActionRequest
+		var mutation contractv2.RunProfileActionRequest
 		if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
 			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The profile action request is invalid", false)
 			return true

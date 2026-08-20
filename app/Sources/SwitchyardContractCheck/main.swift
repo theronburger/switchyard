@@ -3,7 +3,7 @@ import SwitchyardKit
 
 // Dependency-free conformance and lifecycle suite. This machine's Command
 // Line Tools toolchain ships without XCTest, so verification runs as a plain
-// executable: `SwitchyardContractCheck contracts/v1/fixtures/status.json`.
+// executable: `SwitchyardContractCheck contracts/v2/fixtures/status.json`.
 
 struct CheckError: Error, CustomStringConvertible {
     let description: String
@@ -445,7 +445,7 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(snapshot.daemon.state == .ready, "daemon state did not decode")
     try expect(snapshot.repositories.count == 1, "expected one repository")
     let repository = snapshot.repositories[0]
-    try expect(repository.adapter == "sample", "repository adapter did not decode")
+    try expect(repository.profileKey == "sample", "repository profile key did not decode")
     try expect(repository.observation?.stale == false, "repository observation freshness did not decode")
     try expect(repository.runtime?.defaultTargetId == "testing", "repository runtime default did not decode")
     try expect(repository.runtime?.targets.count == 4, "repository targets did not decode")
@@ -593,7 +593,7 @@ runner.check("failed ownership recovery states remain explicit and actionable") 
 runner.check("additive fields are ignored") {
     let json = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "snapshotRevision": 3,
       "generatedAt": "2026-08-14T08:00:00Z",
       "futureTopLevelField": {"nested": true},
@@ -618,7 +618,7 @@ runner.check("additive fields are ignored") {
 runner.check("fractional RFC 3339 timestamps decode") {
     let json = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "endpoint": "http://127.0.0.1:49402",
       "daemonInstanceId": "daemon_fractional",
       "daemonVersion": "0.1.0-dev",
@@ -662,7 +662,7 @@ runner.check("environment context footer decodes with caps") {
 // MARK: - Endpoint descriptor and token
 
 let sampleDescriptor = EndpointDescriptor(
-    schemaVersion: 1,
+    schemaVersion: contractSchemaVersion,
     transport: "http",
     host: "127.0.0.1",
     port: 49402,
@@ -691,23 +691,23 @@ runner.check("endpoint descriptor validates invariants") {
     }
 
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 2, transport: "http", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
-        .unsupportedSchemaVersion(2)
+        EndpointDescriptor(schemaVersion: contractSchemaVersion + 1, transport: "http", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
+        .unsupportedSchemaVersion(contractSchemaVersion + 1)
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "unix", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "unix", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
         .unsupportedTransport("unix")
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "http", host: "192.168.1.5", port: 1, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "http", host: "192.168.1.5", port: 1, daemonVersion: "x", instanceId: "y"),
         .nonLoopbackHost("192.168.1.5")
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "http", host: "localhost", port: 1, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "http", host: "localhost", port: 1, daemonVersion: "x", instanceId: "y"),
         .nonLoopbackHost("localhost")
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "http", host: "127.0.0.1", port: 0, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 0, daemonVersion: "x", instanceId: "y"),
         .invalidPort(0)
     )
     try expect(!EndpointDescriptor.isLoopback("127.5.5.5"), "only the canonical IPv4 loopback is allowed")
@@ -723,7 +723,7 @@ runner.check("endpoint descriptor loader enforces owner-only files") {
 
     let descriptorJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "endpoint": "http://127.0.0.1:49402",
       "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
       "daemonVersion": "0.1.0-dev",
@@ -957,7 +957,7 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         if command.executableURL == launchctlURL, command.arguments.first == "print" {
@@ -1030,7 +1030,7 @@ await runner.checkAsync("changed LaunchAgent plist reloads only the owned servic
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1083,7 +1083,7 @@ await runner.checkAsync("unchanged LaunchAgent install does not rewrite owned fi
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1147,7 +1147,7 @@ await runner.checkAsync("changed packaged helper is detected atomically replaced
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1232,7 +1232,7 @@ await runner.checkAsync("foreign sy command is refused without mutation") {
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1268,7 +1268,7 @@ await runner.checkAsync("outdated plist is replaced without carrying credentials
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1620,7 +1620,7 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let requestId = "request_app_start"
     let receipt = """
-    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_app_start",
+    {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_app_start",
      "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_app_start"}
     """
     let transport = MockTransport { request in
@@ -1660,7 +1660,7 @@ await runner.checkAsync("daemon client encodes revisioned stops and rejects host
         let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
         try expect(body?["expectedEnvironmentRevision"] as? Int == 17, "stop revision was not encoded")
         let receipt = """
-        {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_app_stop",
+        {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_app_stop",
          "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_app"}
         """
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
@@ -1701,7 +1701,7 @@ await runner.checkAsync("daemon client submits managed worktree mutations and re
             try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
         }
         let receipt = """
-        {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_workspace",
+        {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_workspace",
          "acceptedAt":"2026-08-17T16:00:00Z"}
         """
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
@@ -1747,11 +1747,11 @@ await runner.checkAsync("live workspace actions handshake before mutation") {
     let paths = LockedRecorder<String>()
     let requestId = "request_verified_workspace"
     let handshake = """
-    {"schemaVersion":1,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
-     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+    {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
     """
     let receipt = """
-    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_verified_workspace",
+    {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_verified_workspace",
      "acceptedAt":"2026-08-17T16:00:00Z"}
     """
     let client = try DaemonClient(
@@ -1779,11 +1779,11 @@ await runner.checkAsync("live environment actions handshake before mutation") {
     let paths = LockedRecorder<String>()
     let requestId = "request_verified_start"
     let handshake = """
-    {"schemaVersion":1,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
-     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+    {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
     """
     let receipt = """
-    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_verified_start",
+    {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_verified_start",
      "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_verified"}
     """
     let client = try DaemonClient(
@@ -2012,8 +2012,8 @@ runner.check("lifecycle states describe themselves") {
 await runner.checkAsync("lifecycle controller waits boundedly then performs live handshake and status") {
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let handshakeBody = """
-    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
-     "supportedSchemaVersions": [1]}
+    {"schemaVersion": 2, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions":[2]}
     """
     let client = try DaemonClient(
         descriptor: sampleDescriptor,
@@ -2067,8 +2067,8 @@ await runner.checkAsync("lifecycle controller refuses an invalid runtime without
 await runner.checkAsync("lifecycle refresh automatically reinstalls an outdated helper") {
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let handshakeBody = """
-    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
-     "supportedSchemaVersions": [1]}
+    {"schemaVersion": 2, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions":[2]}
     """
     let connection = DaemonConnection(
         descriptor: sampleDescriptor,
@@ -2136,7 +2136,7 @@ await runner.checkAsync("live doctor passes with valid files and a responsive da
     defer { try? fileManager.removeItem(at: directory) }
 
     let descriptorJSON = """
-    {"schemaVersion": 1, "endpoint": "http://127.0.0.1:49402",
+    {"schemaVersion": 2, "endpoint": "http://127.0.0.1:49402",
      "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev", "pid": 4242,
      "processStartedAt": "2026-08-14T09:00:00Z", "generatedAt": "2026-08-14T09:00:01Z"}
     """
@@ -2156,8 +2156,8 @@ await runner.checkAsync("live doctor passes with valid files and a responsive da
     )
 
     let handshakeBody = """
-    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
-     "supportedSchemaVersions": [1]}
+    {"schemaVersion": 2, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions":[2]}
     """
     let serviceManager = StubServiceManager(status: .enabled)
     let doctor = LiveConnectionDoctor(

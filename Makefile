@@ -17,12 +17,12 @@ go-check:
 swift-check:
 	swift build --package-path app
 	swift test --package-path app
-	swift run --package-path app SwitchyardContractCheck contracts/v1/fixtures/status.json
+	swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
 
 test:
 	go test ./...
 	swift test --package-path app
-	swift run --package-path app SwitchyardContractCheck contracts/v1/fixtures/status.json
+	swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
 
 race:
 	go test -race ./...

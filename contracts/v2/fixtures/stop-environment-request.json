@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "requestId": "request_01K2A2D8P2Y7JYFP3S85KTKJD8",
   "idempotencyKey": "stop:environment_daad7f2bc132:01K2A2D8P2Y7JYFP3S85KTKJD8",
   "expectedEnvironmentRevision": 3

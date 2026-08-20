@@ -574,7 +574,7 @@ func fullStartRequest(t *testing.T, operationID, environmentID, runID string) St
 			Key:            portlease.Key{EnvironmentID: environmentID, ServiceID: serviceID, Purpose: "http"},
 			PreferredPorts: []int{7000},
 		}},
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{serviceID}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{serviceID}},
 	}
 }
 

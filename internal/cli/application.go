@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/control/statusview"
 )
 
@@ -27,33 +27,33 @@ const (
 )
 
 type Backend interface {
-	Status(context.Context) (contractv1.StatusSnapshot, error)
+	Status(context.Context) (contractv2.StatusSnapshot, error)
 	Doctor(context.Context) apiclient.DoctorReport
-	StartEnvironment(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+	StartEnvironment(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error)
+	StopEnvironment(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error)
 }
 
 type WorkspaceBackend interface {
-	CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
-	PrepareWorktree(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
+	CreateWorktree(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error)
+	AdoptWorktree(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error)
+	ArchiveWorktree(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error)
+	PrepareWorktree(context.Context, contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error)
 }
 
 type ConfigurationBackend interface {
-	Configuration(context.Context) (contractv1.ConfigurationStatus, error)
-	ValidateConfiguration(context.Context, contractv1.ConfigurationValidationRequest) (contractv1.ConfigurationStatus, error)
-	AcceptConfiguration(context.Context, contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error)
+	Configuration(context.Context) (contractv2.ConfigurationStatus, error)
+	ValidateConfiguration(context.Context, contractv2.ConfigurationValidationRequest) (contractv2.ConfigurationStatus, error)
+	AcceptConfiguration(context.Context, contractv2.ConfigurationAcceptanceRequest) (contractv2.ConfigurationStatus, error)
 }
 
 type ProfileActionBackend interface {
-	ListProfileActions(context.Context) (contractv1.ProfileActionList, error)
-	RunProfileAction(context.Context, contractv1.RunProfileActionRequest) (contractv1.MutationReceipt, error)
+	ListProfileActions(context.Context) (contractv2.ProfileActionList, error)
+	RunProfileAction(context.Context, contractv2.RunProfileActionRequest) (contractv2.MutationReceipt, error)
 }
 
 type CleanupBackend interface {
-	PlanCleanup(context.Context, contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error)
-	ApplyCleanup(context.Context, contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error)
+	PlanCleanup(context.Context, contractv2.CleanupPlanRequest) (contractv2.CleanupPlan, error)
+	ApplyCleanup(context.Context, contractv2.CleanupApplyRequest) (contractv2.CleanupResult, error)
 }
 
 type LiveBackend struct {
@@ -61,7 +61,7 @@ type LiveBackend struct {
 	Now       func() time.Time
 }
 
-func (b LiveBackend) Status(ctx context.Context) (contractv1.StatusSnapshot, error) {
+func (b LiveBackend) Status(ctx context.Context) (contractv2.StatusSnapshot, error) {
 	return b.Connector.Status(ctx)
 }
 
@@ -71,72 +71,72 @@ func (b LiveBackend) Doctor(ctx context.Context) apiclient.DoctorReport {
 
 func (b LiveBackend) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.StartEnvironment(ctx, request)
 }
 
 func (b LiveBackend) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.StopEnvironment(ctx, environmentID, request)
 }
 
 func (b LiveBackend) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.CreateWorktree(ctx, request)
 }
 
 func (b LiveBackend) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.ArchiveWorktree(ctx, request)
 }
 
 func (b LiveBackend) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.AdoptWorktree(ctx, request)
 }
 
 func (b LiveBackend) PrepareWorktree(
 	ctx context.Context,
-	request contractv1.PrepareWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.PrepareWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.PrepareWorktree(ctx, request)
 }
 
-func (b LiveBackend) Configuration(ctx context.Context) (contractv1.ConfigurationStatus, error) {
+func (b LiveBackend) Configuration(ctx context.Context) (contractv2.ConfigurationStatus, error) {
 	return b.Connector.Configuration(ctx)
 }
 
-func (b LiveBackend) ValidateConfiguration(ctx context.Context, request contractv1.ConfigurationValidationRequest) (contractv1.ConfigurationStatus, error) {
+func (b LiveBackend) ValidateConfiguration(ctx context.Context, request contractv2.ConfigurationValidationRequest) (contractv2.ConfigurationStatus, error) {
 	return b.Connector.ValidateConfiguration(ctx, request)
 }
 
-func (b LiveBackend) AcceptConfiguration(ctx context.Context, request contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error) {
+func (b LiveBackend) AcceptConfiguration(ctx context.Context, request contractv2.ConfigurationAcceptanceRequest) (contractv2.ConfigurationStatus, error) {
 	return b.Connector.AcceptConfiguration(ctx, request)
 }
 
-func (b LiveBackend) ListProfileActions(ctx context.Context) (contractv1.ProfileActionList, error) {
+func (b LiveBackend) ListProfileActions(ctx context.Context) (contractv2.ProfileActionList, error) {
 	return b.Connector.ListProfileActions(ctx)
 }
 
-func (b LiveBackend) RunProfileAction(ctx context.Context, request contractv1.RunProfileActionRequest) (contractv1.MutationReceipt, error) {
+func (b LiveBackend) RunProfileAction(ctx context.Context, request contractv2.RunProfileActionRequest) (contractv2.MutationReceipt, error) {
 	return b.Connector.RunProfileAction(ctx, request)
 }
 
-func (b LiveBackend) PlanCleanup(ctx context.Context, request contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error) {
+func (b LiveBackend) PlanCleanup(ctx context.Context, request contractv2.CleanupPlanRequest) (contractv2.CleanupPlan, error) {
 	return b.Connector.PlanCleanup(ctx, request)
 }
 
-func (b LiveBackend) ApplyCleanup(ctx context.Context, request contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error) {
+func (b LiveBackend) ApplyCleanup(ctx context.Context, request contractv2.CleanupApplyRequest) (contractv2.CleanupResult, error) {
 	return b.Connector.ApplyCleanup(ctx, request)
 }
 
@@ -237,11 +237,11 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 			return writeFailure(stdout, stderr, command.JSON, errors.New("cleanup actions are unavailable"))
 		}
 		if command.Name == "cleanup-plan" {
-			scope := contractv1.CleanupScope{Kind: "global"}
+			scope := contractv2.CleanupScope{Kind: "global"}
 			if len(command.Positionals) == 2 {
-				scope = contractv1.CleanupScope{Kind: command.Positionals[0], ID: command.Positionals[1]}
+				scope = contractv2.CleanupScope{Kind: command.Positionals[0], ID: command.Positionals[1]}
 			}
-			plan, err := backend.PlanCleanup(ctx, contractv1.CleanupPlanRequest{SchemaVersion: contractv1.SchemaVersion, Scope: scope})
+			plan, err := backend.PlanCleanup(ctx, contractv2.CleanupPlanRequest{SchemaVersion: contractv2.SchemaVersion, Scope: scope})
 			if err != nil {
 				return writeFailure(stdout, stderr, command.JSON, err)
 			}
@@ -251,8 +251,8 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 			writeCleanupPlan(stdout, plan)
 			return ExitSuccess
 		}
-		result, err := backend.ApplyCleanup(ctx, contractv1.CleanupApplyRequest{
-			SchemaVersion: contractv1.SchemaVersion, PlanID: command.Positionals[0],
+		result, err := backend.ApplyCleanup(ctx, contractv2.CleanupApplyRequest{
+			SchemaVersion: contractv2.SchemaVersion, PlanID: command.Positionals[0],
 			ExpectedRevision: *command.ExpectedRevision, CandidateIDs: command.Positionals[1:],
 		})
 		if err != nil {
@@ -277,16 +277,16 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 			if command.ExpectedRevision != nil {
 				expected = *command.ExpectedRevision
 			}
-			status, err = backend.ValidateConfiguration(ctx, contractv1.ConfigurationValidationRequest{
-				SchemaVersion: contractv1.SchemaVersion, ExpectedRevision: expected,
+			status, err = backend.ValidateConfiguration(ctx, contractv2.ConfigurationValidationRequest{
+				SchemaVersion: contractv2.SchemaVersion, ExpectedRevision: expected,
 			})
 		} else if command.Name == "accept-configuration" {
 			expected := status.AcceptedRevision
 			if command.ExpectedRevision != nil {
 				expected = *command.ExpectedRevision
 			}
-			status, err = backend.AcceptConfiguration(ctx, contractv1.ConfigurationAcceptanceRequest{
-				SchemaVersion: contractv1.SchemaVersion, ExpectedRevision: expected, Digest: command.Positionals[0],
+			status, err = backend.AcceptConfiguration(ctx, contractv2.ConfigurationAcceptanceRequest{
+				SchemaVersion: contractv2.SchemaVersion, ExpectedRevision: expected, Digest: command.Positionals[0],
 			})
 		}
 		if err != nil {
@@ -358,9 +358,9 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := a.submitStart(actionContext, contractv1.StartEnvironmentRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
+		receipt, err := a.submitStart(actionContext, contractv2.StartEnvironmentRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: requestID,
 				IdempotencyKey: idempotencyKey, ExpectedEnvironmentRevision: command.ExpectedRevision,
 			},
 			WorktreeID: worktreeID, TargetID: command.TargetID,
@@ -404,9 +404,9 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := a.submitStop(actionContext, environmentID, contractv1.StopEnvironmentRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
+		receipt, err := a.submitStop(actionContext, environmentID, contractv2.StopEnvironmentRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: requestID,
 				IdempotencyKey: idempotencyKey, ExpectedEnvironmentRevision: command.ExpectedRevision,
 			},
 		}, command.Wait)
@@ -443,9 +443,9 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 			if idempotencyKey == "" {
 				idempotencyKey = "cli:" + requestID
 			}
-			receipt, err := a.submitPrepare(actionContext, backend, contractv1.PrepareWorktreeRequest{
-				MutationRequest: contractv1.MutationRequest{
-					SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+			receipt, err := a.submitPrepare(actionContext, backend, contractv2.PrepareWorktreeRequest{
+				MutationRequest: contractv2.MutationRequest{
+					SchemaVersion: contractv2.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
 				},
 				WorktreeID: worktreeID,
 			}, command.Wait)
@@ -476,9 +476,9 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := backend.CreateWorktree(ctx, contractv1.CreateWorktreeRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+		receipt, err := backend.CreateWorktree(ctx, contractv2.CreateWorktreeRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
 			},
 			RepositoryID: command.Positionals[0], Branch: command.Positionals[1], StartPoint: command.StartPoint,
 		})
@@ -499,9 +499,9 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := backend.ArchiveWorktree(ctx, contractv1.ArchiveWorktreeRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+		receipt, err := backend.ArchiveWorktree(ctx, contractv2.ArchiveWorktreeRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
 			},
 			WorktreeID: command.Positionals[0],
 		})
@@ -522,9 +522,9 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		if idempotencyKey == "" {
 			idempotencyKey = "cli:" + requestID
 		}
-		receipt, err := backend.AdoptWorktree(ctx, contractv1.AdoptWorktreeRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+		receipt, err := backend.AdoptWorktree(ctx, contractv2.AdoptWorktreeRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
 			},
 			WorktreeID: command.Positionals[0],
 		})
@@ -569,9 +569,9 @@ func (a Application) runProfileAction(
 	if idempotencyKey == "" {
 		idempotencyKey = "cli:" + requestID
 	}
-	receipt, err := backend.RunProfileAction(actionContext, contractv1.RunProfileActionRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
+	receipt, err := backend.RunProfileAction(actionContext, contractv2.RunProfileActionRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: requestID, IdempotencyKey: idempotencyKey,
 			ExpectedEnvironmentRevision: command.ExpectedRevision,
 		},
 		RepositoryID: command.Positionals[0], ActionID: command.Positionals[1],
@@ -631,9 +631,9 @@ func (a Application) resolveCurrentWorktree(ctx context.Context, wait bool) (str
 
 func (a Application) submitStart(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
+	request contractv2.StartEnvironmentRequest,
 	retryDiscovery bool,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	for {
 		receipt, err := a.Backend.StartEnvironment(ctx, request)
 		if err == nil || !retryDiscovery ||
@@ -641,7 +641,7 @@ func (a Application) submitStart(
 			return receipt, err
 		}
 		if waitErr := a.waitForNextPoll(ctx); waitErr != nil {
-			return contractv1.MutationReceipt{}, err
+			return contractv2.MutationReceipt{}, err
 		}
 	}
 }
@@ -649,7 +649,7 @@ func (a Application) submitStart(
 func (a Application) resolveCurrentEnvironment(
 	ctx context.Context,
 	retryDiscovery bool,
-) (contractv1.Environment, error) {
+) (contractv2.Environment, error) {
 	var lastErr error
 	for {
 		snapshot, err := a.Backend.Status(ctx)
@@ -659,24 +659,24 @@ func (a Application) resolveCurrentEnvironment(
 			case selectionErr == nil && len(worktreeContext.Environments) == 1:
 				return worktreeContext.Environments[0], nil
 			case selectionErr == nil && len(worktreeContext.Environments) == 0:
-				return contractv1.Environment{}, statusview.ErrEnvironmentNotFound
+				return contractv2.Environment{}, statusview.ErrEnvironmentNotFound
 			case selectionErr == nil:
-				return contractv1.Environment{}, statusview.ErrWorktreeAmbiguous
+				return contractv2.Environment{}, statusview.ErrWorktreeAmbiguous
 			case retryDiscovery && errors.Is(selectionErr, statusview.ErrWorktreeNotFound):
 				lastErr = selectionErr
 			default:
-				return contractv1.Environment{}, selectionErr
+				return contractv2.Environment{}, selectionErr
 			}
 		} else if retryDiscovery && retryableDaemonDiscoveryError(err) {
 			lastErr = err
 		} else {
-			return contractv1.Environment{}, err
+			return contractv2.Environment{}, err
 		}
 		if waitErr := a.waitForNextPoll(ctx); waitErr != nil {
 			if lastErr != nil {
-				return contractv1.Environment{}, lastErr
+				return contractv2.Environment{}, lastErr
 			}
-			return contractv1.Environment{}, waitErr
+			return contractv2.Environment{}, waitErr
 		}
 	}
 }
@@ -684,16 +684,16 @@ func (a Application) resolveCurrentEnvironment(
 func (a Application) submitStop(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
+	request contractv2.StopEnvironmentRequest,
 	retryDiscovery bool,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	for {
 		receipt, err := a.Backend.StopEnvironment(ctx, environmentID, request)
 		if err == nil || !retryDiscovery || !retryableDaemonDiscoveryError(err) {
 			return receipt, err
 		}
 		if waitErr := a.waitForNextPoll(ctx); waitErr != nil {
-			return contractv1.MutationReceipt{}, err
+			return contractv2.MutationReceipt{}, err
 		}
 	}
 }
@@ -701,9 +701,9 @@ func (a Application) submitStop(
 func (a Application) submitPrepare(
 	ctx context.Context,
 	backend WorkspaceBackend,
-	request contractv1.PrepareWorktreeRequest,
+	request contractv2.PrepareWorktreeRequest,
 	wait bool,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	if !wait {
 		return backend.PrepareWorktree(ctx, request)
 	}
@@ -715,10 +715,10 @@ func (a Application) submitPrepare(
 			return receipt, nil
 		}
 		if !retryableDaemonDiscoveryError(err) && apiclient.CodeOf(err) != apiclient.ErrorCode("WORKTREE_NOT_FOUND") {
-			return contractv1.MutationReceipt{}, err
+			return contractv2.MutationReceipt{}, err
 		}
 		if waitErr := a.waitForNextPoll(waitContext); waitErr != nil {
-			return contractv1.MutationReceipt{}, err
+			return contractv2.MutationReceipt{}, err
 		}
 	}
 }
@@ -975,7 +975,7 @@ func (a Application) requestID() (string, error) {
 }
 
 func (a Application) resolveStatusContext(
-	snapshot contractv1.StatusSnapshot,
+	snapshot contractv2.StatusSnapshot,
 	command parsedCommand,
 ) (statusview.WorktreeContext, string, error) {
 	if len(command.Positionals) == 1 {
@@ -1009,7 +1009,7 @@ func (a Application) workingDirectory() (string, error) {
 	return os.Getwd()
 }
 
-func writeReceipt(writer io.Writer, receipt contractv1.MutationReceipt, jsonOutput bool) int {
+func writeReceipt(writer io.Writer, receipt contractv2.MutationReceipt, jsonOutput bool) int {
 	if jsonOutput {
 		return encodeJSON(writer, receipt)
 	}
@@ -1040,7 +1040,7 @@ func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "  switchyard archive-worktree <worktree-id> [--idempotency-key KEY] [--json]")
 }
 
-func writeConfigurationStatus(writer io.Writer, status contractv1.ConfigurationStatus) {
+func writeConfigurationStatus(writer io.Writer, status contractv2.ConfigurationStatus) {
 	_, _ = fmt.Fprintf(writer, "Configuration: %s (accepted revision %d).\n", status.State, status.AcceptedRevision)
 	if status.AcceptedDigest != "" {
 		_, _ = fmt.Fprintf(writer, "Accepted digest: %s\n", status.AcceptedDigest)
@@ -1052,7 +1052,7 @@ func writeConfigurationStatus(writer io.Writer, status contractv1.ConfigurationS
 	}
 }
 
-func writeProfileActions(writer io.Writer, list contractv1.ProfileActionList) {
+func writeProfileActions(writer io.Writer, list contractv2.ProfileActionList) {
 	if len(list.Actions) == 0 {
 		_, _ = fmt.Fprintln(writer, "No accepted profile actions.")
 		return
@@ -1071,14 +1071,14 @@ func writeProfileActions(writer io.Writer, list contractv1.ProfileActionList) {
 	}
 }
 
-func writeCleanupPlan(writer io.Writer, plan contractv1.CleanupPlan) {
+func writeCleanupPlan(writer io.Writer, plan contractv2.CleanupPlan) {
 	_, _ = fmt.Fprintf(writer, "Cleanup plan %s at revision %d: %d removable, %d protected.\n", plan.ID, plan.Revision, len(plan.Candidates), len(plan.Protected))
 	for _, candidate := range plan.Candidates {
 		_, _ = fmt.Fprintf(writer, "  %s  %d bytes  %s\n", candidate.ID, candidate.Bytes, candidate.Path)
 	}
 }
 
-func writeCleanupResult(writer io.Writer, result contractv1.CleanupResult) {
+func writeCleanupResult(writer io.Writer, result contractv2.CleanupResult) {
 	removed := 0
 	for _, removal := range result.Removals {
 		if removal.Removed {
@@ -1104,7 +1104,7 @@ func writeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {
 	}
 	if jsonOutput {
 		_ = json.NewEncoder(stdout).Encode(errorOutput{
-			SchemaVersion: contractv1.SchemaVersion,
+			SchemaVersion: contractv2.SchemaVersion,
 			Error:         details,
 		})
 	} else {
@@ -1128,7 +1128,7 @@ func encodeJSON(writer io.Writer, value any) int {
 	return ExitSuccess
 }
 
-func writeInventoryText(writer io.Writer, snapshot contractv1.StatusSnapshot, fallbackPath string) {
+func writeInventoryText(writer io.Writer, snapshot contractv2.StatusSnapshot, fallbackPath string) {
 	if fallbackPath != "" {
 		_, _ = fmt.Fprintf(writer, "No known worktree contains %s; showing all environments.\n", fallbackPath)
 	}
@@ -1136,7 +1136,7 @@ func writeInventoryText(writer io.Writer, snapshot contractv1.StatusSnapshot, fa
 	_, _ = fmt.Fprintf(writer, "Daemon: %s (%s)\n", snapshot.Daemon.State, snapshot.Daemon.Version)
 	_, _ = fmt.Fprintf(writer, "Environments: %d\n", len(snapshot.Environments))
 
-	environments := append([]contractv1.Environment(nil), snapshot.Environments...)
+	environments := append([]contractv2.Environment(nil), snapshot.Environments...)
 	sort.Slice(environments, func(left, right int) bool {
 		return environments[left].DisplayName < environments[right].DisplayName
 	})
@@ -1158,7 +1158,7 @@ func writeWorktreeStatusText(writer io.Writer, status statusview.WorktreeContext
 	}
 	_, _ = fmt.Fprintln(writer, name)
 	_, _ = fmt.Fprintf(writer, "Path: %s\n", status.Worktree.Path)
-	_, _ = fmt.Fprintf(writer, "Repository: %s (%s)\n", status.Repository.DisplayName, status.Repository.Adapter)
+	_, _ = fmt.Fprintf(writer, "Repository: %s (%s)\n", status.Repository.DisplayName, status.Repository.ProfileKey)
 	ownership := "discovered"
 	workspaceState := "not prepared"
 	if status.Worktree.Workspace != nil {
@@ -1239,7 +1239,7 @@ func writeStatusSelectionFailure(stdout, stderr io.Writer, jsonOutput bool, err 
 	}
 	if jsonOutput {
 		_ = json.NewEncoder(stdout).Encode(errorOutput{
-			SchemaVersion: contractv1.SchemaVersion,
+			SchemaVersion: contractv2.SchemaVersion,
 			Error:         errorOutputDetails{Code: code, Message: message},
 		})
 	} else {
@@ -1251,7 +1251,7 @@ func writeStatusSelectionFailure(stdout, stderr io.Writer, jsonOutput bool, err 
 func writeNoRunningEnvironment(writer io.Writer, jsonOutput bool) int {
 	if jsonOutput {
 		return encodeJSON(writer, noRunningEnvironmentOutput{
-			SchemaVersion: contractv1.SchemaVersion, Outcome: "alreadyStopped",
+			SchemaVersion: contractv2.SchemaVersion, Outcome: "alreadyStopped",
 		})
 	}
 	_, _ = fmt.Fprintln(writer, "No Switchyard environment is running for this worktree.")
@@ -1266,7 +1266,7 @@ func writeCurrentWorktreeFailure(stdout, stderr io.Writer, jsonOutput bool, err 
 	return writeFailure(stdout, stderr, jsonOutput, err)
 }
 
-func gitSummary(state contractv1.WorktreeState) string {
+func gitSummary(state contractv2.WorktreeState) string {
 	parts := make([]string, 0, 4)
 	if state.HasTrackedChanges {
 		parts = append(parts, "tracked changes")

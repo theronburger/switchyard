@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/state"
 )
@@ -18,8 +18,8 @@ import (
 const gitExecutableOverride = "SWITCHYARD_GIT_EXECUTABLE"
 
 type repositoryInventory struct {
-	Repositories                []contractv1.Repository
-	Alerts                      []contractv1.Alert
+	Repositories                []contractv2.Repository
+	Alerts                      []contractv2.Alert
 	Profiles                    map[string]configuration.Repository
 	ProfileKeys                 map[string]string
 	ProfileDigests              map[string]string
@@ -52,29 +52,29 @@ func restoreWorkspaceInventory(ctx context.Context, store *state.Store, inventor
 	return nil
 }
 
-func contractWorkspaceStatus(result workspacecontrol.Result) *contractv1.WorkspaceStatus {
-	toolchains := make([]contractv1.WorkspaceToolchain, len(result.Toolchains))
+func contractWorkspaceStatus(result workspacecontrol.Result) *contractv2.WorkspaceStatus {
+	toolchains := make([]contractv2.WorkspaceToolchain, len(result.Toolchains))
 	for index, toolchain := range result.Toolchains {
-		toolchains[index] = contractv1.WorkspaceToolchain{
+		toolchains[index] = contractv2.WorkspaceToolchain{
 			ID: toolchain.ID, RequestedVersion: toolchain.RequestedVersion, ResolvedVersion: toolchain.ResolvedVersion,
 		}
 	}
 	sort.Slice(toolchains, func(left, right int) bool { return toolchains[left].ID < toolchains[right].ID })
-	return &contractv1.WorkspaceStatus{
+	return &contractv2.WorkspaceStatus{
 		Ownership: string(result.Ownership), State: string(result.State), Fingerprint: result.Fingerprint,
 		PreparedAt: result.PreparedAt, Toolchains: toolchains,
 	}
 }
 
-func deduplicateInventoryAlerts(alerts []contractv1.Alert) []contractv1.Alert {
-	byID := make(map[string]contractv1.Alert, len(alerts))
+func deduplicateInventoryAlerts(alerts []contractv2.Alert) []contractv2.Alert {
+	byID := make(map[string]contractv2.Alert, len(alerts))
 	for _, alert := range alerts {
 		previous, exists := byID[alert.ID]
 		if !exists || (previous.Severity != "error" && alert.Severity == "error") {
 			byID[alert.ID] = alert
 		}
 	}
-	unique := make([]contractv1.Alert, 0, len(byID))
+	unique := make([]contractv2.Alert, 0, len(byID))
 	for _, alert := range byID {
 		unique = append(unique, alert)
 	}
@@ -94,22 +94,22 @@ func configuredGitExecutable() string {
 
 func inventoryFailure(observedAt time.Time, code, summary string) repositoryInventory {
 	return repositoryInventory{
-		Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{newInventoryAlert(observedAt, code, summary, "error")},
+		Repositories: []contractv2.Repository{}, Alerts: []contractv2.Alert{newInventoryAlert(observedAt, code, summary, "error")},
 		AttemptedAt: observedAt.UTC(),
 	}
 }
 
-func newInventoryAlert(observedAt time.Time, code, summary, severity string) contractv1.Alert {
+func newInventoryAlert(observedAt time.Time, code, summary, severity string) contractv2.Alert {
 	digest := sha256.Sum256([]byte(code))
-	return contractv1.Alert{
+	return contractv2.Alert{
 		ID: "alert_inventory_" + base64.RawURLEncoding.EncodeToString(digest[:12]), Severity: severity, Code: code,
 		Summary: summary, Status: "active", FirstSeenAt: observedAt.UTC(), LastSeenAt: observedAt.UTC(), Occurrences: 1,
 	}
 }
 
-func mergeRepositoryInventory(snapshot contractv1.StatusSnapshot, discovered repositoryInventory) contractv1.StatusSnapshot {
+func mergeRepositoryInventory(snapshot contractv2.StatusSnapshot, discovered repositoryInventory) contractv2.StatusSnapshot {
 	if discovered.Complete {
-		repositories := append([]contractv1.Repository{}, discovered.Repositories...)
+		repositories := append([]contractv2.Repository{}, discovered.Repositories...)
 		preservePullRequestObservations(repositories, snapshot.Repositories)
 		knownRepositories := make(map[string]int, len(repositories))
 		for index, repository := range repositories {
@@ -146,11 +146,11 @@ func mergeRepositoryInventory(snapshot contractv1.StatusSnapshot, discovered rep
 	} else {
 		markRepositoryObservationsStale(snapshot.Repositories, discovered)
 		if snapshot.Repositories == nil {
-			snapshot.Repositories = []contractv1.Repository{}
+			snapshot.Repositories = []contractv2.Repository{}
 		}
 	}
 
-	alerts := make([]contractv1.Alert, 0, len(snapshot.Alerts)+len(discovered.Alerts))
+	alerts := make([]contractv2.Alert, 0, len(snapshot.Alerts)+len(discovered.Alerts))
 	for _, alert := range snapshot.Alerts {
 		if !strings.HasPrefix(alert.ID, "alert_inventory_") {
 			alerts = append(alerts, alert)
@@ -162,7 +162,7 @@ func mergeRepositoryInventory(snapshot contractv1.StatusSnapshot, discovered rep
 	return snapshot
 }
 
-func repositoryContainsWorktree(repository contractv1.Repository, worktreeID string) bool {
+func repositoryContainsWorktree(repository contractv2.Repository, worktreeID string) bool {
 	for _, worktree := range repository.Worktrees {
 		if worktree.ID == worktreeID {
 			return true
@@ -171,7 +171,7 @@ func repositoryContainsWorktree(repository contractv1.Repository, worktreeID str
 	return false
 }
 
-func findPreviousWorktree(repositories []contractv1.Repository, repositoryID, worktreeID string) (contractv1.Worktree, bool) {
+func findPreviousWorktree(repositories []contractv2.Repository, repositoryID, worktreeID string) (contractv2.Worktree, bool) {
 	for _, repository := range repositories {
 		if repository.ID != repositoryID {
 			continue
@@ -182,10 +182,10 @@ func findPreviousWorktree(repositories []contractv1.Repository, repositoryID, wo
 			}
 		}
 	}
-	return contractv1.Worktree{}, false
+	return contractv2.Worktree{}, false
 }
 
-func markRepositoryObservationsStale(repositories []contractv1.Repository, discovered repositoryInventory) {
+func markRepositoryObservationsStale(repositories []contractv2.Repository, discovered repositoryInventory) {
 	attemptedAt := discovered.AttemptedAt.UTC()
 	if attemptedAt.IsZero() {
 		attemptedAt = time.Now().UTC()
@@ -202,20 +202,20 @@ func markRepositoryObservationsStale(repositories []contractv1.Repository, disco
 		if repositories[repositoryIndex].Observation != nil {
 			previousObservedAt = repositories[repositoryIndex].Observation.ObservedAt
 		}
-		repositories[repositoryIndex].Observation = &contractv1.RepositoryObservation{
+		repositories[repositoryIndex].Observation = &contractv2.RepositoryObservation{
 			ObservedAt: previousObservedAt, LastAttemptAt: attemptedAt, Stale: true, ErrorCode: errorCode,
 		}
 	}
 }
 
-func preservePullRequestObservations(discovered, previous []contractv1.Repository) {
+func preservePullRequestObservations(discovered, previous []contractv2.Repository) {
 	type worktreeIdentity struct {
 		repositoryID string
 		worktreeID   string
 		branch       string
 		headRevision string
 	}
-	observations := make(map[worktreeIdentity]*contractv1.PullRequestObservation)
+	observations := make(map[worktreeIdentity]*contractv2.PullRequestObservation)
 	for _, repository := range previous {
 		for _, worktree := range repository.Worktrees {
 			if worktree.PullRequest != nil {

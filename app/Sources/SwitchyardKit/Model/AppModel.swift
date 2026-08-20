@@ -639,9 +639,9 @@ public final class AppModel {
     }
 
     /// Profile keys the daemon currently publishes (the status contract's
-    /// `adapter` field carries the repository key).
+    /// `profileKey` field is the repository key).
     public var publishedProfileKeys: Set<String> {
-        Set(snapshot?.repositories.map(\.adapter) ?? [])
+        Set(snapshot?.repositories.map(\.profileKey) ?? [])
     }
 
     /// Profile keys that appear in accepted or candidate configuration.
@@ -654,7 +654,7 @@ public final class AppModel {
     }
 
     public func acceptanceState(for repository: Repository) -> RepositoryAcceptanceState {
-        configurationPresentation?.repositoryState(profileKey: repository.adapter, isPublished: true) ?? .unknown
+        configurationPresentation?.repositoryState(profileKey: repository.profileKey, isPublished: true) ?? .unknown
     }
 
     public func refreshConfiguration() async {

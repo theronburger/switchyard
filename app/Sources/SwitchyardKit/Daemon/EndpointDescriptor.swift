@@ -6,7 +6,7 @@ import Foundation
 /// The descriptor deliberately carries no secret material; the bearer token
 /// lives in a separate mode-`0600` file loaded through ``BearerToken``.
 public struct EndpointDescriptor: Codable, Sendable, Equatable {
-    public static let supportedSchemaVersion = 1
+    public static let supportedSchemaVersion = contractSchemaVersion
     public static let supportedTransport = "http"
 
     public let schemaVersion: Int

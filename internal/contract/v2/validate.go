@@ -1,4 +1,4 @@
-package contractv1
+package contractv2
 
 import (
 	"fmt"

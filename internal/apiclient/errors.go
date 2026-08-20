@@ -6,7 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type ErrorCode string
@@ -34,16 +34,16 @@ const (
 
 type CodedError struct {
 	Code     ErrorCode
-	Contract *contractv1.ContractError
+	Contract *contractv2.ContractError
 	err      error
 }
 
-func newContractError(contractError contractv1.ContractError, err error) error {
+func newContractError(contractError contractv2.ContractError, err error) error {
 	copy := sanitizeContractError(contractError)
 	return &CodedError{Code: ErrorCode(contractError.Code), Contract: &copy, err: err}
 }
 
-func sanitizeContractError(contractError contractv1.ContractError) contractv1.ContractError {
+func sanitizeContractError(contractError contractv2.ContractError) contractv2.ContractError {
 	if !safeAgentText(contractError.Message, 2048) || sensitiveAgentText(contractError.Message) {
 		contractError.Message = "Switchyard rejected the requested operation."
 	}
@@ -116,10 +116,10 @@ func CodeOf(err error) ErrorCode {
 	return ErrorUnknown
 }
 
-func ContractErrorOf(err error) (contractv1.ContractError, bool) {
+func ContractErrorOf(err error) (contractv2.ContractError, bool) {
 	var coded *CodedError
 	if !errors.As(err, &coded) || coded.Contract == nil {
-		return contractv1.ContractError{}, false
+		return contractv2.ContractError{}, false
 	}
 	return *coded.Contract, true
 }

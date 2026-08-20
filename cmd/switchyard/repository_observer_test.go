@@ -6,20 +6,20 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 type fakeRepositoryObserverStore struct {
 	mutex    sync.Mutex
-	snapshot contractv1.StatusSnapshot
+	snapshot contractv2.StatusSnapshot
 	updates  int
 }
 
 func (store *fakeRepositoryObserverStore) UpdateSnapshot(
 	_ context.Context,
 	update state.SnapshotUpdater,
-) (contractv1.StatusSnapshot, bool, error) {
+) (contractv2.StatusSnapshot, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	changed, err := update(&store.snapshot)
@@ -36,19 +36,19 @@ func TestRepositoryObserverRefreshesRepositoryWithoutOverwritingEnvironment(t *t
 	latest := inventoryTestRepository("repo_test", "worktree_test", "/tmp/sample")
 	latest.Worktrees[0].HeadRevision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	latest.Worktrees[0].Git.HasTrackedChanges = true
-	latest.Observation = &contractv1.RepositoryObservation{
+	latest.Observation = &contractv2.RepositoryObservation{
 		ObservedAt: &observedAt, LastAttemptAt: observedAt,
 	}
-	environment := contractv1.Environment{ID: "environment_test", Revision: 9}
-	store := &fakeRepositoryObserverStore{snapshot: contractv1.StatusSnapshot{
-		Repositories: []contractv1.Repository{previous}, Environments: []contractv1.Environment{environment},
-		Alerts: []contractv1.Alert{},
+	environment := contractv2.Environment{ID: "environment_test", Revision: 9}
+	store := &fakeRepositoryObserverStore{snapshot: contractv2.StatusSnapshot{
+		Repositories: []contractv2.Repository{previous}, Environments: []contractv2.Environment{environment},
+		Alerts: []contractv2.Alert{},
 	}}
 	observer := &repositoryObserver{
 		store: store, interval: time.Second, now: func() time.Time { return observedAt },
 		discover: func(context.Context, time.Time) repositoryInventory {
 			return repositoryInventory{
-				Repositories: []contractv1.Repository{latest}, Alerts: []contractv1.Alert{},
+				Repositories: []contractv2.Repository{latest}, Alerts: []contractv2.Alert{},
 				Complete: true, AttemptedAt: observedAt,
 			}
 		},
@@ -71,11 +71,11 @@ func TestFailedRepositoryRefreshPreservesDataAndMarksObservationStale(t *testing
 	observedAt := time.Date(2026, 8, 18, 11, 0, 0, 0, time.UTC)
 	attemptedAt := observedAt.Add(time.Minute)
 	repository := inventoryTestRepository("repo_test", "worktree_test", "/tmp/sample")
-	repository.Observation = &contractv1.RepositoryObservation{
+	repository.Observation = &contractv2.RepositoryObservation{
 		ObservedAt: &observedAt, LastAttemptAt: observedAt,
 	}
-	merged := mergeRepositoryInventory(contractv1.StatusSnapshot{
-		Repositories: []contractv1.Repository{repository}, Alerts: []contractv1.Alert{},
+	merged := mergeRepositoryInventory(contractv2.StatusSnapshot{
+		Repositories: []contractv2.Repository{repository}, Alerts: []contractv2.Alert{},
 	}, inventoryFailure(attemptedAt, "REPOSITORY_WORKTREES_UNAVAILABLE", "Worktrees unavailable."))
 	got := merged.Repositories[0]
 	if got.Worktrees[0].ID != repository.Worktrees[0].ID || got.Observation == nil ||

@@ -27,7 +27,7 @@ type GitReader struct {
 }
 
 func (reader GitReader) ReadRepository(ctx context.Context, root string) inventory.RepositoryObservation {
-	observation := inventory.RepositoryObservation{AdapterName: reader.ProfileKey}
+	observation := inventory.RepositoryObservation{ProfileKey: reader.ProfileKey}
 	if reader.GitExecutable == "" || reader.RemoteName == "" || reader.ProfileKey == "" ||
 		!filepath.IsAbs(root) || filepath.Clean(root) != root {
 		observation.Errors = append(observation.Errors, inventory.ErrorObservation{Code: inventory.ErrorRepositoryGitPathsUnavailable})

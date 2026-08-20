@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestClientReadsExplicitOperationDiagnosticsAfterHandshake(t *testing.T) {
@@ -23,10 +23,10 @@ func TestClientReadsExplicitOperationDiagnosticsAfterHandshake(t *testing.T) {
 		if request.URL.Path != "/v1/operations/operation_01/diagnostics" || request.URL.Query().Get("maxBytes") != "2048" {
 			t.Errorf("diagnostics request: %s?%s", request.URL.Path, request.URL.RawQuery)
 		}
-		writeTestJSON(t, response, contractv1.OperationDiagnostics{
-			SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_01",
+		writeTestJSON(t, response, contractv2.OperationDiagnostics{
+			SchemaVersion: contractv2.SchemaVersion, OperationID: "operation_01",
 			EnvironmentID: "env_01", LogReference: "run_01/preparations/service/command-0",
-			Excerpts: []contractv1.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
+			Excerpts: []contractv2.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
 		})
 	}))
 	defer server.Close()
@@ -47,10 +47,10 @@ func TestClientAcceptsProfileActionDiagnosticsWithoutEnvironment(t *testing.T) {
 			writeTestHandshake(t, response, snapshot)
 			return
 		}
-		writeTestJSON(t, response, contractv1.OperationDiagnostics{
-			SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_11",
+		writeTestJSON(t, response, contractv2.OperationDiagnostics{
+			SchemaVersion: contractv2.SchemaVersion, OperationID: "operation_11",
 			LogReference: "sample/operation_11",
-			Excerpts:     []contractv1.OperationLogExcerpt{{Stream: "stdout", Content: "tidy: 3 files changed"}},
+			Excerpts:     []contractv2.OperationLogExcerpt{{Stream: "stdout", Content: "tidy: 3 files changed"}},
 		})
 	}))
 	defer server.Close()
@@ -73,8 +73,8 @@ func TestClientPreservesDiagnosticsContractError(t *testing.T) {
 		}
 		response.WriteHeader(http.StatusConflict)
 		writeTestJSON(t, response, mutationErrorResponse{
-			SchemaVersion: contractv1.SchemaVersion,
-			Error:         contractv1.ContractError{Code: "DIAGNOSTICS_UNAVAILABLE", Message: "This operation has no available diagnostics", Retryable: false},
+			SchemaVersion: contractv2.SchemaVersion,
+			Error:         contractv2.ContractError{Code: "DIAGNOSTICS_UNAVAILABLE", Message: "This operation has no available diagnostics", Retryable: false},
 		})
 	}))
 	defer server.Close()

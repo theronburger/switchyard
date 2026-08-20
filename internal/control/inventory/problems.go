@@ -14,7 +14,7 @@ const (
 	ErrorRepositoryRemoteUnavailable    ErrorCode = "REPOSITORY_REMOTE_UNAVAILABLE"
 	ErrorRepositoryWorktreesUnavailable ErrorCode = "REPOSITORY_WORKTREES_UNAVAILABLE"
 	ErrorWorktreeIdentityUnavailable    ErrorCode = "WORKTREE_IDENTITY_UNAVAILABLE"
-	ErrorAdapterObservationInvalid      ErrorCode = "ADAPTER_OBSERVATION_INVALID"
+	ErrorProfileObservationInvalid      ErrorCode = "PROFILE_OBSERVATION_INVALID"
 )
 
 type Alert struct {
@@ -59,8 +59,8 @@ func errorDetails(code ErrorCode) (message string, retryable bool, known bool) {
 		return "Registered Git worktrees are unavailable.", true, true
 	case ErrorWorktreeIdentityUnavailable:
 		return "A worktree administrative identity is unavailable; a path-scoped fallback was used.", true, true
-	case ErrorAdapterObservationInvalid:
-		return "The repository adapter returned an invalid observation.", false, true
+	case ErrorProfileObservationInvalid:
+		return "The repository profile observation was invalid.", false, true
 	default:
 		return "", false, false
 	}

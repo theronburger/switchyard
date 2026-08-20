@@ -108,7 +108,7 @@ func TestStartLateBindsExecutionPlanAfterAssignedPortsArePersisted(t *testing.T)
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_late", EnvironmentID: "env_late", RunID: "run_late",
 		Ports:  []portlease.Reservation{{Key: key, PreferredPorts: []int{7000}}},
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestStoppedEnvironmentCanRestartOnADifferentTarget(t *testing.T) {
 	}
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_switch", EnvironmentID: "env_switch", RunID: "run_new",
-		Intent: &PlanIntent{Adapter: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestStartCheckpointsAndCompletesFinitePreparationsBeforeOtherSideEffects(t 
 	}
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_prepare", EnvironmentID: "env_prepare", RunID: "run_prepare",
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +303,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		_, err = coordinator.Start(context.Background(), StartRequest{
 			OperationID: "op_prepare_failure", EnvironmentID: "env_prepare_failure",
 			RunID:  "run_prepare_failure",
-			Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+			Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 		})
 		if !errors.Is(err, failure) {
 			t.Fatalf("preparation failure: %v", err)
@@ -340,7 +340,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		_, err = coordinator.Start(context.Background(), StartRequest{
 			OperationID: "op_structured_failure", EnvironmentID: "env_structured_failure",
 			RunID:  "run_structured_failure",
-			Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"nonprofit-service"}},
+			Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"nonprofit-service"}},
 		})
 		if !errors.Is(err, failure) {
 			t.Fatalf("structured preparation failure: %v", err)
@@ -378,7 +378,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 			_, err := coordinator.Start(ctx, StartRequest{
 				OperationID: "op_prepare_cancel", EnvironmentID: "env_prepare_cancel",
 				RunID:  "run_prepare_cancel",
-				Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+				Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 			})
 			done <- err
 		}()
@@ -511,7 +511,7 @@ func TestStartRefusesHealthyProbeWhenOwnedProcessAlreadyExited(t *testing.T) {
 	}
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_false_healthy", EnvironmentID: "env_false_healthy", RunID: "run_false_healthy",
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if !errors.Is(err, ErrProcessNotRunning) {
 		t.Fatalf("start error: got %v, want %v", err, ErrProcessNotRunning)
@@ -593,7 +593,7 @@ func TestFailedStartDoesNotReleaseAPreexistingStableLease(t *testing.T) {
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_stable", EnvironmentID: "env_stable", RunID: "run_stable",
 		Ports:  []portlease.Reservation{{Key: key}},
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if !errors.Is(err, applyError) {
 		t.Fatalf("start error: got %v, want %v", err, applyError)
@@ -623,7 +623,7 @@ func TestCoordinatorSerializesOneEnvironmentAndRunsDifferentEnvironmentsConcurre
 		request := func(operationID string) StartRequest {
 			return StartRequest{
 				OperationID: operationID, EnvironmentID: "env_same", RunID: "run_same",
-				Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+				Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 			}
 		}
 		firstError := make(chan error, 1)
@@ -677,7 +677,7 @@ func TestCoordinatorSerializesOneEnvironmentAndRunsDifferentEnvironmentsConcurre
 				_, err := coordinator.Start(context.Background(), StartRequest{
 					OperationID: "op_" + environmentID, EnvironmentID: environmentID,
 					RunID:  "run_" + environmentID,
-					Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+					Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 				})
 				errorsSeen <- err
 			}(environmentID)
@@ -802,7 +802,7 @@ func TestRestartReconciliationRollsBackInterruptedStart(t *testing.T) {
 		ID: "op_restart", EnvironmentID: "env_restart", RunID: "run_restart",
 		Kind: OperationStart, State: domain.OperationRunning,
 		EnvironmentState: domain.EnvironmentStarting, Phase: PhaseLaunchingServices,
-		Intent: &PlanIntent{Adapter: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
 		Rollback: []RollbackEntry{
 			{Kind: RollbackPorts, Armed: true, Applied: true, PortKeys: []portlease.Key{key}, Leases: leases},
 			{Kind: RollbackProjection, Armed: true, Applied: true, Projection: &projection},

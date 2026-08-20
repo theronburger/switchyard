@@ -15,7 +15,7 @@ import (
 
 	"github.com/theronburger/switchyard/internal/apiclient"
 	"github.com/theronburger/switchyard/internal/cli"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/mcp"
 	"github.com/theronburger/switchyard/internal/state"
@@ -87,7 +87,7 @@ func newConnector(paths applicationPaths) apiclient.Connector {
 
 func writeVersion() int {
 	err := json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"schemaVersion": contractv1.SchemaVersion,
+		"schemaVersion": contractv2.SchemaVersion,
 		"version":       version,
 	})
 	if err != nil {
@@ -193,7 +193,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 			_ = runtime.CloseAndWait(waitContext)
 		}()
 	}
-	if _, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+	if _, err := store.FailInterruptedOperations(ctx, contractv2.ContractError{
 		Code:      "DAEMON_RESTARTED",
 		Message:   "The daemon restarted before the operation completed.",
 		Retryable: true,
@@ -273,8 +273,8 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	default:
 	}
 
-	descriptor := contractv1.RuntimeDescriptor{
-		SchemaVersion:    contractv1.SchemaVersion,
+	descriptor := contractv2.RuntimeDescriptor{
+		SchemaVersion:    contractv2.SchemaVersion,
 		Endpoint:         server.Endpoint(),
 		DaemonInstanceID: instanceID,
 		DaemonVersion:    version,
@@ -344,7 +344,7 @@ func removeOwnedRuntimeDescriptor(path string, instanceID string) {
 	if err != nil {
 		return
 	}
-	var descriptor contractv1.RuntimeDescriptor
+	var descriptor contractv2.RuntimeDescriptor
 	if json.Unmarshal(contents, &descriptor) != nil || descriptor.DaemonInstanceID != instanceID {
 		return
 	}
@@ -361,21 +361,21 @@ func publishDaemonSnapshot(
 ) error {
 	snapshot, err := store.ReadSnapshot(ctx)
 	if errors.Is(err, state.ErrNoSnapshot) {
-		snapshot = contractv1.StatusSnapshot{}
+		snapshot = contractv2.StatusSnapshot{}
 	} else if err != nil {
 		return err
 	}
-	snapshot.Daemon = contractv1.DaemonStatus{
+	snapshot.Daemon = contractv2.DaemonStatus{
 		InstanceID: instanceID,
 		Version:    version,
 		State:      daemonState,
 		StartedAt:  startedAt,
 	}
 	if snapshot.Repositories == nil {
-		snapshot.Repositories = []contractv1.Repository{}
+		snapshot.Repositories = []contractv2.Repository{}
 	}
 	if snapshot.Environments == nil {
-		snapshot.Environments = []contractv1.Environment{}
+		snapshot.Environments = []contractv2.Environment{}
 	}
 	operations, err := store.ListOperations(ctx)
 	if err != nil {
@@ -383,7 +383,7 @@ func publishDaemonSnapshot(
 	}
 	snapshot.Operations = operations
 	if snapshot.Alerts == nil {
-		snapshot.Alerts = []contractv1.Alert{}
+		snapshot.Alerts = []contractv2.Alert{}
 	}
 	snapshot = mergeRepositoryInventory(snapshot, discoveredRepositories)
 	_, err = store.CommitSnapshot(ctx, snapshot)

@@ -19,7 +19,7 @@ func TestGitReaderProducesGenericInventoryObservation(t *testing.T) {
 		return outputs[join(arguments)], nil
 	}}
 	observation := reader.ReadRepository(context.Background(), "/tmp/sample")
-	if len(observation.Errors) != 0 || observation.AdapterName != "sample" || observation.Remote != "example/sample" ||
+	if len(observation.Errors) != 0 || observation.ProfileKey != "sample" || observation.Remote != "example/sample" ||
 		len(observation.Worktrees) != 1 || !observation.Worktrees[0].IsPrimary {
 		t.Fatalf("observation: %+v", observation)
 	}

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	actioncontrol "github.com/theronburger/switchyard/internal/control/action"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/state"
@@ -38,10 +38,10 @@ func newFakeProfileActionResolver() *fakeProfileActionResolver {
 	}
 }
 
-func (resolver *fakeProfileActionResolver) ListActions(context.Context) (contractv1.ProfileActionList, error) {
-	list := contractv1.ProfileActionList{AcceptedDigest: resolver.acceptedDigest, Actions: []contractv1.ProfileAction{}}
+func (resolver *fakeProfileActionResolver) ListActions(context.Context) (contractv2.ProfileActionList, error) {
+	list := contractv2.ProfileActionList{AcceptedDigest: resolver.acceptedDigest, Actions: []contractv2.ProfileAction{}}
 	for _, definition := range resolver.definitions {
-		list.Actions = append(list.Actions, contractv1.ProfileAction{
+		list.Actions = append(list.Actions, contractv2.ProfileAction{
 			ID: definition.ID, RepositoryID: "repository_01", ProfileKey: "sample", ProfileDigest: resolver.acceptedDigest,
 			DisplayName: definition.DisplayName, Scope: definition.Scope, Risk: definition.Risk, Kind: definition.Kind,
 			Lifecycle: definition.Lifecycle, RequiresConfirmation: definition.RequiresConfirmation(),
@@ -50,13 +50,13 @@ func (resolver *fakeProfileActionResolver) ListActions(context.Context) (contrac
 	return list, nil
 }
 
-func (resolver *fakeProfileActionResolver) ResolveAction(_ context.Context, request contractv1.RunProfileActionRequest) (ProfileActionResolution, error) {
+func (resolver *fakeProfileActionResolver) ResolveAction(_ context.Context, request contractv2.RunProfileActionRequest) (ProfileActionResolution, error) {
 	if resolver.resolveErr != nil {
 		return ProfileActionResolution{}, resolver.resolveErr
 	}
 	definition, found := resolver.definitions[request.ActionID]
 	if !found || request.RepositoryID != "repository_01" {
-		return ProfileActionResolution{}, &ActionError{Status: http.StatusNotFound, Contract: contractv1.ContractError{Code: "ACTION_NOT_FOUND", Message: "missing"}}
+		return ProfileActionResolution{}, &ActionError{Status: http.StatusNotFound, Contract: contractv2.ContractError{Code: "ACTION_NOT_FOUND", Message: "missing"}}
 	}
 	return ProfileActionResolution{
 		Definition: definition, ProfileKey: "sample", ProfileDigest: resolver.acceptedDigest, AcceptedDigest: resolver.acceptedDigest,
@@ -94,41 +94,41 @@ func (runner *fakeProfileActionRunner) Run(_ context.Context, command actioncont
 }
 
 type fakeLifecycleActions struct {
-	starts   []contractv1.StartEnvironmentRequest
+	starts   []contractv2.StartEnvironmentRequest
 	stops    []string
-	prepares []contractv1.PrepareWorktreeRequest
+	prepares []contractv2.PrepareWorktreeRequest
 }
 
-func (actions *fakeLifecycleActions) StartEnvironment(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+func (actions *fakeLifecycleActions) StartEnvironment(_ context.Context, request contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 	actions.starts = append(actions.starts, request)
-	return contractv1.MutationReceipt{SchemaVersion: 1, RequestID: request.RequestID, OperationID: "operation_start", RunID: "run_01", AcceptedAt: time.Now(), EnvironmentID: "environment_01"}, nil
+	return contractv2.MutationReceipt{SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_start", RunID: "run_01", AcceptedAt: time.Now(), EnvironmentID: "environment_01"}, nil
 }
 
-func (actions *fakeLifecycleActions) StopEnvironment(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+func (actions *fakeLifecycleActions) StopEnvironment(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 	actions.stops = append(actions.stops, environmentID)
-	return contractv1.MutationReceipt{SchemaVersion: 1, RequestID: request.RequestID, OperationID: "operation_stop", AcceptedAt: time.Now(), EnvironmentID: environmentID}, nil
+	return contractv2.MutationReceipt{SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_stop", AcceptedAt: time.Now(), EnvironmentID: environmentID}, nil
 }
 
-func (actions *fakeLifecycleActions) PrepareWorktree(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+func (actions *fakeLifecycleActions) PrepareWorktree(_ context.Context, request contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error) {
 	actions.prepares = append(actions.prepares, request)
-	return contractv1.MutationReceipt{SchemaVersion: 1, RequestID: request.RequestID, OperationID: "operation_prepare", AcceptedAt: time.Now()}, nil
+	return contractv2.MutationReceipt{SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_prepare", AcceptedAt: time.Now()}, nil
 }
 
-func (*fakeLifecycleActions) CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error) {
-	return contractv1.MutationReceipt{}, errors.New("unexpected")
+func (*fakeLifecycleActions) CreateWorktree(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error) {
+	return contractv2.MutationReceipt{}, errors.New("unexpected")
 }
 
-func (*fakeLifecycleActions) AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error) {
-	return contractv1.MutationReceipt{}, errors.New("unexpected")
+func (*fakeLifecycleActions) AdoptWorktree(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error) {
+	return contractv2.MutationReceipt{}, errors.New("unexpected")
 }
 
-func (*fakeLifecycleActions) ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
-	return contractv1.MutationReceipt{}, errors.New("unexpected")
+func (*fakeLifecycleActions) ArchiveWorktree(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error) {
+	return contractv2.MutationReceipt{}, errors.New("unexpected")
 }
 
-func actionRequest(actionID string) contractv1.RunProfileActionRequest {
-	return contractv1.RunProfileActionRequest{
-		MutationRequest: contractv1.MutationRequest{SchemaVersion: contractv1.SchemaVersion, RequestID: "request_01", IdempotencyKey: "key_" + actionID},
+func actionRequest(actionID string) contractv2.RunProfileActionRequest {
+	return contractv2.RunProfileActionRequest{
+		MutationRequest: contractv2.MutationRequest{SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "key_" + actionID},
 		RepositoryID:    "repository_01", ActionID: actionID,
 	}
 }
@@ -222,22 +222,22 @@ func TestProfileActionServiceRejectsScopeMismatchAndMissingConfirmation(t *testi
 	defer closeService(t, service)
 	cases := []struct {
 		name   string
-		mutate func(*contractv1.RunProfileActionRequest)
+		mutate func(*contractv2.RunProfileActionRequest)
 		status int
 		code   string
 	}{
-		{"worktree action without worktree", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "tidy" }, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
-		{"worktree action aimed at environment", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "tidy"; r.EnvironmentID = "environment_01" }, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
-		{"service action without service", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "probe"; r.EnvironmentID = "environment_01" }, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
-		{"repository action with worktree", func(r *contractv1.RunProfileActionRequest) {
+		{"worktree action without worktree", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "tidy" }, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
+		{"worktree action aimed at environment", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "tidy"; r.EnvironmentID = "environment_01" }, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
+		{"service action without service", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "probe"; r.EnvironmentID = "environment_01" }, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
+		{"repository action with worktree", func(r *contractv2.RunProfileActionRequest) {
 			r.ActionID = "push"
 			r.WorktreeID = "worktree_01"
 			r.ConfirmedActionID = "push"
 		}, http.StatusBadRequest, "ACTION_SCOPE_MISMATCH"},
-		{"remote-write without confirmation", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "push" }, http.StatusConflict, "ACTION_CONFIRMATION_REQUIRED"},
-		{"unknown action", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "nope" }, http.StatusNotFound, "ACTION_NOT_FOUND"},
-		{"cleanup lifecycle needs review", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "sweep" }, http.StatusConflict, "ACTION_REQUIRES_REVIEW"},
-		{"lifecycle without dispatcher", func(r *contractv1.RunProfileActionRequest) { r.ActionID = "warm"; r.WorktreeID = "worktree_01" }, http.StatusConflict, "ACTION_LIFECYCLE_UNSUPPORTED"},
+		{"remote-write without confirmation", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "push" }, http.StatusConflict, "ACTION_CONFIRMATION_REQUIRED"},
+		{"unknown action", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "nope" }, http.StatusNotFound, "ACTION_NOT_FOUND"},
+		{"cleanup lifecycle needs review", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "sweep" }, http.StatusConflict, "ACTION_REQUIRES_REVIEW"},
+		{"lifecycle without dispatcher", func(r *contractv2.RunProfileActionRequest) { r.ActionID = "warm"; r.WorktreeID = "worktree_01" }, http.StatusConflict, "ACTION_LIFECYCLE_UNSUPPORTED"},
 	}
 	for _, c := range cases {
 		request := actionRequest("tidy")
@@ -261,7 +261,7 @@ func TestProfileActionServiceRejectsScopeMismatchAndMissingConfirmation(t *testi
 func TestProfileActionServiceFailsClosedWhenConfigurationIsNotAccepted(t *testing.T) {
 	store := newFakeActionOperationStore()
 	resolver := newFakeProfileActionResolver()
-	resolver.resolveErr = &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{Code: "CONFIGURATION_NOT_ACCEPTED", Message: "accept first"}}
+	resolver.resolveErr = &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{Code: "CONFIGURATION_NOT_ACCEPTED", Message: "accept first"}}
 	runner := &fakeProfileActionRunner{}
 	service := newProfileActionService(t, store, resolver, runner, nil)
 	defer closeService(t, service)
@@ -406,7 +406,7 @@ func TestProfileActionServiceListsAcceptedActions(t *testing.T) {
 	service := newProfileActionService(t, newFakeActionOperationStore(), newFakeProfileActionResolver(), &fakeProfileActionRunner{}, nil)
 	defer closeService(t, service)
 	list, err := service.ListActions(context.Background())
-	if err != nil || list.SchemaVersion != contractv1.SchemaVersion || len(list.Actions) != 7 {
+	if err != nil || list.SchemaVersion != contractv2.SchemaVersion || len(list.Actions) != 7 {
 		t.Fatalf("list: %+v %v", list, err)
 	}
 	if err := list.Validate(); err != nil {

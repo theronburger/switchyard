@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
@@ -244,23 +244,23 @@ func TestEnvironmentJournalPublishIsAtomicSingleRevisionAndSurvivesReopen(t *tes
 
 func TestEnvironmentJournalRefreshesOnlyValidatedPublicObservationChangesAtomically(t *testing.T) {
 	ctx := context.Background()
-	projector := func(current *contractv1.Environment, result environmentcontrol.EnvironmentResult) (contractv1.Environment, error) {
+	projector := func(current *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
 		projected, err := defaultProjector(current, result)
 		if err != nil {
-			return contractv1.Environment{}, err
+			return contractv2.Environment{}, err
 		}
-		projected.Services = []contractv1.Service{}
-		projected.PortLeases = []contractv1.PortLease{}
-		projected.InfrastructureLeases = []contractv1.InfrastructureLease{}
+		projected.Services = []contractv2.Service{}
+		projected.PortLeases = []contractv2.PortLease{}
+		projected.InfrastructureLeases = []contractv2.InfrastructureLease{}
 		projected.URLs = map[string]string{}
 		projected.AttentionAlertIDs = []string{}
 		if len(result.Services) != 0 {
 			service := result.Services[0]
 			projected.Health = service.Health.Health
-			projected.Services = append(projected.Services, contractv1.Service{
+			projected.Services = append(projected.Services, contractv2.Service{
 				ID: service.ID, DisplayName: service.ID, Kind: "native", DesiredState: "running",
 				ObservedState: service.Observation.State, Health: service.Health.Health,
-				PortLeaseIDs: []string{}, Run: &contractv1.ServiceRun{
+				PortLeaseIDs: []string{}, Run: &contractv2.ServiceRun{
 					ID: result.RunID, StartedAt: service.Process.StartedAt,
 					ProcessCount: service.Observation.ProcessCount,
 					CPUPercent:   service.Observation.CPUPercent, MemoryBytes: service.Observation.MemoryBytes,
@@ -340,8 +340,8 @@ func TestEnvironmentJournalRefreshesOnlyValidatedPublicObservationChangesAtomica
 
 func TestEnvironmentJournalProjectionFailureRollsBackEverything(t *testing.T) {
 	t.Parallel()
-	store, journal, record := preparedRunningJournal(t, func(*contractv1.Environment, environmentcontrol.EnvironmentResult) (contractv1.Environment, error) {
-		return contractv1.Environment{}, errors.New("private projector detail")
+	store, journal, record := preparedRunningJournal(t, func(*contractv2.Environment, environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
+		return contractv2.Environment{}, errors.New("private projector detail")
 	})
 	before := snapshotRevision(t, store)
 	terminal := record
@@ -370,8 +370,8 @@ func TestEnvironmentJournalProjectionFailureRollsBackEverything(t *testing.T) {
 
 func TestEnvironmentJournalInvalidProjectionRollsBackStagedWrites(t *testing.T) {
 	t.Parallel()
-	store, journal, record := preparedRunningJournal(t, func(_ *contractv1.Environment, result environmentcontrol.EnvironmentResult) (contractv1.Environment, error) {
-		return contractv1.Environment{ID: result.EnvironmentID, RepositoryID: "missing", WorktreeID: "missing"}, nil
+	store, journal, record := preparedRunningJournal(t, func(_ *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
+		return contractv2.Environment{ID: result.EnvironmentID, RepositoryID: "missing", WorktreeID: "missing"}, nil
 	})
 	before := snapshotRevision(t, store)
 	terminal := record
@@ -682,7 +682,7 @@ func TestGenericInterruptedRecoveryLeavesEnvironmentJournalOperationsRunning(t *
 	store, journal, environmentRecord := preparedRunningJournal(t, defaultProjector)
 	createPublicEnvironmentOperation(t, store, "operation_generic", "env_generic", environmentcontrol.OperationStart)
 	before := snapshotRevision(t, store)
-	interrupted, err := store.FailInterruptedOperations(context.Background(), contractv1.ContractError{
+	interrupted, err := store.FailInterruptedOperations(context.Background(), contractv2.ContractError{
 		Code: "DAEMON_RESTARTED", Message: "The daemon restarted.", Retryable: true,
 	})
 	if err != nil {
@@ -740,8 +740,8 @@ func newTestEnvironmentJournal(t *testing.T, store *Store, projector Environment
 func seedEnvironmentJournalSnapshot(t *testing.T, store *Store) {
 	t.Helper()
 	snapshot := validSnapshot()
-	snapshot.Repositories = []contractv1.Repository{{
-		ID: "repo_01", DisplayName: "configured repository", Worktrees: []contractv1.Worktree{{ID: "worktree_01"}},
+	snapshot.Repositories = []contractv2.Repository{{
+		ID: "repo_01", DisplayName: "configured repository", Worktrees: []contractv2.Worktree{{ID: "worktree_01"}},
 	}}
 	if _, err := store.CommitSnapshot(context.Background(), snapshot); err != nil {
 		t.Fatal(err)
@@ -794,8 +794,8 @@ func successfulEnvironmentResult(environmentID string) environmentcontrol.Enviro
 	}
 }
 
-func defaultProjector(current *contractv1.Environment, result environmentcontrol.EnvironmentResult) (contractv1.Environment, error) {
-	projected := contractv1.Environment{
+func defaultProjector(current *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
+	projected := contractv2.Environment{
 		ID: result.EnvironmentID, RepositoryID: "repo_01", WorktreeID: "worktree_01", DisplayName: result.EnvironmentID,
 		DesiredState: string(result.State), ObservedState: string(result.State), Health: "unknown",
 	}

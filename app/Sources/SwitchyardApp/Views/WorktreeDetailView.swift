@@ -277,7 +277,7 @@ struct WorktreeDetailView: View {
                 KeyValueRow(key: "Name", value: repository.displayName)
                 KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true, copyable: true)
                 KeyValueRow(key: "Remote", value: repository.remote, monospaced: true, copyable: true)
-                KeyValueRow(key: "Profile key", value: repository.adapter, monospaced: true)
+                KeyValueRow(key: "Profile key", value: repository.profileKey, monospaced: true)
                 KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true, copyable: true)
                 HStack {
                     Text("Configuration").foregroundStyle(.secondary)

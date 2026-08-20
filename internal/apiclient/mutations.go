@@ -9,25 +9,25 @@ import (
 	"net/http"
 	"strings"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const maximumMutationResponseBytes = 64 * 1024
 
 type mutationErrorResponse struct {
 	SchemaVersion int                      `json:"schemaVersion"`
-	Error         contractv1.ContractError `json:"error"`
+	Error         contractv2.ContractError `json:"error"`
 }
 
 func (c *Client) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if err := request.Validate(); err != nil {
-		return contractv1.MutationReceipt{}, newCodedError(ErrorActionRequestInvalid, err)
+		return contractv2.MutationReceipt{}, newCodedError(ErrorActionRequestInvalid, err)
 	}
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return c.postMutation(ctx, "/v1/environments", request)
 }
@@ -35,76 +35,76 @@ func (c *Client) StartEnvironment(
 func (c *Client) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if !safeMutationPathID(environmentID) || request.Validate() != nil {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorActionRequestInvalid,
 			fmt.Errorf("environment stop request is invalid"),
 		)
 	}
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return c.postMutation(ctx, "/v1/environments/"+environmentID+"/stop", request)
 }
 
 func (c *Client) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if request.Validate() != nil {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorActionRequestInvalid, fmt.Errorf("worktree creation request is invalid"),
 		)
 	}
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return c.postMutation(ctx, "/v1/worktrees", request)
 }
 
 func (c *Client) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if !safeMutationPathID(request.WorktreeID) || request.Validate() != nil {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorActionRequestInvalid, fmt.Errorf("worktree archive request is invalid"),
 		)
 	}
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/archive", request)
 }
 
 func (c *Client) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if !safeMutationPathID(request.WorktreeID) || request.Validate() != nil {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorActionRequestInvalid, fmt.Errorf("worktree adoption request is invalid"),
 		)
 	}
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/adopt", request)
 }
 
 func (c *Client) PrepareWorktree(
 	ctx context.Context,
-	request contractv1.PrepareWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.PrepareWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if !safeMutationPathID(request.WorktreeID) || request.Validate() != nil {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorActionRequestInvalid, fmt.Errorf("worktree preparation request is invalid"),
 		)
 	}
 	if _, err := c.Handshake(ctx); err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return c.postMutation(ctx, "/v1/worktrees/"+request.WorktreeID+"/prepare", request)
 }
@@ -113,16 +113,16 @@ func (c *Client) postMutation(
 	ctx context.Context,
 	path string,
 	mutation any,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	contents, err := json.Marshal(mutation)
 	if err != nil {
-		return contractv1.MutationReceipt{}, newCodedError(ErrorActionRequestInvalid, err)
+		return contractv2.MutationReceipt{}, newCodedError(ErrorActionRequestInvalid, err)
 	}
 	requestURL := *c.connection.endpoint
 	requestURL.Path = path
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(contents))
 	if err != nil {
-		return contractv1.MutationReceipt{}, newCodedError(ErrorDaemonUnavailable, err)
+		return contractv2.MutationReceipt{}, newCodedError(ErrorDaemonUnavailable, err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
@@ -130,27 +130,27 @@ func (c *Client) postMutation(
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, newCodedError(ErrorDaemonUnavailable, err)
+		return contractv2.MutationReceipt{}, newCodedError(ErrorDaemonUnavailable, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if !secureResponseHeaders(response) {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorDaemonResponseInvalid,
 			fmt.Errorf("daemon response is missing required security headers"),
 		)
 	}
 	responseContents, err := io.ReadAll(io.LimitReader(response.Body, maximumMutationResponseBytes+1))
 	if err != nil || len(responseContents) > maximumMutationResponseBytes {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorDaemonResponseInvalid,
 			fmt.Errorf("daemon mutation response is invalid"),
 		)
 	}
 
 	if response.StatusCode == http.StatusAccepted {
-		var receipt contractv1.MutationReceipt
+		var receipt contractv2.MutationReceipt
 		if err := decodeSingleJSON(responseContents, &receipt); err != nil || receipt.Validate() != nil {
-			return contractv1.MutationReceipt{}, newCodedError(
+			return contractv2.MutationReceipt{}, newCodedError(
 				ErrorDaemonResponseInvalid,
 				fmt.Errorf("daemon mutation receipt is invalid"),
 			)
@@ -158,7 +158,7 @@ func (c *Client) postMutation(
 		return receipt, nil
 	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorDaemonUnauthorized,
 			fmt.Errorf("daemon rejected authentication"),
 		)
@@ -166,14 +166,14 @@ func (c *Client) postMutation(
 
 	var failure mutationErrorResponse
 	if err := decodeSingleJSON(responseContents, &failure); err != nil ||
-		failure.SchemaVersion != contractv1.SchemaVersion ||
+		failure.SchemaVersion != contractv2.SchemaVersion ||
 		!safeErrorCode(failure.Error.Code) || failure.Error.Message == "" {
-		return contractv1.MutationReceipt{}, newCodedError(
+		return contractv2.MutationReceipt{}, newCodedError(
 			ErrorDaemonResponseInvalid,
 			fmt.Errorf("daemon mutation error is invalid"),
 		)
 	}
-	return contractv1.MutationReceipt{}, newContractError(
+	return contractv2.MutationReceipt{}, newContractError(
 		failure.Error,
 		fmt.Errorf("daemon rejected environment mutation"),
 	)
@@ -181,11 +181,11 @@ func (c *Client) postMutation(
 
 func (c Connector) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return client.StartEnvironment(ctx, request)
 }
@@ -193,55 +193,55 @@ func (c Connector) StartEnvironment(
 func (c Connector) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return client.StopEnvironment(ctx, environmentID, request)
 }
 
 func (c Connector) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return client.CreateWorktree(ctx, request)
 }
 
 func (c Connector) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return client.ArchiveWorktree(ctx, request)
 }
 
 func (c Connector) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return client.AdoptWorktree(ctx, request)
 }
 
 func (c Connector) PrepareWorktree(
 	ctx context.Context,
-	request contractv1.PrepareWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.PrepareWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	client, err := c.Client()
 	if err != nil {
-		return contractv1.MutationReceipt{}, err
+		return contractv2.MutationReceipt{}, err
 	}
 	return client.PrepareWorktree(ctx, request)
 }

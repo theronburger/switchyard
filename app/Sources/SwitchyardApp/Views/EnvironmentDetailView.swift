@@ -341,7 +341,7 @@ struct EnvironmentDetailView: View {
                         KeyValueRow(key: "Name", value: repository.displayName)
                         KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true, copyable: true)
                         KeyValueRow(key: "Remote", value: repository.remote, monospaced: true, copyable: true)
-                        KeyValueRow(key: "Adapter", value: repository.adapter, monospaced: true)
+                        KeyValueRow(key: "Profile key", value: repository.profileKey, monospaced: true)
                         if let runtime = repository.runtime {
                             KeyValueRow(key: "Default target", value: runtime.defaultTargetId)
                             KeyValueRow(key: "Runtime catalog", value: "\(runtime.targets.count) targets · \(runtime.services.count) services")

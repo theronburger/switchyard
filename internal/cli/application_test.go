@@ -10,64 +10,64 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/control/statusview"
 )
 
 type stubBackend struct {
-	snapshot   contractv1.StatusSnapshot
+	snapshot   contractv2.StatusSnapshot
 	status     error
-	readStatus func() (contractv1.StatusSnapshot, error)
+	readStatus func() (contractv2.StatusSnapshot, error)
 	doctor     apiclient.DoctorReport
-	start      func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	stop       func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
-	create     func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	adopt      func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	archive    func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
-	prepare    func(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
+	start      func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error)
+	stop       func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error)
+	create     func(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error)
+	adopt      func(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error)
+	archive    func(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error)
+	prepare    func(context.Context, contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error)
 }
 
 func (b stubBackend) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.create == nil {
-		return contractv1.MutationReceipt{}, errors.New("create is not configured")
+		return contractv2.MutationReceipt{}, errors.New("create is not configured")
 	}
 	return b.create(ctx, request)
 }
 
 func (b stubBackend) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.archive == nil {
-		return contractv1.MutationReceipt{}, errors.New("archive is not configured")
+		return contractv2.MutationReceipt{}, errors.New("archive is not configured")
 	}
 	return b.archive(ctx, request)
 }
 
 func (b stubBackend) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.adopt == nil {
-		return contractv1.MutationReceipt{}, errors.New("adopt is not configured")
+		return contractv2.MutationReceipt{}, errors.New("adopt is not configured")
 	}
 	return b.adopt(ctx, request)
 }
 
 func (b stubBackend) PrepareWorktree(
 	ctx context.Context,
-	request contractv1.PrepareWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.PrepareWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.prepare == nil {
-		return contractv1.MutationReceipt{}, errors.New("prepare is not configured")
+		return contractv2.MutationReceipt{}, errors.New("prepare is not configured")
 	}
 	return b.prepare(ctx, request)
 }
 
-func (b stubBackend) Status(context.Context) (contractv1.StatusSnapshot, error) {
+func (b stubBackend) Status(context.Context) (contractv2.StatusSnapshot, error) {
 	if b.readStatus != nil {
 		return b.readStatus()
 	}
@@ -80,10 +80,10 @@ func (b stubBackend) Doctor(context.Context) apiclient.DoctorReport {
 
 func (b stubBackend) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.start == nil {
-		return contractv1.MutationReceipt{}, errors.New("start is not configured")
+		return contractv2.MutationReceipt{}, errors.New("start is not configured")
 	}
 	return b.start(ctx, request)
 }
@@ -91,37 +91,37 @@ func (b stubBackend) StartEnvironment(
 func (b stubBackend) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.stop == nil {
-		return contractv1.MutationReceipt{}, errors.New("stop is not configured")
+		return contractv2.MutationReceipt{}, errors.New("stop is not configured")
 	}
 	return b.stop(ctx, environmentID, request)
 }
 
 func TestApplicationStatusJSONIsTheStableContractSnapshot(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	snapshot := contractv1.StatusSnapshot{
-		SchemaVersion:    contractv1.SchemaVersion,
+	snapshot := contractv2.StatusSnapshot{
+		SchemaVersion:    contractv2.SchemaVersion,
 		SnapshotRevision: 42,
 		GeneratedAt:      now,
-		Daemon: contractv1.DaemonStatus{
+		Daemon: contractv2.DaemonStatus{
 			InstanceID: "daemon_test",
 			Version:    "0.1.0-dev",
 			State:      "ready",
 			StartedAt:  now,
 		},
-		Repositories: []contractv1.Repository{},
-		Environments: []contractv1.Environment{},
-		Operations:   []contractv1.Operation{},
-		Alerts:       []contractv1.Alert{},
+		Repositories: []contractv2.Repository{},
+		Environments: []contractv2.Environment{},
+		Operations:   []contractv2.Operation{},
+		Alerts:       []contractv2.Alert{},
 	}
 	var output bytes.Buffer
 	application := Application{Backend: stubBackend{snapshot: snapshot}, Stdout: &output}
 	if code := application.Run(context.Background(), []string{"status", "--all", "--json"}); code != ExitSuccess {
 		t.Fatalf("exit code: got %d", code)
 	}
-	var decoded contractv1.StatusSnapshot
+	var decoded contractv2.StatusSnapshot
 	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestApplicationStatusJSONReturnsWorktreeContextAndAllReturnsInventory(t *te
 	if code := application.Run(context.Background(), []string{"status", "--all", "--json"}); code != ExitSuccess {
 		t.Fatalf("inventory exit code: %d", code)
 	}
-	var all contractv1.StatusSnapshot
+	var all contractv2.StatusSnapshot
 	if err := json.Unmarshal(inventory.Bytes(), &all); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestApplicationStatusAcceptsExactBranchAndFallsBackOutsideKnownTrees(t *tes
 func TestApplicationDoctorJSONUsesHealthForExitStatus(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	report := apiclient.DoctorReport{
-		SchemaVersion: 1,
+		SchemaVersion: contractv2.SchemaVersion,
 		GeneratedAt:   now,
 		Healthy:       false,
 		Checks: []apiclient.DoctorCheck{{
@@ -274,7 +274,7 @@ func TestApplicationRejectsUnknownArgumentsWithoutEchoingThem(t *testing.T) {
 func TestApplicationStartBuildsIdempotentMutation(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 14, 15, 30, 0, 0, time.UTC)
 	backend := stubBackend{
-		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(_ context.Context, request contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.RequestID != "request_test" ||
 				request.IdempotencyKey != "retry-key" || request.WorktreeID != "worktree_01" ||
 				request.TargetID != "demo" || request.ConfirmedTargetID != "demo" ||
@@ -297,7 +297,7 @@ func TestApplicationStartBuildsIdempotentMutation(t *testing.T) {
 	if code != ExitSuccess {
 		t.Fatalf("exit code: got %d output=%s", code, output.String())
 	}
-	var receipt contractv1.MutationReceipt
+	var receipt contractv2.MutationReceipt
 	if err := json.Unmarshal(output.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestApplicationStartBuildsIdempotentMutation(t *testing.T) {
 func TestApplicationStartDotResolvesTheContainingWorktree(t *testing.T) {
 	backend := stubBackend{
 		snapshot: cliStatusSnapshot(),
-		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(_ context.Context, request contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if request.WorktreeID != "worktree_feature" || request.TargetID != "testing" ||
 				len(request.ServiceIDs) != 2 || request.ServiceIDs[0] != "app" || request.ServiceIDs[1] != "api" {
 				t.Fatalf("start request: %+v", request)
@@ -334,12 +334,12 @@ func TestApplicationStartDotWaitRetriesDiscoveryAndDaemonRestart(t *testing.T) {
 	statusCalls := 0
 	startCalls := 0
 	backend := stubBackend{
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			statusCalls++
 			if statusCalls == 1 {
 				discoveryPending := snapshot
-				discoveryPending.Repositories = []contractv1.Repository{snapshot.Repositories[0]}
-				discoveryPending.Repositories[0].Worktrees = []contractv1.Worktree{snapshot.Repositories[0].Worktrees[0]}
+				discoveryPending.Repositories = []contractv2.Repository{snapshot.Repositories[0]}
+				discoveryPending.Repositories[0].Worktrees = []contractv2.Worktree{snapshot.Repositories[0].Worktrees[0]}
 				return discoveryPending, nil
 			}
 			if statusCalls == 2 {
@@ -349,20 +349,20 @@ func TestApplicationStartDotWaitRetriesDiscoveryAndDaemonRestart(t *testing.T) {
 			completed.Environments[1].DesiredState = "running"
 			completed.Environments[1].ObservedState = "running"
 			completed.Environments[1].Health = "healthy"
-			completed.Environments[1].Services = []contractv1.Service{
-				{ID: "app", DesiredState: "running", ObservedState: "running", Health: "healthy", Run: &contractv1.ServiceRun{ID: "run_start"}},
-				{ID: "api", DesiredState: "running", ObservedState: "running", Health: "healthy", Run: &contractv1.ServiceRun{ID: "run_start"}},
+			completed.Environments[1].Services = []contractv2.Service{
+				{ID: "app", DesiredState: "running", ObservedState: "running", Health: "healthy", Run: &contractv2.ServiceRun{ID: "run_start"}},
+				{ID: "api", DesiredState: "running", ObservedState: "running", Health: "healthy", Run: &contractv2.ServiceRun{ID: "run_start"}},
 			}
-			completed.Operations = []contractv1.Operation{{ID: "operation_start", State: "succeeded"}}
+			completed.Operations = []contractv2.Operation{{ID: "operation_start", State: "succeeded"}}
 			return completed, nil
 		},
-		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(_ context.Context, request contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			startCalls++
 			if startCalls == 1 {
-				return contractv1.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+				return contractv2.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_start",
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_start",
 				RunID: "run_start", AcceptedAt: time.Now(), EnvironmentID: "environment_feature",
 			}, nil
 		},
@@ -384,26 +384,26 @@ func TestApplicationPrepareDotHydratesCurrentWorktreeAndWaitsForReadiness(t *tes
 	snapshot := cliStatusSnapshot()
 	statusCalls := 0
 	backend := stubBackend{
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			statusCalls++
 			if statusCalls == 1 {
 				discoveryPending := snapshot
-				discoveryPending.Repositories = []contractv1.Repository{snapshot.Repositories[0]}
-				discoveryPending.Repositories[0].Worktrees = []contractv1.Worktree{snapshot.Repositories[0].Worktrees[0]}
+				discoveryPending.Repositories = []contractv2.Repository{snapshot.Repositories[0]}
+				discoveryPending.Repositories[0].Worktrees = []contractv2.Worktree{snapshot.Repositories[0].Worktrees[0]}
 				return discoveryPending, nil
 			}
 			if statusCalls == 2 {
 				return snapshot, nil
 			}
 			completed := snapshot
-			completed.Repositories[0].Worktrees[1].Workspace = &contractv1.WorkspaceStatus{
+			completed.Repositories[0].Worktrees[1].Workspace = &contractv2.WorkspaceStatus{
 				Ownership: "adopted", State: "ready", Fingerprint: "fingerprint_01", PreparedAt: time.Now(),
-				Toolchains: []contractv1.WorkspaceToolchain{},
+				Toolchains: []contractv2.WorkspaceToolchain{},
 			}
-			completed.Operations = []contractv1.Operation{{ID: "operation_01", Kind: "workspace.prepare", State: "succeeded"}}
+			completed.Operations = []contractv2.Operation{{ID: "operation_01", Kind: "workspace.prepare", State: "succeeded"}}
 			return completed, nil
 		},
-		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+		prepare: func(_ context.Context, request contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.WorktreeID != "worktree_feature" ||
 				request.IdempotencyKey != "cli:request_prepare" {
 				t.Fatalf("prepare request: %+v", request)
@@ -429,20 +429,20 @@ func TestApplicationPrepareWaitRetriesAcrossDaemonInventoryRestart(t *testing.T)
 	prepareCalls := 0
 	backend := stubBackend{
 		snapshot: snapshot,
-		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+		prepare: func(_ context.Context, request contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error) {
 			prepareCalls++
 			if prepareCalls == 1 {
-				return contractv1.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+				return contractv2.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
 			}
 			return cliTestReceipt(request.RequestID, "", time.Now()), nil
 		},
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			ready := snapshot
-			ready.Repositories[0].Worktrees[1].Workspace = &contractv1.WorkspaceStatus{
+			ready.Repositories[0].Worktrees[1].Workspace = &contractv2.WorkspaceStatus{
 				Ownership: "adopted", State: "ready", Fingerprint: "fingerprint_01", PreparedAt: time.Now(),
-				Toolchains: []contractv1.WorkspaceToolchain{},
+				Toolchains: []contractv2.WorkspaceToolchain{},
 			}
-			ready.Operations = []contractv1.Operation{{ID: "operation_01", State: "succeeded"}}
+			ready.Operations = []contractv2.Operation{{ID: "operation_01", State: "succeeded"}}
 			return ready, nil
 		},
 	}
@@ -466,36 +466,36 @@ func TestApplicationPrepareWaitResubmitsAfterInterruptedOperation(t *testing.T) 
 	requestIDs := []string{"request_prepare_1", "request_prepare_2"}
 	requestIndex := 0
 	backend := stubBackend{
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			statusCalls++
 			if statusCalls == 1 {
 				return snapshot, nil
 			}
 			observed := snapshot
 			if statusCalls == 2 {
-				observed.Operations = []contractv1.Operation{{
+				observed.Operations = []contractv2.Operation{{
 					ID: "operation_prepare_1", State: "failed",
-					Error: &contractv1.ContractError{
+					Error: &contractv2.ContractError{
 						Code: "DAEMON_RESTARTED", Message: "The daemon restarted before the operation completed.", Retryable: true,
 					},
 				}}
 				return observed, nil
 			}
-			observed.Repositories[0].Worktrees[1].Workspace = &contractv1.WorkspaceStatus{
+			observed.Repositories[0].Worktrees[1].Workspace = &contractv2.WorkspaceStatus{
 				Ownership: "adopted", State: "ready", Fingerprint: "fingerprint_01", PreparedAt: time.Now(),
-				Toolchains: []contractv1.WorkspaceToolchain{},
+				Toolchains: []contractv2.WorkspaceToolchain{},
 			}
-			observed.Operations = []contractv1.Operation{{ID: "operation_prepare_2", State: "succeeded"}}
+			observed.Operations = []contractv2.Operation{{ID: "operation_prepare_2", State: "succeeded"}}
 			return observed, nil
 		},
-		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+		prepare: func(_ context.Context, request contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error) {
 			prepareCalls++
 			expectedRequestID := requestIDs[prepareCalls-1]
 			if request.RequestID != expectedRequestID || request.IdempotencyKey != "cli:"+expectedRequestID {
 				t.Fatalf("prepare request: %+v", request)
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_prepare_" + string(rune('0'+prepareCalls)), AcceptedAt: time.Now(),
 			}, nil
 		},
@@ -521,23 +521,23 @@ func TestApplicationPrepareWaitEmitsStructuredFailure(t *testing.T) {
 	snapshot := cliStatusSnapshot()
 	statusCalls := 0
 	backend := stubBackend{
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			statusCalls++
 			if statusCalls == 1 {
 				return snapshot, nil
 			}
 			failed := snapshot
-			failed.Operations = []contractv1.Operation{{
-				ID: "operation_prepare", State: "failed", Error: &contractv1.ContractError{
+			failed.Operations = []contractv2.Operation{{
+				ID: "operation_prepare", State: "failed", Error: &contractv2.ContractError{
 					Code: "WORKSPACE_NOT_READY", Message: "The workspace could not be verified.",
 					Retryable: true, NextAction: "inspect_workspace_diagnostics",
 				},
 			}}
 			return failed, nil
 		},
-		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+		prepare: func(_ context.Context, request contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error) {
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_prepare", AcceptedAt: time.Now(),
 			}, nil
 		},
@@ -566,7 +566,7 @@ func TestApplicationPrepareWaitEmitsStructuredFailure(t *testing.T) {
 func TestApplicationStopUsesGeneratedIdempotencyKey(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 14, 15, 30, 0, 0, time.UTC)
 	backend := stubBackend{
-		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if environmentID != "environment_01" || request.Validate() != nil ||
 				request.RequestID != "request_generated" || request.IdempotencyKey != "cli:request_generated" {
 				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
@@ -590,10 +590,10 @@ func TestApplicationStopUsesGeneratedIdempotencyKey(t *testing.T) {
 func TestApplicationStopDotWaitsForOwnedResourcesToDisappear(t *testing.T) {
 	snapshot := cliStatusSnapshot()
 	snapshot.Environments[1].Revision = 23
-	snapshot.Environments[1].PortLeases = []contractv1.PortLease{{ID: "port_feature"}}
+	snapshot.Environments[1].PortLeases = []contractv2.PortLease{{ID: "port_feature"}}
 	statusCalls := 0
 	backend := stubBackend{
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			statusCalls++
 			if statusCalls == 1 {
 				return snapshot, nil
@@ -601,14 +601,14 @@ func TestApplicationStopDotWaitsForOwnedResourcesToDisappear(t *testing.T) {
 			completed := snapshot
 			completed.Environments[1].DesiredState = "stopped"
 			completed.Environments[1].ObservedState = "stopped"
-			completed.Environments[1].PortLeases = []contractv1.PortLease{}
-			completed.Environments[1].InfrastructureLeases = []contractv1.InfrastructureLease{}
-			completed.Operations = []contractv1.Operation{{
+			completed.Environments[1].PortLeases = []contractv2.PortLease{}
+			completed.Environments[1].InfrastructureLeases = []contractv2.InfrastructureLease{}
+			completed.Operations = []contractv2.Operation{{
 				ID: "operation_01", EnvironmentID: "environment_feature", State: "succeeded",
 			}}
 			return completed, nil
 		},
-		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if environmentID != "environment_feature" || request.ExpectedEnvironmentRevision != nil {
 				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
 			}
@@ -633,10 +633,10 @@ func TestApplicationStopDotWaitRetriesDiscoveryAndSubmissionAcrossDaemonRestart(
 	statusCalls := 0
 	stopCalls := 0
 	backend := stubBackend{
-		readStatus: func() (contractv1.StatusSnapshot, error) {
+		readStatus: func() (contractv2.StatusSnapshot, error) {
 			statusCalls++
 			if statusCalls == 1 {
-				return contractv1.StatusSnapshot{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+				return contractv2.StatusSnapshot{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
 			}
 			if statusCalls == 2 {
 				return snapshot, nil
@@ -644,22 +644,22 @@ func TestApplicationStopDotWaitRetriesDiscoveryAndSubmissionAcrossDaemonRestart(
 			completed := snapshot
 			completed.Environments[1].DesiredState = "stopped"
 			completed.Environments[1].ObservedState = "stopped"
-			completed.Environments[1].PortLeases = []contractv1.PortLease{}
-			completed.Environments[1].InfrastructureLeases = []contractv1.InfrastructureLease{}
-			completed.Operations = []contractv1.Operation{{ID: "operation_stop", State: "succeeded"}}
+			completed.Environments[1].PortLeases = []contractv2.PortLease{}
+			completed.Environments[1].InfrastructureLeases = []contractv2.InfrastructureLease{}
+			completed.Operations = []contractv2.Operation{{ID: "operation_stop", State: "succeeded"}}
 			return completed, nil
 		},
-		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			stopCalls++
 			if environmentID != "environment_feature" || request.RequestID != "request_cleanup" ||
 				request.IdempotencyKey != "cli:request_cleanup" {
 				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
 			}
 			if stopCalls == 1 {
-				return contractv1.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
+				return contractv2.MutationReceipt{}, &apiclient.CodedError{Code: apiclient.ErrorDaemonUnavailable}
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_stop", EnvironmentID: environmentID, AcceptedAt: time.Now(),
 			}, nil
 		},
@@ -681,7 +681,7 @@ func TestApplicationStopDotPreservesExplicitExpectedRevision(t *testing.T) {
 	snapshot := cliStatusSnapshot()
 	backend := stubBackend{
 		snapshot: snapshot,
-		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if environmentID != "environment_feature" || request.ExpectedEnvironmentRevision == nil ||
 				*request.ExpectedEnvironmentRevision != 17 {
 				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
@@ -706,9 +706,9 @@ func TestApplicationStopDotIfRunningIsAnIdempotentNoOp(t *testing.T) {
 	application := Application{
 		Backend: stubBackend{
 			snapshot: snapshot,
-			stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+			stop: func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 				stopCalls++
-				return contractv1.MutationReceipt{}, nil
+				return contractv2.MutationReceipt{}, nil
 			},
 		},
 		Stdout: &output,
@@ -737,7 +737,7 @@ func TestApplicationStopDotIfRunningJSONEmitsNoOpResult(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.SchemaVersion != contractv1.SchemaVersion || result.Outcome != "alreadyStopped" {
+	if result.SchemaVersion != contractv2.SchemaVersion || result.Outcome != "alreadyStopped" {
 		t.Fatalf("result: %+v", result)
 	}
 }
@@ -745,20 +745,20 @@ func TestApplicationStopDotIfRunningJSONEmitsNoOpResult(t *testing.T) {
 func TestApplicationCreatesAdoptsAndArchivesManagedWorktrees(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
 	backend := stubBackend{
-		create: func(_ context.Context, request contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error) {
+		create: func(_ context.Context, request contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.RepositoryID != "repository_01" ||
 				request.Branch != "feature/go-service" || request.StartPoint != "origin/main" {
 				t.Fatalf("create request: %+v", request)
 			}
 			return cliTestReceipt(request.RequestID, "", acceptedAt), nil
 		},
-		adopt: func(_ context.Context, request contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error) {
+		adopt: func(_ context.Context, request contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.WorktreeID != "worktree_01" {
 				t.Fatalf("adopt request: %+v", request)
 			}
 			return cliTestReceipt(request.RequestID, "", acceptedAt), nil
 		},
-		archive: func(_ context.Context, request contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
+		archive: func(_ context.Context, request contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.WorktreeID != "worktree_01" {
 				t.Fatalf("archive request: %+v", request)
 			}
@@ -789,13 +789,13 @@ func TestApplicationCreatesAdoptsAndArchivesManagedWorktrees(t *testing.T) {
 func TestApplicationRejectsMalformedMutationArgumentsWithoutBackendCall(t *testing.T) {
 	calls := 0
 	backend := stubBackend{
-		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
-		stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
 	}
 	tests := [][]string{
@@ -823,29 +823,29 @@ func TestApplicationRejectsMalformedMutationArgumentsWithoutBackendCall(t *testi
 	}
 }
 
-func cliTestReceipt(requestID, environmentID string, acceptedAt time.Time) contractv1.MutationReceipt {
-	return contractv1.MutationReceipt{
-		SchemaVersion: contractv1.SchemaVersion,
+func cliTestReceipt(requestID, environmentID string, acceptedAt time.Time) contractv2.MutationReceipt {
+	return contractv2.MutationReceipt{
+		SchemaVersion: contractv2.SchemaVersion,
 		RequestID:     requestID, OperationID: "operation_01", AcceptedAt: acceptedAt, EnvironmentID: environmentID,
 	}
 }
 
-func cliStatusSnapshot() contractv1.StatusSnapshot {
+func cliStatusSnapshot() contractv2.StatusSnapshot {
 	now := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
-	return contractv1.StatusSnapshot{
-		SchemaVersion: contractv1.SchemaVersion, SnapshotRevision: 19, GeneratedAt: now,
-		Daemon: contractv1.DaemonStatus{InstanceID: "daemon_test", Version: "test", State: "ready", StartedAt: now},
-		Repositories: []contractv1.Repository{{
-			ID: "repository_test", DisplayName: "sample", RootPath: "/Developer/sample", Adapter: "sample",
-			Worktrees: []contractv1.Worktree{
+	return contractv2.StatusSnapshot{
+		SchemaVersion: contractv2.SchemaVersion, SnapshotRevision: 19, GeneratedAt: now,
+		Daemon: contractv2.DaemonStatus{InstanceID: "daemon_test", Version: "test", State: "ready", StartedAt: now},
+		Repositories: []contractv2.Repository{{
+			ID: "repository_test", DisplayName: "sample", RootPath: "/Developer/sample", ProfileKey: "sample",
+			Worktrees: []contractv2.Worktree{
 				{ID: "worktree_primary", Path: "/Developer/sample", Branch: "main", HeadRevision: "aaaaaaaaaaaaaaaa", IsPrimary: true},
 				{ID: "worktree_feature", Path: "/Developer/worktrees/feature-a", Branch: "feature/a", HeadRevision: "bbbbbbbbbbbbbbbb"},
 			},
 		}},
-		Environments: []contractv1.Environment{
-			{ID: "environment_primary", RepositoryID: "repository_test", WorktreeID: "worktree_primary", DisplayName: "main", ObservedState: "stopped", Health: "unknown", Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{}, URLs: map[string]string{}, AttentionAlertIDs: []string{}},
-			{ID: "environment_feature", RepositoryID: "repository_test", WorktreeID: "worktree_feature", DisplayName: "feature/a", TargetID: "testing", ObservedState: "running", Health: "healthy", Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{}, URLs: map[string]string{}, AttentionAlertIDs: []string{}},
+		Environments: []contractv2.Environment{
+			{ID: "environment_primary", RepositoryID: "repository_test", WorktreeID: "worktree_primary", DisplayName: "main", ObservedState: "stopped", Health: "unknown", Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{}, URLs: map[string]string{}, AttentionAlertIDs: []string{}},
+			{ID: "environment_feature", RepositoryID: "repository_test", WorktreeID: "worktree_feature", DisplayName: "feature/a", TargetID: "testing", ObservedState: "running", Health: "healthy", Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{}, URLs: map[string]string{}, AttentionAlertIDs: []string{}},
 		},
-		Operations: []contractv1.Operation{}, Alerts: []contractv1.Alert{},
+		Operations: []contractv2.Operation{}, Alerts: []contractv2.Alert{},
 	}
 }

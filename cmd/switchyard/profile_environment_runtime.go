@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	actioncontrol "github.com/theronburger/switchyard/internal/control/action"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	profilecontrol "github.com/theronburger/switchyard/internal/control/profile"
@@ -30,7 +30,7 @@ import (
 type configuredEnvironment struct {
 	EnvironmentID string
 	RepositoryID  string
-	Worktree      contractv1.Worktree
+	Worktree      contractv2.Worktree
 	ProfileKey    string
 	ProfileDigest string
 	Profile       configuration.Repository
@@ -298,7 +298,7 @@ func newConfiguredActionResolver(environments []configuredEnvironment, configura
 	return resolver
 }
 
-func (resolver configuredActionResolver) ResolveStart(ctx context.Context, request contractv1.StartEnvironmentRequest) (daemon.EnvironmentStartResolution, error) {
+func (resolver configuredActionResolver) ResolveStart(ctx context.Context, request contractv2.StartEnvironmentRequest) (daemon.EnvironmentStartResolution, error) {
 	desired, configurationError := configuration.LoadFile(resolver.configurationPath)
 	if configurationError != nil || desired.Digest != resolver.acceptedDigest {
 		return daemon.EnvironmentStartResolution{}, configuredActionError(409, "CONFIGURATION_NOT_ACCEPTED", "Validate and accept the current private configuration before starting new work.", false)
@@ -346,11 +346,11 @@ func (resolver configuredActionResolver) ResolveStart(ctx context.Context, reque
 	}
 	return daemon.EnvironmentStartResolution{
 		EnvironmentID: registered.EnvironmentID, WorktreeID: registered.Worktree.ID, Ports: reservations,
-		Intent: environmentcontrol.PlanIntent{Adapter: registered.ProfileDigest, TargetID: targetID, ServiceIDs: selected}, Source: source,
+		Intent: environmentcontrol.PlanIntent{ProfileDigest: registered.ProfileDigest, TargetID: targetID, ServiceIDs: selected}, Source: source,
 	}, nil
 }
 
-func (resolver configuredActionResolver) ResolveStop(_ context.Context, environmentID string, _ contractv1.StopEnvironmentRequest) error {
+func (resolver configuredActionResolver) ResolveStop(_ context.Context, environmentID string, _ contractv2.StopEnvironmentRequest) error {
 	if _, found := resolver.byEnvironment[environmentID]; !found {
 		return configuredActionError(404, "ENVIRONMENT_NOT_FOUND", "The requested environment is not available.", false)
 	}
@@ -358,7 +358,7 @@ func (resolver configuredActionResolver) ResolveStop(_ context.Context, environm
 }
 
 func configuredActionError(status int, code, message string, retryable bool) error {
-	return &daemon.ActionError{Status: status, Contract: contractv1.ContractError{Code: code, Message: message, Retryable: retryable}}
+	return &daemon.ActionError{Status: status, Contract: contractv2.ContractError{Code: code, Message: message, Retryable: retryable}}
 }
 
 func configuredServices(profile configuration.Repository, requested []string) ([]string, error) {
@@ -398,17 +398,17 @@ func configuredEnvironmentProjector(environments []configuredEnvironment) state.
 	for _, environment := range environments {
 		byID[environment.EnvironmentID] = environment
 	}
-	return func(current *contractv1.Environment, result environmentcontrol.EnvironmentResult) (contractv1.Environment, error) {
+	return func(current *contractv2.Environment, result environmentcontrol.EnvironmentResult) (contractv2.Environment, error) {
 		metadata, found := byID[result.EnvironmentID]
 		if !found {
-			return contractv1.Environment{}, errors.New("environment metadata is unavailable")
+			return contractv2.Environment{}, errors.New("environment metadata is unavailable")
 		}
 		desired, observed := projectedLifecycleStates(result.State)
-		projected := contractv1.Environment{
+		projected := contractv2.Environment{
 			ID: result.EnvironmentID, RepositoryID: metadata.RepositoryID, WorktreeID: metadata.Worktree.ID,
 			DisplayName: environmentDisplayName(metadata.Worktree), TargetID: result.TargetID,
 			DesiredState: desired, ObservedState: observed, Health: "unknown",
-			Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{},
+			Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
 			URLs: map[string]string{}, AttentionAlertIDs: []string{},
 		}
 		if current != nil {
@@ -425,7 +425,7 @@ func configuredEnvironmentProjector(environments []configuredEnvironment) state.
 					}
 				}
 			}
-			projected.PortLeases = append(projected.PortLeases, contractv1.PortLease{
+			projected.PortLeases = append(projected.PortLeases, contractv2.PortLease{
 				ID: leaseID, ServiceID: lease.Key.ServiceID, Purpose: lease.Key.Purpose,
 				Host: lease.Host, Port: lease.Port, State: "leased", AcquiredAt: acquiredAt,
 			})
@@ -462,10 +462,10 @@ func configuredEnvironmentProjector(environments []configuredEnvironment) state.
 		for _, id := range ids {
 			definition, found := metadata.Profile.Services[id]
 			if !found {
-				return contractv1.Environment{}, errors.New("service metadata is unavailable")
+				return contractv2.Environment{}, errors.New("service metadata is unavailable")
 			}
 			serviceResult, running := results[id]
-			service := contractv1.Service{
+			service := contractv2.Service{
 				ID: id, DisplayName: definition.DisplayName, Kind: definition.Kind,
 				DesiredState: desired, ObservedState: observed, Health: "unknown", PortLeaseIDs: append([]string(nil), leasesByService[id]...),
 			}
@@ -482,7 +482,7 @@ func configuredEnvironmentProjector(environments []configuredEnvironment) state.
 				if !serviceResult.Observation.ObservedAt.IsZero() {
 					processCount = serviceResult.Observation.ProcessCount
 				}
-				service.Run = &contractv1.ServiceRun{
+				service.Run = &contractv2.ServiceRun{
 					ID: result.RunID, StartedAt: serviceResult.Process.StartedAt, ProcessCount: processCount,
 					CPUPercent: serviceResult.Observation.CPUPercent, MemoryBytes: serviceResult.Observation.MemoryBytes,
 				}
@@ -517,7 +517,7 @@ func configuredEnvironmentProjector(environments []configuredEnvironment) state.
 			projected.Health = "degraded"
 		}
 		for _, goal := range result.Infrastructure {
-			projected.InfrastructureLeases = append(projected.InfrastructureLeases, contractv1.InfrastructureLease{
+			projected.InfrastructureLeases = append(projected.InfrastructureLeases, contractv2.InfrastructureLease{
 				ID: stableInfrastructureLeaseID(goal.Identity), ServiceID: goal.Identity.ServiceID,
 				DisplayName: goal.Name, Kind: string(goal.Kind), Scope: "environment", State: string(goal.DesiredState), Ownership: "owned",
 			})

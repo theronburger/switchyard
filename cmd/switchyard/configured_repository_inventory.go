@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/control/inventory"
 	"github.com/theronburger/switchyard/internal/control/repository"
 	"github.com/theronburger/switchyard/internal/state"
@@ -24,7 +24,7 @@ func discoverAcceptedRepositoryInventory(
 	accepted, err := store.ReadAcceptedConfiguration(ctx)
 	if errors.Is(err, state.ErrConfigurationNotAccepted) {
 		return repositoryInventory{
-			Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{},
+			Repositories: []contractv2.Repository{}, Alerts: []contractv2.Alert{},
 			Profiles: map[string]configuration.Repository{}, ProfileKeys: map[string]string{},
 			ProfileDigests: map[string]string{},
 			Complete:       true, AttemptedAt: observedAt.UTC(),
@@ -76,7 +76,7 @@ func discoverConfiguredRepositoryInventory(
 		discovery, err := inventory.New(reader)
 		if err != nil {
 			return inventory.DiscoveryResult{Errors: []inventory.DiscoveryError{{
-				Code: inventory.ErrorAdapterObservationInvalid, Message: "Repository discovery is unavailable.",
+				Code: inventory.ErrorProfileObservationInvalid, Message: "Repository discovery is unavailable.",
 			}}}
 		}
 		return discovery.DiscoverRepository(ctx, profile.Root)
@@ -90,7 +90,7 @@ func discoverConfiguredRepositories(
 	discover func(context.Context, string, configuration.Repository) inventory.DiscoveryResult,
 ) repositoryInventory {
 	result := repositoryInventory{
-		Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{},
+		Repositories: []contractv2.Repository{}, Alerts: []contractv2.Alert{},
 		Profiles: make(map[string]configuration.Repository), ProfileKeys: make(map[string]string),
 		ProfileDigests: make(map[string]string),
 		Complete:       true, AttemptedAt: observedAt.UTC(),
@@ -138,7 +138,7 @@ func discoverConfiguredRepositories(
 			runtime := configuredRuntimeCatalog(discovered.profile)
 			repository.Runtime = &runtime
 			observationTime := observedAt.UTC()
-			repository.Observation = &contractv1.RepositoryObservation{
+			repository.Observation = &contractv2.RepositoryObservation{
 				ObservedAt: &observationTime, LastAttemptAt: observationTime,
 			}
 			result.Repositories = append(result.Repositories, repository)
@@ -166,9 +166,9 @@ func discoverConfiguredRepositories(
 	return result
 }
 
-func configuredRuntimeCatalog(profile configuration.Repository) contractv1.RepositoryRuntime {
-	runtime := contractv1.RepositoryRuntime{
-		DefaultTargetID: profile.DefaultTarget, Targets: []contractv1.RuntimeTarget{}, Services: []contractv1.RuntimeService{},
+func configuredRuntimeCatalog(profile configuration.Repository) contractv2.RepositoryRuntime {
+	runtime := contractv2.RepositoryRuntime{
+		DefaultTargetID: profile.DefaultTarget, Targets: []contractv2.RuntimeTarget{}, Services: []contractv2.RuntimeService{},
 	}
 	targetIDs := make([]string, 0, len(profile.Targets))
 	for id := range profile.Targets {
@@ -185,7 +185,7 @@ func configuredRuntimeCatalog(profile configuration.Repository) contractv1.Repos
 		if risk == "" {
 			risk = "local"
 		}
-		runtime.Targets = append(runtime.Targets, contractv1.RuntimeTarget{
+		runtime.Targets = append(runtime.Targets, contractv2.RuntimeTarget{
 			ID: id, DisplayName: displayName, Risk: risk, WarnOnStart: target.WarnOnStart,
 		})
 	}
@@ -196,7 +196,7 @@ func configuredRuntimeCatalog(profile configuration.Repository) contractv1.Repos
 	sort.Strings(serviceIDs)
 	for _, id := range serviceIDs {
 		service := profile.Services[id]
-		runtime.Services = append(runtime.Services, contractv1.RuntimeService{
+		runtime.Services = append(runtime.Services, contractv2.RuntimeService{
 			ID: id, DisplayName: service.DisplayName, Kind: service.Kind,
 			Available: service.IsAvailable(), UnavailableReason: service.UnavailableReason,
 		})

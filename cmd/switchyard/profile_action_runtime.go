@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	actioncontrol "github.com/theronburger/switchyard/internal/control/action"
 	profilecontrol "github.com/theronburger/switchyard/internal/control/profile"
 	"github.com/theronburger/switchyard/internal/daemon"
@@ -73,10 +73,10 @@ func newConfiguredProfileActionResolver(
 	return resolver, nil
 }
 
-func (resolver configuredProfileActionResolver) ListActions(context.Context) (contractv1.ProfileActionList, error) {
-	list := contractv1.ProfileActionList{
-		SchemaVersion: contractv1.SchemaVersion, AcceptedDigest: resolver.acceptedDigest,
-		Actions: []contractv1.ProfileAction{},
+func (resolver configuredProfileActionResolver) ListActions(context.Context) (contractv2.ProfileActionList, error) {
+	list := contractv2.ProfileActionList{
+		SchemaVersion: contractv2.SchemaVersion, AcceptedDigest: resolver.acceptedDigest,
+		Actions: []contractv2.ProfileAction{},
 	}
 	repositoryIDs := make([]string, 0, len(resolver.repositories))
 	for id := range resolver.repositories {
@@ -86,7 +86,7 @@ func (resolver configuredProfileActionResolver) ListActions(context.Context) (co
 	for _, repositoryID := range repositoryIDs {
 		entry := resolver.repositories[repositoryID]
 		for _, definition := range entry.Definitions {
-			list.Actions = append(list.Actions, contractv1.ProfileAction{
+			list.Actions = append(list.Actions, contractv2.ProfileAction{
 				ID: definition.ID, RepositoryID: entry.RepositoryID, ProfileKey: entry.ProfileKey,
 				ProfileDigest: entry.ProfileDigest, DisplayName: definition.DisplayName,
 				Scope: definition.Scope, Risk: definition.Risk, Kind: definition.Kind, Lifecycle: definition.Lifecycle,
@@ -99,7 +99,7 @@ func (resolver configuredProfileActionResolver) ListActions(context.Context) (co
 
 func (resolver configuredProfileActionResolver) ResolveAction(
 	_ context.Context,
-	request contractv1.RunProfileActionRequest,
+	request contractv2.RunProfileActionRequest,
 ) (daemon.ProfileActionResolution, error) {
 	desired, configurationError := configuration.LoadFile(resolver.configuration)
 	if configurationError != nil || desired.Digest != resolver.acceptedDigest {

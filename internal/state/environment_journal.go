@@ -12,12 +12,12 @@ import (
 	"sort"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	"github.com/theronburger/switchyard/internal/domain"
 )
 
-const environmentRecordSchemaVersion = 1
+const environmentRecordSchemaVersion = 2
 
 const (
 	DefaultCurrentEnvironmentPageSize = 100
@@ -36,9 +36,9 @@ var (
 )
 
 type EnvironmentProjector func(
-	current *contractv1.Environment,
+	current *contractv2.Environment,
 	result environmentcontrol.EnvironmentResult,
-) (contractv1.Environment, error)
+) (contractv2.Environment, error)
 
 type EnvironmentJournal struct {
 	store     *Store
@@ -545,14 +545,14 @@ WHERE id = ? AND kind = ? AND environment_id = ?`,
 }
 
 func publicOperationError(record environmentcontrol.OperationRecord) (any, error) {
-	var publicError *contractv1.ContractError
+	var publicError *contractv2.ContractError
 	if record.FailureDetail != nil {
 		failure := record.FailureDetail
 		resourceID := failure.ResourceID
 		if resourceID == "" && failure.ResourceKind == "environment" {
 			resourceID = record.EnvironmentID
 		}
-		publicError = &contractv1.ContractError{
+		publicError = &contractv2.ContractError{
 			Code: failure.Code, Message: failure.Message, Retryable: failure.Retryable,
 			ResourceKind: failure.ResourceKind, ResourceID: resourceID,
 			Phase: string(failure.Phase), Step: failure.Step, Diagnostic: failure.Diagnostic,
@@ -564,19 +564,19 @@ func publicOperationError(record environmentcontrol.OperationRecord) (any, error
 		if publicError != nil {
 			break
 		} else if record.Failure == environmentcontrol.OperationFailureOwnershipUnverified {
-			publicError = &contractv1.ContractError{
+			publicError = &contractv2.ContractError{
 				Code:      "ENVIRONMENT_PROCESS_OWNERSHIP_UNVERIFIED",
 				Message:   "Switchyard could not verify ownership of one or more service processes, so it did not signal them.",
 				Retryable: true,
 			}
 		} else {
-			publicError = &contractv1.ContractError{
+			publicError = &contractv2.ContractError{
 				Code: "ENVIRONMENT_OPERATION_FAILED", Message: "Environment operation failed.", Retryable: true,
 			}
 		}
 	case domain.OperationCancelled:
 		if publicError == nil {
-			publicError = &contractv1.ContractError{
+			publicError = &contractv2.ContractError{
 				Code: "ENVIRONMENT_OPERATION_CANCELLED", Message: "Environment operation was cancelled.", Retryable: true,
 			}
 		}
@@ -594,24 +594,24 @@ func publicOperationError(record environmentcontrol.OperationRecord) (any, error
 func (store *Store) commitEnvironmentJournalSnapshot(
 	ctx context.Context,
 	transaction *sql.Tx,
-	environments *[]contractv1.Environment,
-) (contractv1.StatusSnapshot, error) {
+	environments *[]contractv2.Environment,
+) (contractv2.StatusSnapshot, error) {
 	snapshot, err := readSnapshotTransaction(ctx, transaction)
 	if err != nil {
-		return contractv1.StatusSnapshot{}, err
+		return contractv2.StatusSnapshot{}, err
 	}
 	operations, err := listOperations(ctx, transaction)
 	if err != nil {
-		return contractv1.StatusSnapshot{}, fmt.Errorf("refresh environment operation snapshot: %w", err)
+		return contractv2.StatusSnapshot{}, fmt.Errorf("refresh environment operation snapshot: %w", err)
 	}
 	snapshot.Operations = operations
 	if environments != nil {
-		snapshot.Environments = append([]contractv1.Environment(nil), (*environments)...)
+		snapshot.Environments = append([]contractv2.Environment(nil), (*environments)...)
 	}
 	return store.commitSnapshotTransaction(ctx, transaction, snapshot)
 }
 
-func readSnapshotTransaction(ctx context.Context, transaction *sql.Tx) (contractv1.StatusSnapshot, error) {
+func readSnapshotTransaction(ctx context.Context, transaction *sql.Tx) (contractv2.StatusSnapshot, error) {
 	var revision int64
 	var payload []byte
 	err := transaction.QueryRowContext(ctx, `
@@ -619,19 +619,19 @@ SELECT revision, payload_json
 FROM current_snapshot
 WHERE singleton = 1`).Scan(&revision, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
-		return contractv1.StatusSnapshot{}, ErrNoSnapshot
+		return contractv2.StatusSnapshot{}, ErrNoSnapshot
 	}
 	if err != nil {
-		return contractv1.StatusSnapshot{}, fmt.Errorf("read environment journal snapshot: %w", err)
+		return contractv2.StatusSnapshot{}, fmt.Errorf("read environment journal snapshot: %w", err)
 	}
-	var snapshot contractv1.StatusSnapshot
+	var snapshot contractv2.StatusSnapshot
 	if err := decodeStrict(payload, &snapshot); err != nil || snapshot.SnapshotRevision != revision || snapshot.Validate() != nil {
-		return contractv1.StatusSnapshot{}, errors.New("stored status snapshot is invalid")
+		return contractv2.StatusSnapshot{}, errors.New("stored status snapshot is invalid")
 	}
 	return snapshot, nil
 }
 
-func findEnvironment(environments []contractv1.Environment, environmentID string) *contractv1.Environment {
+func findEnvironment(environments []contractv2.Environment, environmentID string) *contractv2.Environment {
 	for index := range environments {
 		if environments[index].ID == environmentID {
 			copy := environments[index]
@@ -641,8 +641,8 @@ func findEnvironment(environments []contractv1.Environment, environmentID string
 	return nil
 }
 
-func mergeEnvironment(environments []contractv1.Environment, projected contractv1.Environment) []contractv1.Environment {
-	merged := append([]contractv1.Environment(nil), environments...)
+func mergeEnvironment(environments []contractv2.Environment, projected contractv2.Environment) []contractv2.Environment {
+	merged := append([]contractv2.Environment(nil), environments...)
 	replaced := false
 	for index := range merged {
 		if merged[index].ID == projected.ID {

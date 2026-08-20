@@ -28,7 +28,7 @@ func validateStartRequest(request StartRequest) error {
 		seenPorts[reservation.Key] = struct{}{}
 	}
 	if request.Intent != nil {
-		if request.Intent.Adapter == "" || len(request.Intent.ServiceIDs) == 0 {
+		if request.Intent.ProfileDigest == "" || len(request.Intent.ServiceIDs) == 0 {
 			return ErrInvalidRequest
 		}
 		seenServices := make(map[string]struct{}, len(request.Intent.ServiceIDs))

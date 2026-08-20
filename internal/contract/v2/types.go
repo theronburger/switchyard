@@ -1,8 +1,8 @@
-package contractv1
+package contractv2
 
 import "time"
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type RuntimeDescriptor struct {
 	SchemaVersion    int       `json:"schemaVersion"`
@@ -43,7 +43,7 @@ type Repository struct {
 	ID          string                 `json:"id"`
 	DisplayName string                 `json:"displayName"`
 	RootPath    string                 `json:"rootPath"`
-	Adapter     string                 `json:"adapter"`
+	ProfileKey  string                 `json:"profileKey"`
 	Remote      string                 `json:"remote"`
 	Worktrees   []Worktree             `json:"worktrees"`
 	Runtime     *RepositoryRuntime     `json:"runtime,omitempty"`

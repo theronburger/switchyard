@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	cleanupcontrol "github.com/theronburger/switchyard/internal/control/cleanup"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/state"
@@ -33,17 +33,17 @@ type CleanupService struct {
 	NewID       func() (string, error)
 }
 
-func (service CleanupService) Plan(ctx context.Context, request contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error) {
+func (service CleanupService) Plan(ctx context.Context, request contractv2.CleanupPlanRequest) (contractv2.CleanupPlan, error) {
 	if request.Validate() != nil || service.Store == nil || service.Workspaces == nil || service.RuntimeRoot == "" {
-		return contractv1.CleanupPlan{}, errors.New("cleanup service is unavailable")
+		return contractv2.CleanupPlan{}, errors.New("cleanup service is unavailable")
 	}
 	planner, err := service.planner(ctx)
 	if err != nil {
-		return contractv1.CleanupPlan{}, err
+		return contractv2.CleanupPlan{}, err
 	}
 	inventory, err := planner.Inventory(ctx, cleanupcontrol.Scope{Kind: request.Scope.Kind, ID: request.Scope.ID})
 	if err != nil {
-		return contractv1.CleanupPlan{}, err
+		return contractv2.CleanupPlan{}, err
 	}
 	newID := service.NewID
 	if newID == nil {
@@ -51,7 +51,7 @@ func (service CleanupService) Plan(ctx context.Context, request contractv1.Clean
 	}
 	id, err := newID()
 	if err != nil {
-		return contractv1.CleanupPlan{}, err
+		return contractv2.CleanupPlan{}, err
 	}
 	now := service.now()
 	plan, err := service.Store.SaveCleanupPlan(ctx, cleanupcontrol.Plan{
@@ -60,45 +60,45 @@ func (service CleanupService) Plan(ctx context.Context, request contractv1.Clean
 		CreatedAt: now, ExpiresAt: now.Add(cleanupPlanLifetime),
 	})
 	if err != nil {
-		return contractv1.CleanupPlan{}, err
+		return contractv2.CleanupPlan{}, err
 	}
 	return cleanupPlanContract(plan), nil
 }
 
-func (service CleanupService) Apply(ctx context.Context, request contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error) {
+func (service CleanupService) Apply(ctx context.Context, request contractv2.CleanupApplyRequest) (contractv2.CleanupResult, error) {
 	if request.Validate() != nil || service.Store == nil || service.Workspaces == nil {
-		return contractv1.CleanupResult{}, errors.New("cleanup service is unavailable")
+		return contractv2.CleanupResult{}, errors.New("cleanup service is unavailable")
 	}
 	plan, err := service.Store.ReadCleanupPlan(ctx, request.PlanID, request.ExpectedRevision)
 	if err != nil {
-		return contractv1.CleanupResult{}, err
+		return contractv2.CleanupResult{}, err
 	}
 	planner, err := service.planner(ctx)
 	if err != nil {
-		return contractv1.CleanupResult{}, err
+		return contractv2.CleanupResult{}, err
 	}
 	byID := make(map[string]cleanupcontrol.Candidate, len(plan.Candidates))
 	for _, candidate := range plan.Candidates {
 		byID[candidate.ID] = candidate
 	}
-	removals := make([]contractv1.CleanupRemoval, 0, len(request.CandidateIDs))
+	removals := make([]contractv2.CleanupRemoval, 0, len(request.CandidateIDs))
 	for _, id := range request.CandidateIDs {
 		candidate, found := byID[id]
 		if !found {
-			removals = append(removals, contractv1.CleanupRemoval{CandidateID: id, Reason: "not-in-plan"})
+			removals = append(removals, contractv2.CleanupRemoval{CandidateID: id, Reason: "not-in-plan"})
 			continue
 		}
 		if err := planner.Remove(ctx, candidate); err != nil {
-			removals = append(removals, contractv1.CleanupRemoval{CandidateID: id, Reason: "changed-or-protected"})
+			removals = append(removals, contractv2.CleanupRemoval{CandidateID: id, Reason: "changed-or-protected"})
 			continue
 		}
-		removals = append(removals, contractv1.CleanupRemoval{CandidateID: id, Removed: true})
+		removals = append(removals, contractv2.CleanupRemoval{CandidateID: id, Removed: true})
 	}
 	if err := service.Store.ConsumeCleanupPlan(ctx, plan.ID, plan.Revision); err != nil {
-		return contractv1.CleanupResult{}, err
+		return contractv2.CleanupResult{}, err
 	}
-	return contractv1.CleanupResult{
-		SchemaVersion: contractv1.SchemaVersion, PlanID: plan.ID, PlanRevision: plan.Revision,
+	return contractv2.CleanupResult{
+		SchemaVersion: contractv2.SchemaVersion, PlanID: plan.ID, PlanRevision: plan.Revision,
 		Removals: removals, CompletedAt: service.now(),
 	}, nil
 }
@@ -130,25 +130,25 @@ func newCleanupPlanID() (string, error) {
 	return "cleanup_plan_" + base64.RawURLEncoding.EncodeToString(contents), nil
 }
 
-func cleanupPlanContract(plan cleanupcontrol.Plan) contractv1.CleanupPlan {
-	candidates := make([]contractv1.CleanupCandidate, len(plan.Candidates))
+func cleanupPlanContract(plan cleanupcontrol.Plan) contractv2.CleanupPlan {
+	candidates := make([]contractv2.CleanupCandidate, len(plan.Candidates))
 	for index, candidate := range plan.Candidates {
-		candidates[index] = contractv1.CleanupCandidate{
+		candidates[index] = contractv2.CleanupCandidate{
 			ID: candidate.ID, Kind: candidate.Kind, ProfileKey: candidate.ProfileKey,
 			WorktreeID: candidate.WorktreeID, Fingerprint: candidate.Fingerprint,
 			Bytes: candidate.Bytes, Path: candidate.Path,
 		}
 	}
-	protections := make([]contractv1.CleanupProtection, len(plan.Protected))
+	protections := make([]contractv2.CleanupProtection, len(plan.Protected))
 	for index, protected := range plan.Protected {
-		protections[index] = contractv1.CleanupProtection{
+		protections[index] = contractv2.CleanupProtection{
 			Kind: protected.Kind, Path: protected.Path, Reason: protected.Reason,
 			ProfileKey: protected.ProfileKey, WorktreeID: protected.WorktreeID,
 		}
 	}
-	return contractv1.CleanupPlan{
-		SchemaVersion: contractv1.SchemaVersion, ID: plan.ID, Revision: plan.Revision,
-		Scope:      contractv1.CleanupScope{Kind: plan.Scope.Kind, ID: plan.Scope.ID},
+	return contractv2.CleanupPlan{
+		SchemaVersion: contractv2.SchemaVersion, ID: plan.ID, Revision: plan.Revision,
+		Scope:      contractv2.CleanupScope{Kind: plan.Scope.Kind, ID: plan.Scope.ID},
 		Candidates: candidates, Protected: protections, CreatedAt: plan.CreatedAt, ExpiresAt: plan.ExpiresAt,
 	}
 }

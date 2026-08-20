@@ -21,7 +21,7 @@ var (
 )
 
 func validatePlan(plan Plan) error {
-	if !idPattern.MatchString(plan.WorktreeID) || !idPattern.MatchString(plan.Adapter) ||
+	if !idPattern.MatchString(plan.WorktreeID) || !idPattern.MatchString(plan.ProfileKey) ||
 		!cleanAbsolutePath(plan.WorktreeRoot) ||
 		(plan.Ownership != OwnershipAdopted && plan.Ownership != OwnershipManaged) ||
 		!fingerprintPattern.MatchString(plan.Fingerprint) || len(plan.Steps) > maximumSteps ||
@@ -112,7 +112,7 @@ func validateResult(result Result) error {
 		return ErrInvalidPlan
 	}
 	plan := Plan{
-		WorktreeID: result.WorktreeID, Adapter: result.Adapter, WorktreeRoot: result.WorktreeRoot,
+		WorktreeID: result.WorktreeID, ProfileKey: result.ProfileKey, WorktreeRoot: result.WorktreeRoot,
 		Ownership: result.Ownership, Fingerprint: result.Fingerprint,
 		Requirements: []Requirement{{ID: "validation", Path: result.WorktreeRoot, Kind: RequirementDirectory}},
 		Toolchains:   result.Toolchains,

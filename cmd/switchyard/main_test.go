@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/state"
 )
@@ -194,8 +194,8 @@ func TestConnectorRejectsReusedPortBeforeSendingAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read process start: %v", err)
 	}
-	descriptor := contractv1.RuntimeDescriptor{
-		SchemaVersion:    contractv1.SchemaVersion,
+	descriptor := contractv2.RuntimeDescriptor{
+		SchemaVersion:    contractv2.SchemaVersion,
 		Endpoint:         fmt.Sprintf("http://%s", listener.Addr()),
 		DaemonInstanceID: "daemon_stale",
 		DaemonVersion:    version,

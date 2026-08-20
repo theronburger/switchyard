@@ -490,7 +490,7 @@ struct SwitchyardPresentationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appending(path: "contracts/v1/fixtures/status.json")
+            .appending(path: "contracts/v2/fixtures/status.json")
     }
 
     private func makeRecoveryFixture() throws -> URL {

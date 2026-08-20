@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -28,12 +28,12 @@ func TestConfigurationServiceStagesAndAcceptsOneRevision(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	restarted := make(chan struct{}, 1)
 	service := ConfigurationService{Store: store, Path: path, CompilerVersion: "compiler-v1", Restart: func() { restarted <- struct{}{} }}
-	pending, err := service.Validate(ctx, contractv1.ConfigurationValidationRequest{SchemaVersion: 1})
+	pending, err := service.Validate(ctx, contractv2.ConfigurationValidationRequest{SchemaVersion: contractv2.SchemaVersion})
 	if err != nil || pending.State != "pending" || pending.Candidate == nil {
 		t.Fatalf("pending=%+v err=%v", pending, err)
 	}
-	accepted, err := service.Accept(ctx, contractv1.ConfigurationAcceptanceRequest{
-		SchemaVersion: 1, ExpectedRevision: 0, Digest: pending.Candidate.Digest,
+	accepted, err := service.Accept(ctx, contractv2.ConfigurationAcceptanceRequest{
+		SchemaVersion: contractv2.SchemaVersion, ExpectedRevision: 0, Digest: pending.Candidate.Digest,
 	})
 	if err != nil || accepted.State != "accepted" || accepted.AcceptedRevision != 1 {
 		t.Fatalf("accepted=%+v err=%v", accepted, err)

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -22,7 +22,7 @@ func (handler *apiHandler) cleanup(response http.ResponseWriter, request *http.R
 			writeError(response, http.StatusServiceUnavailable, "CLEANUP_UNAVAILABLE", "Cleanup is unavailable", true)
 			return true
 		}
-		var cleanupRequest contractv1.CleanupPlanRequest
+		var cleanupRequest contractv2.CleanupPlanRequest
 		if decodeMutationRequest(request, &cleanupRequest) != nil || cleanupRequest.Validate() != nil {
 			writeError(response, http.StatusBadRequest, "INVALID_CLEANUP_REQUEST", "Cleanup plan request is invalid", false)
 			return true
@@ -53,7 +53,7 @@ func (handler *apiHandler) cleanup(response http.ResponseWriter, request *http.R
 		writeError(response, http.StatusServiceUnavailable, "CLEANUP_UNAVAILABLE", "Cleanup is unavailable", true)
 		return true
 	}
-	var applyRequest contractv1.CleanupApplyRequest
+	var applyRequest contractv2.CleanupApplyRequest
 	if decodeMutationRequest(request, &applyRequest) != nil || applyRequest.Validate() != nil || applyRequest.PlanID != planID {
 		writeError(response, http.StatusBadRequest, "INVALID_CLEANUP_REQUEST", "Cleanup apply request is invalid", false)
 		return true

@@ -69,7 +69,7 @@ func (builder ProfilePlanBuilder) Build(request PlanningRequest) (Plan, error) {
 		return Plan{}, ErrInvalidPlan
 	}
 	plan := Plan{
-		WorktreeID: registration.WorktreeID, Adapter: registration.ProfileKey,
+		WorktreeID: registration.WorktreeID, ProfileKey: registration.ProfileKey,
 		WorktreeRoot: registration.WorktreeRoot, Ownership: registration.Ownership,
 		Fingerprint: fingerprint, Steps: make([]StepSpec, 0, len(registration.Preparation.Steps)),
 		Requirements: make([]Requirement, 0, len(registration.Preparation.Verify)), Toolchains: []Toolchain{},

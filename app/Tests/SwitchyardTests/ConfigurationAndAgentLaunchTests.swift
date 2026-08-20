@@ -141,7 +141,7 @@ private final class RecordingTransport: DaemonTransport, @unchecked Sendable {
 
 struct ConfigurationDaemonClientTests {
     private static let descriptor = EndpointDescriptor(
-        schemaVersion: 1, transport: "http", host: "127.0.0.1", port: 49402,
+        schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 49402,
         daemonVersion: "0.1.0-dev", instanceId: "daemon_test", pid: 4242,
         createdAt: Date(timeIntervalSince1970: 1_784_000_000)
     )
@@ -181,7 +181,7 @@ struct ConfigurationDaemonClientTests {
         #expect(requests.map(\.httpMethod) == ["GET", "POST", "POST"])
         #expect(requests.map { $0.url?.path } == ["/v1/configuration", "/v1/configuration/validate", "/v1/configuration/accept"])
         let validateBody = try #require(requests[1].httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
-        #expect(validateBody["schemaVersion"] as? Int == 1)
+        #expect(validateBody["schemaVersion"] as? Int == contractSchemaVersion)
         #expect(validateBody["expectedRevision"] as? Int == 4)
         let acceptBody = try #require(requests[2].httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
         #expect(acceptBody["expectedRevision"] as? Int == 4)
@@ -196,7 +196,7 @@ struct ConfigurationDaemonClientTests {
     func `client refuses malformed digests and malformed configuration status`() async throws {
         let transport = RecordingTransport { _ in
             (200, """
-            {"schemaVersion":1,"state":"pending","acceptedRevision":1,"acceptedDigest":"\(Self.digest)"}
+            {"schemaVersion":2,"state":"pending","acceptedRevision":1,"acceptedDigest":"\(Self.digest)"}
             """)
         }
         let client = try client(transport)
@@ -219,7 +219,7 @@ struct ConfigurationDaemonClientTests {
     func `configuration conflicts surface the daemon's stable error code`() async throws {
         let transport = RecordingTransport { _ in
             (409, """
-            {"schemaVersion":1,"error":{"code":"CONFIGURATION_REVISION_CONFLICT","message":"Configuration changed before this request completed","retryable":true}}
+            {"schemaVersion":2,"error":{"code":"CONFIGURATION_REVISION_CONFLICT","message":"Configuration changed before this request completed","retryable":true}}
             """)
         }
         let client = try client(transport)
@@ -236,7 +236,7 @@ struct ConfigurationDaemonClientTests {
     func `prepare worktree posts to the exact worktree path`() async throws {
         let transport = RecordingTransport { request in
             (202, """
-            {"schemaVersion":1,"requestId":"\(request.value(forHTTPHeaderField: "X-Switchyard-Request-Id") ?? "")","operationId":"operation_prepare","acceptedAt":"2026-08-14T09:00:00Z"}
+            {"schemaVersion":2,"requestId":"\(request.value(forHTTPHeaderField: "X-Switchyard-Request-Id") ?? "")","operationId":"operation_prepare","acceptedAt":"2026-08-14T09:00:00Z"}
             """)
         }
         let client = try client(transport)
@@ -312,7 +312,7 @@ struct ConfigurationAppModelTests {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appending(path: "contracts/v1/fixtures/status.json")
+            .appending(path: "contracts/v2/fixtures/status.json")
     }
 
     @Test
@@ -377,14 +377,14 @@ struct ConfigurationAppModelTests {
         let session = DaemonSession(
             instanceId: snapshot.daemon.instanceId, daemonVersion: snapshot.daemon.version,
             endpoint: EndpointDescriptor(
-                schemaVersion: 1, transport: "http", host: "127.0.0.1", port: 49402,
+                schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 49402,
                 daemonVersion: snapshot.daemon.version, instanceId: snapshot.daemon.instanceId,
                 pid: 4242, createdAt: snapshot.daemon.startedAt
             )
         )
         let report = DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .passed("healthy"))])
         let receipt = try ContractDecoder().decode(MutationReceipt.self, from: Data("""
-        {"schemaVersion":1,"requestId":"app_x","operationId":"operation_prepare_1","acceptedAt":"2026-08-14T09:56:00Z"}
+        {"schemaVersion":2,"requestId":"app_x","operationId":"operation_prepare_1","acceptedAt":"2026-08-14T09:56:00Z"}
         """.utf8))
         let workspaceActions = RecordingWorkspaceActions(receipt: receipt)
         let model = AppModel(

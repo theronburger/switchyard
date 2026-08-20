@@ -37,7 +37,7 @@ func TestProfilePlanBuilderCompilesExactPrivatePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Adapter != "sample" || len(plan.Steps) != 1 || len(plan.Requirements) != 1 ||
+	if plan.ProfileKey != "sample" || len(plan.Steps) != 1 || len(plan.Requirements) != 1 ||
 		plan.Steps[0].Executable != executable || plan.Steps[0].Directory != worktree ||
 		plan.Steps[0].RunDirectory == worktree {
 		t.Fatalf("plan: %+v", plan)

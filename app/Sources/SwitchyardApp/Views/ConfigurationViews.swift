@@ -401,7 +401,7 @@ struct RepositorySettingsView: View {
     private var identity: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Identity").font(.headline)
-            KeyValueRow(key: "Profile key", value: repository.adapter, monospaced: true, copyable: true)
+            KeyValueRow(key: "Profile key", value: repository.profileKey, monospaced: true, copyable: true)
             KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true, copyable: true)
             KeyValueRow(key: "Remote", value: repository.remote, monospaced: true, copyable: true)
             KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true, copyable: true)
@@ -416,7 +416,7 @@ struct RepositorySettingsView: View {
                 }
             }
             if let candidate = model.configurationState.status?.candidate,
-               let digest = candidate.repositoryDigests[repository.adapter] {
+               let digest = candidate.repositoryDigests[repository.profileKey] {
                 KeyValueRow(key: "Candidate subtree digest", value: digest, monospaced: true, copyable: true)
             }
         }
@@ -455,7 +455,7 @@ struct RepositorySettingsView: View {
     private var lifecycle: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Configuration lifecycle").font(.headline)
-            Text("Edit Configuration, Disable, and Remove change the private desired file. The daemon has no repository-level write endpoint yet, so edit the entry under repositories: \(repository.adapter) in configuration.yaml, then validate and accept the new revision. A disabled repository keeps stop and cleanup but refuses new starts; removal is rejected while any resource still references the binding.")
+            Text("Edit Configuration, Disable, and Remove change the private desired file. The daemon has no repository-level write endpoint yet, so edit the entry under repositories: \(repository.profileKey) in configuration.yaml, then validate and accept the new revision. A disabled repository keeps stop and cleanup but refuses new starts; removal is rejected while any resource still references the binding.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

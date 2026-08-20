@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/state"
 )
@@ -37,20 +37,20 @@ func TestCleanupServicePlansAppliesAndConsumesExactRevision(t *testing.T) {
 		Store: store, Workspaces: cleanupWorkspaceSource{}, RuntimeRoot: runtimeRoot,
 		Now: func() time.Time { return now }, NewID: func() (string, error) { return "cleanup_plan_01", nil },
 	}
-	plan, err := service.Plan(ctx, contractv1.CleanupPlanRequest{
-		SchemaVersion: contractv1.SchemaVersion, Scope: contractv1.CleanupScope{Kind: "global"},
+	plan, err := service.Plan(ctx, contractv2.CleanupPlanRequest{
+		SchemaVersion: contractv2.SchemaVersion, Scope: contractv2.CleanupScope{Kind: "global"},
 	})
 	if err != nil || plan.Validate() != nil || len(plan.Candidates) != 1 {
 		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
-	if _, err := service.Apply(ctx, contractv1.CleanupApplyRequest{
-		SchemaVersion: contractv1.SchemaVersion, PlanID: plan.ID,
+	if _, err := service.Apply(ctx, contractv2.CleanupApplyRequest{
+		SchemaVersion: contractv2.SchemaVersion, PlanID: plan.ID,
 		ExpectedRevision: plan.Revision + 1, CandidateIDs: []string{plan.Candidates[0].ID},
 	}); !errors.Is(err, state.ErrCleanupPlanNotFound) {
 		t.Fatalf("stale revision: %v", err)
 	}
-	result, err := service.Apply(ctx, contractv1.CleanupApplyRequest{
-		SchemaVersion: contractv1.SchemaVersion, PlanID: plan.ID,
+	result, err := service.Apply(ctx, contractv2.CleanupApplyRequest{
+		SchemaVersion: contractv2.SchemaVersion, PlanID: plan.ID,
 		ExpectedRevision: plan.Revision, CandidateIDs: []string{plan.Candidates[0].ID},
 	})
 	if err != nil || result.Validate() != nil || !result.Removals[0].Removed {
@@ -59,8 +59,8 @@ func TestCleanupServicePlansAppliesAndConsumesExactRevision(t *testing.T) {
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("owned candidate remains: %v", err)
 	}
-	if _, err := service.Apply(ctx, contractv1.CleanupApplyRequest{
-		SchemaVersion: contractv1.SchemaVersion, PlanID: plan.ID,
+	if _, err := service.Apply(ctx, contractv2.CleanupApplyRequest{
+		SchemaVersion: contractv2.SchemaVersion, PlanID: plan.ID,
 		ExpectedRevision: plan.Revision, CandidateIDs: []string{},
 	}); !errors.Is(err, state.ErrCleanupPlanConsumed) {
 		t.Fatalf("reused plan: %v", err)
@@ -78,7 +78,7 @@ func TestCleanupServiceRefusesCandidateModifiedAfterReview(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	service := CleanupService{Store: store, Workspaces: cleanupWorkspaceSource{}, RuntimeRoot: runtimeRoot, Now: func() time.Time { return now }, NewID: func() (string, error) { return "cleanup_plan_changed", nil }}
-	plan, err := service.Plan(ctx, contractv1.CleanupPlanRequest{SchemaVersion: contractv1.SchemaVersion, Scope: contractv1.CleanupScope{Kind: "global"}})
+	plan, err := service.Plan(ctx, contractv2.CleanupPlanRequest{SchemaVersion: contractv2.SchemaVersion, Scope: contractv2.CleanupScope{Kind: "global"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +86,8 @@ func TestCleanupServiceRefusesCandidateModifiedAfterReview(t *testing.T) {
 	if err := os.WriteFile(foreign, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Apply(ctx, contractv1.CleanupApplyRequest{
-		SchemaVersion: contractv1.SchemaVersion, PlanID: plan.ID,
+	result, err := service.Apply(ctx, contractv2.CleanupApplyRequest{
+		SchemaVersion: contractv2.SchemaVersion, PlanID: plan.ID,
 		ExpectedRevision: plan.Revision, CandidateIDs: []string{plan.Candidates[0].ID},
 	})
 	if err != nil || result.Removals[0].Removed || result.Removals[0].Reason != "changed-or-protected" {

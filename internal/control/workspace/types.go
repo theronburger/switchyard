@@ -46,7 +46,7 @@ const (
 	RequirementExecutable  RequirementKind = "executable"
 )
 
-// StepSpec is deliberately repository-neutral. Adapters resolve toolchains and
+// StepSpec is deliberately repository-neutral. Profile compilers resolve toolchains and
 // produce exact argv; the coordinator never invokes a shell or interprets a
 // language-specific package manifest.
 type StepSpec struct {
@@ -74,7 +74,7 @@ type Toolchain struct {
 
 type Plan struct {
 	WorktreeID   string
-	Adapter      string
+	ProfileKey   string
 	WorktreeRoot string
 	Ownership    Ownership
 	Fingerprint  string
@@ -106,7 +106,7 @@ type OperationRecord struct {
 
 type Result struct {
 	WorktreeID   string
-	Adapter      string
+	ProfileKey   string
 	WorktreeRoot string
 	Ownership    Ownership
 	State        State

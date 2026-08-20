@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/control/inventory"
 )
 
@@ -24,9 +24,9 @@ func TestConfiguredRepositoryDiscoveryIsConcurrentOrderedAndIsolated(t *testing.
 				Code: inventory.ErrorRepositoryRemoteUnavailable, Message: "Remote unavailable.",
 			}}}
 		}
-		return inventory.DiscoveryResult{Repository: &contractv1.Repository{
-			ID: "repository_first", Adapter: key, RootPath: profile.Root,
-			Worktrees: []contractv1.Worktree{},
+		return inventory.DiscoveryResult{Repository: &contractv2.Repository{
+			ID: "repository_first", ProfileKey: key, RootPath: profile.Root,
+			Worktrees: []contractv2.Worktree{},
 		}}
 	})
 	if discovered.Complete || len(discovered.Repositories) != 1 ||

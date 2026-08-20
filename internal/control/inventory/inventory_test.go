@@ -28,7 +28,7 @@ func TestDiscoverRepositoryProjectsStableOpaqueContractSnapshot(t *testing.T) {
 	}
 	if first.Repository.RootPath != "/Users/example/configured repository" ||
 		first.Repository.DisplayName != "configured repository" ||
-		first.Repository.Adapter != "example" ||
+		first.Repository.ProfileKey != "example" ||
 		first.Repository.Remote != "owner/repository" {
 		t.Fatalf("repository projection: %#v", first.Repository)
 	}
@@ -98,7 +98,7 @@ func TestDiscoverRepositorySurfacesDeterministicStructuredProblems(t *testing.T)
 	}
 }
 
-func TestDiscoverRepositoryRefusesInvalidAdapterObservationWithoutEchoingData(t *testing.T) {
+func TestDiscoverRepositoryRefusesInvalidProfileObservationWithoutEchoingData(t *testing.T) {
 	observation := validRepositoryObservation()
 	observation.Remote = ""
 	observation.Errors = []ErrorObservation{{Code: ErrorRepositoryRemoteUnavailable}}
@@ -127,14 +127,14 @@ func TestDiscoverRepositoryRejectsPublicOrMismatchedExcludePath(t *testing.T) {
 
 	result := inventoryService.DiscoverRepository(context.Background(), "/checkout")
 	if result.Repository != nil || len(result.Errors) != 1 ||
-		result.Errors[0].Code != ErrorAdapterObservationInvalid {
+		result.Errors[0].Code != ErrorProfileObservationInvalid {
 		t.Fatalf("unsafe exclude path was accepted: %#v", result)
 	}
 }
 
 func validRepositoryObservation() RepositoryObservation {
 	return RepositoryObservation{
-		AdapterName:       "example",
+		ProfileKey:        "example",
 		CommonDirectory:   "/Users/example/configured repository/.git",
 		SharedExcludePath: "/Users/example/configured repository/.git/info/exclude",
 		Remote:            "owner/repository",

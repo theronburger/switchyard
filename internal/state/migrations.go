@@ -12,6 +12,9 @@ var ErrUnsupportedSchemaVersion = errors.New("state database schema is newer tha
 type migration struct {
 	version int
 	sql     string
+	// apply runs after sql inside the same transaction for data migrations
+	// that cannot be expressed as schema statements.
+	apply func(context.Context, *sql.Tx) error
 }
 
 var migrations = []migration{
@@ -206,6 +209,15 @@ ALTER TABLE configuration_revisions
     ADD COLUMN executable_digests_json BLOB NOT NULL DEFAULT '{}';
 `,
 	},
+	{
+		// Contract v2 and record schema 2: the public repository field
+		// `adapter` becomes `profileKey`, pinned environment intent carries
+		// `ProfileDigest` instead of `Adapter`, and workspace results carry
+		// `ProfileKey`. Existing 0.1.0 state is rewritten in place so strict
+		// decoders never see the legacy shape.
+		version: 10,
+		apply:   migrateLegacyProfileNaming,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {
@@ -244,9 +256,17 @@ func (store *Store) applyMigration(ctx context.Context, nextMigration migration)
 		return fmt.Errorf("begin migration %d: %w", nextMigration.version, err)
 	}
 
-	if _, err := transaction.ExecContext(ctx, nextMigration.sql); err != nil {
-		_ = transaction.Rollback()
-		return fmt.Errorf("apply migration %d: %w", nextMigration.version, err)
+	if nextMigration.sql != "" {
+		if _, err := transaction.ExecContext(ctx, nextMigration.sql); err != nil {
+			_ = transaction.Rollback()
+			return fmt.Errorf("apply migration %d: %w", nextMigration.version, err)
+		}
+	}
+	if nextMigration.apply != nil {
+		if err := nextMigration.apply(ctx, transaction); err != nil {
+			_ = transaction.Rollback()
+			return fmt.Errorf("apply migration %d: %w", nextMigration.version, err)
+		}
 	}
 	if _, err := transaction.ExecContext(
 		ctx,

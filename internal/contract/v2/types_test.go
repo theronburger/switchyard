@@ -1,4 +1,4 @@
-package contractv1
+package contractv2
 
 import (
 	"encoding/json"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestStatusFixture(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestStatusFixture(t *testing.T) {
 }
 
 func TestStatusAcceptsRepositoryNeutralWorkspaceToolchains(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestStatusAcceptsRepositoryNeutralWorkspaceToolchains(t *testing.T) {
 
 func TestStatusFixtureAllowsAdditiveFields(t *testing.T) {
 	contents := []byte(`{
-		"schemaVersion": 1,
+		"schemaVersion": 2,
 		"snapshotRevision": 1,
 		"generatedAt": "2026-08-14T10:00:00Z",
 		"futureField": {"ignored": true},
@@ -95,7 +95,7 @@ func TestStatusFixtureAllowsAdditiveFields(t *testing.T) {
 }
 
 func TestStatusRejectsNullCollections(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestStatusRejectsNullCollections(t *testing.T) {
 }
 
 func TestStatusRejectsEnvironmentTargetOutsideRepositoryCatalog(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestStatusRejectsEnvironmentTargetOutsideRepositoryCatalog(t *testing.T) {
 }
 
 func TestStatusValidatesLifecycleVocabularyAndAcceptsLegacyPersistedStates(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestStatusValidatesLifecycleVocabularyAndAcceptsLegacyPersistedStates(t *te
 }
 
 func TestStatusRejectsInconsistentWorktreeLineAttribution(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +221,7 @@ func TestStatusRejectsInconsistentWorktreeLineAttribution(t *testing.T) {
 }
 
 func TestStatusRejectsInconsistentPullRequestChecks(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", "status.json")
+	fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", "status.json")
 	contents, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestTransportFixtures(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", test.file)
+			fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", test.file)
 			contents, err := os.ReadFile(fixturePath)
 			if err != nil {
 				t.Fatal(err)
@@ -291,7 +291,7 @@ func TestMutationFixtures(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.file, func(t *testing.T) {
-			fixturePath := filepath.Join("..", "..", "..", "contracts", "v1", "fixtures", test.file)
+			fixturePath := filepath.Join("..", "..", "..", "contracts", "v2", "fixtures", test.file)
 			contents, err := os.ReadFile(fixturePath)
 			if err != nil {
 				t.Fatal(err)

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 )
 
@@ -17,11 +17,11 @@ func TestWorkspaceJournalPersistsIncompleteAndCurrentAcrossReopen(t *testing.T) 
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	store := openTestStore(t, path)
 	snapshot := validSnapshot()
-	snapshot.Repositories = []contractv1.Repository{{
-		ID: "repository_01", DisplayName: "example", RootPath: "/tmp/repository", Adapter: "example",
-		Worktrees: []contractv1.Worktree{{
+	snapshot.Repositories = []contractv2.Repository{{
+		ID: "repository_01", DisplayName: "example", RootPath: "/tmp/repository", ProfileKey: "example",
+		Worktrees: []contractv2.Worktree{{
 			ID: "worktree_01", Path: "/tmp/worktree", HeadRevision: "abc",
-			Git: contractv1.WorktreeState{},
+			Git: contractv2.WorktreeState{},
 		}},
 	}}
 	if _, err := store.CommitSnapshot(ctx, snapshot); err != nil {
@@ -155,7 +155,7 @@ func validWorkspaceRecord(operationID, worktreeID string) workspacecontrol.Opera
 
 func validWorkspaceResult(worktreeID string) workspacecontrol.Result {
 	return workspacecontrol.Result{
-		WorktreeID: worktreeID, Adapter: "example", WorktreeRoot: "/tmp/worktree",
+		WorktreeID: worktreeID, ProfileKey: "example", WorktreeRoot: "/tmp/worktree",
 		Ownership: workspacecontrol.OwnershipAdopted, State: workspacecontrol.StateReady,
 		Fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Toolchains: []workspacecontrol.Toolchain{{

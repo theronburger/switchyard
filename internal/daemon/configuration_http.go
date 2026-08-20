@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -32,7 +32,7 @@ func (handler *apiHandler) configuration(response http.ResponseWriter, request *
 			writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 			return true
 		}
-		var validation contractv1.ConfigurationValidationRequest
+		var validation contractv2.ConfigurationValidationRequest
 		if decodeMutationRequest(request, &validation) != nil || validation.Validate() != nil {
 			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "Configuration validation request is invalid", false)
 			return true
@@ -45,7 +45,7 @@ func (handler *apiHandler) configuration(response http.ResponseWriter, request *
 			writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 			return true
 		}
-		var acceptance contractv1.ConfigurationAcceptanceRequest
+		var acceptance contractv2.ConfigurationAcceptanceRequest
 		if decodeMutationRequest(request, &acceptance) != nil || acceptance.Validate() != nil {
 			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "Configuration acceptance request is invalid", false)
 			return true
@@ -58,7 +58,7 @@ func (handler *apiHandler) configuration(response http.ResponseWriter, request *
 
 func (handler *apiHandler) writeConfigurationResult(
 	response http.ResponseWriter,
-	status contractv1.ConfigurationStatus,
+	status contractv2.ConfigurationStatus,
 	err error,
 ) {
 	if err != nil {

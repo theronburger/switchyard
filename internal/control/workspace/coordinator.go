@@ -90,7 +90,7 @@ func (coordinator *Coordinator) Ensure(ctx context.Context, request EnsureReques
 		return Result{}, coordinator.fail(record, "WORKSPACE_NOT_READY", errors.Join(ErrNotReady, err))
 	}
 	result := Result{
-		WorktreeID: plan.WorktreeID, Adapter: plan.Adapter, WorktreeRoot: plan.WorktreeRoot,
+		WorktreeID: plan.WorktreeID, ProfileKey: plan.ProfileKey, WorktreeRoot: plan.WorktreeRoot,
 		Ownership: plan.Ownership, State: StateReady, Fingerprint: plan.Fingerprint,
 		Toolchains: append([]Toolchain(nil), plan.Toolchains...), PreparedAt: coordinator.now().UTC(),
 	}

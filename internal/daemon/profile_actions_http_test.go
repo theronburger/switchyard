@@ -9,32 +9,32 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type profileActionsHTTPBackend struct {
-	runs []contractv1.RunProfileActionRequest
+	runs []contractv2.RunProfileActionRequest
 }
 
-func (backend *profileActionsHTTPBackend) ListActions(context.Context) (contractv1.ProfileActionList, error) {
-	return contractv1.ProfileActionList{
-		SchemaVersion: contractv1.SchemaVersion, AcceptedDigest: "sha256:" + strings.Repeat("a", 64),
-		Actions: []contractv1.ProfileAction{{
+func (backend *profileActionsHTTPBackend) ListActions(context.Context) (contractv2.ProfileActionList, error) {
+	return contractv2.ProfileActionList{
+		SchemaVersion: contractv2.SchemaVersion, AcceptedDigest: "sha256:" + strings.Repeat("a", 64),
+		Actions: []contractv2.ProfileAction{{
 			ID: "tidy", RepositoryID: "repository_01", ProfileKey: "sample", ProfileDigest: "sha256:" + strings.Repeat("a", 64),
 			DisplayName: "Tidy", Scope: "worktree", Risk: "local", Kind: "command",
 		}},
 	}, nil
 }
 
-func (backend *profileActionsHTTPBackend) RunAction(_ context.Context, request contractv1.RunProfileActionRequest) (contractv1.MutationReceipt, error) {
+func (backend *profileActionsHTTPBackend) RunAction(_ context.Context, request contractv2.RunProfileActionRequest) (contractv2.MutationReceipt, error) {
 	backend.runs = append(backend.runs, request)
 	if request.ActionID == "push" {
-		return contractv1.MutationReceipt{}, &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+		return contractv2.MutationReceipt{}, &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 			Code: "ACTION_CONFIRMATION_REQUIRED", Message: "confirm", ResourceKind: "action", ResourceID: "push",
 		}}
 	}
-	return contractv1.MutationReceipt{
-		SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_01",
+	return contractv2.MutationReceipt{
+		SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID, OperationID: "operation_01",
 		AcceptedAt: time.Date(2026, 8, 20, 22, 0, 0, 0, time.UTC),
 	}, nil
 }
@@ -69,7 +69,7 @@ func TestProfileActionsHTTPListsAndRunsActions(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("list: status=%d body=%s", response.Code, response.Body.String())
 	}
-	var list contractv1.ProfileActionList
+	var list contractv2.ProfileActionList
 	if err := json.Unmarshal(response.Body.Bytes(), &list); err != nil || list.Validate() != nil || len(list.Actions) != 1 {
 		t.Fatalf("list body: %v %s", err, response.Body.String())
 	}
@@ -77,12 +77,12 @@ func TestProfileActionsHTTPListsAndRunsActions(t *testing.T) {
 		t.Fatal("action list exposed command shape")
 	}
 	response = serveProfileActions(handler, http.MethodPost, "/v1/actions/run",
-		`{"schemaVersion":1,"requestId":"request_01","idempotencyKey":"key_01","repositoryId":"repository_01","actionId":"tidy","worktreeId":"worktree_01"}`)
+		`{"schemaVersion":2,"requestId":"request_01","idempotencyKey":"key_01","repositoryId":"repository_01","actionId":"tidy","worktreeId":"worktree_01"}`)
 	if response.Code != http.StatusAccepted || len(backend.runs) != 1 || backend.runs[0].WorktreeID != "worktree_01" {
 		t.Fatalf("run: status=%d body=%s runs=%+v", response.Code, response.Body.String(), backend.runs)
 	}
 	response = serveProfileActions(handler, http.MethodPost, "/v1/actions/run",
-		`{"schemaVersion":1,"requestId":"request_02","idempotencyKey":"key_02","repositoryId":"repository_01","actionId":"push"}`)
+		`{"schemaVersion":2,"requestId":"request_02","idempotencyKey":"key_02","repositoryId":"repository_01","actionId":"push"}`)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "ACTION_CONFIRMATION_REQUIRED") {
 		t.Fatalf("confirmation: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -98,11 +98,11 @@ func TestProfileActionsHTTPRejectsInvalidRequests(t *testing.T) {
 		"list with query":                 {http.MethodGet, "/v1/actions?repositoryId=x", "", http.StatusBadRequest},
 		"list wrong method":               {http.MethodPost, "/v1/actions", `{}`, http.StatusMethodNotAllowed},
 		"run wrong method":                {http.MethodGet, "/v1/actions/run", "", http.StatusMethodNotAllowed},
-		"run unknown field":               {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","command":"rm -rf"}`, http.StatusBadRequest},
-		"run mismatched confirmation":     {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","confirmedActionId":"other"}`, http.StatusBadRequest},
-		"run worktree and environment":    {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","worktreeId":"w","environmentId":"e"}`, http.StatusBadRequest},
-		"run service without environment": {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","serviceId":"s"}`, http.StatusBadRequest},
-		"run wrong schema":                {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy"}`, http.StatusBadRequest},
+		"run unknown field":               {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","command":"rm -rf"}`, http.StatusBadRequest},
+		"run mismatched confirmation":     {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","confirmedActionId":"other"}`, http.StatusBadRequest},
+		"run worktree and environment":    {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","worktreeId":"w","environmentId":"e"}`, http.StatusBadRequest},
+		"run service without environment": {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","serviceId":"s"}`, http.StatusBadRequest},
+		"run wrong schema":                {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy"}`, http.StatusBadRequest},
 		"unknown action route":            {http.MethodPost, "/v1/actions/tidy/run", `{}`, http.StatusNotFound},
 	}
 	for name, c := range cases {

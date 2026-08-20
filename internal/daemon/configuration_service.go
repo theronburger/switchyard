@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -23,37 +23,37 @@ type ConfigurationService struct {
 	Restart         func()
 }
 
-func (service ConfigurationService) Status(ctx context.Context) (contractv1.ConfigurationStatus, error) {
+func (service ConfigurationService) Status(ctx context.Context) (contractv2.ConfigurationStatus, error) {
 	accepted, err := service.Store.ReadAcceptedConfiguration(ctx)
 	if errors.Is(err, state.ErrConfigurationNotAccepted) {
-		return contractv1.ConfigurationStatus{SchemaVersion: contractv1.SchemaVersion, State: "missing"}, nil
+		return contractv2.ConfigurationStatus{SchemaVersion: contractv2.SchemaVersion, State: "missing"}, nil
 	}
 	if err != nil {
-		return contractv1.ConfigurationStatus{}, err
+		return contractv2.ConfigurationStatus{}, err
 	}
-	return contractv1.ConfigurationStatus{
-		SchemaVersion: contractv1.SchemaVersion, State: "accepted",
+	return contractv2.ConfigurationStatus{
+		SchemaVersion: contractv2.SchemaVersion, State: "accepted",
 		AcceptedRevision: accepted.Revision, AcceptedDigest: accepted.Digest,
 	}, nil
 }
 
 func (service ConfigurationService) Validate(
 	ctx context.Context,
-	request contractv1.ConfigurationValidationRequest,
-) (contractv1.ConfigurationStatus, error) {
+	request contractv2.ConfigurationValidationRequest,
+) (contractv2.ConfigurationStatus, error) {
 	if request.Validate() != nil || service.Store == nil || service.Path == "" || service.CompilerVersion == "" {
-		return contractv1.ConfigurationStatus{}, errors.New("configuration service is unavailable")
+		return contractv2.ConfigurationStatus{}, errors.New("configuration service is unavailable")
 	}
 	loaded, err := configuration.LoadFile(service.Path)
 	if err != nil {
-		return contractv1.ConfigurationStatus{}, err
+		return contractv2.ConfigurationStatus{}, err
 	}
 	candidate, err := service.Store.StageConfiguration(ctx, request.ExpectedRevision, service.CompilerVersion, loaded)
 	if err != nil {
-		return contractv1.ConfigurationStatus{}, err
+		return contractv2.ConfigurationStatus{}, err
 	}
-	status := contractv1.ConfigurationStatus{
-		SchemaVersion: contractv1.SchemaVersion, State: "pending",
+	status := contractv2.ConfigurationStatus{
+		SchemaVersion: contractv2.SchemaVersion, State: "pending",
 		AcceptedRevision: request.ExpectedRevision,
 		Candidate:        candidateContract(candidate),
 	}
@@ -69,17 +69,17 @@ func (service ConfigurationService) Validate(
 
 func (service ConfigurationService) Accept(
 	ctx context.Context,
-	request contractv1.ConfigurationAcceptanceRequest,
-) (contractv1.ConfigurationStatus, error) {
+	request contractv2.ConfigurationAcceptanceRequest,
+) (contractv2.ConfigurationStatus, error) {
 	if request.Validate() != nil || service.Store == nil {
-		return contractv1.ConfigurationStatus{}, errors.New("configuration service is unavailable")
+		return contractv2.ConfigurationStatus{}, errors.New("configuration service is unavailable")
 	}
 	accepted, err := service.Store.AcceptConfiguration(ctx, request.ExpectedRevision, request.Digest)
 	if err != nil {
-		return contractv1.ConfigurationStatus{}, err
+		return contractv2.ConfigurationStatus{}, err
 	}
-	status := contractv1.ConfigurationStatus{
-		SchemaVersion: contractv1.SchemaVersion, State: "accepted",
+	status := contractv2.ConfigurationStatus{
+		SchemaVersion: contractv2.SchemaVersion, State: "accepted",
 		AcceptedRevision: accepted.Revision, AcceptedDigest: accepted.Digest,
 	}
 	if service.Restart != nil {
@@ -88,9 +88,9 @@ func (service ConfigurationService) Accept(
 	return status, nil
 }
 
-func candidateContract(candidate state.ConfigurationCandidate) *contractv1.ConfigurationCandidate {
-	return &contractv1.ConfigurationCandidate{
-		SchemaVersion: contractv1.SchemaVersion, Digest: candidate.Digest,
+func candidateContract(candidate state.ConfigurationCandidate) *contractv2.ConfigurationCandidate {
+	return &contractv2.ConfigurationCandidate{
+		SchemaVersion: contractv2.SchemaVersion, Digest: candidate.Digest,
 		SourceDigest: candidate.SourceDigest, CompilerVersion: candidate.CompilerVersion,
 		RepositoryDigests: candidate.RepositoryDigests, StagedAt: candidate.StagedAt,
 		ExecutableDigests: candidate.ExecutableDigests,

@@ -1,6 +1,6 @@
 import Foundation
 
-public let contractSchemaVersion = 1
+public let contractSchemaVersion = 2
 
 public struct StatusSnapshot: Decodable, Sendable {
     public let schemaVersion: Int
@@ -32,7 +32,7 @@ public struct Repository: Decodable, Identifiable, Sendable {
     public let id: String
     public let displayName: String
     public let rootPath: String
-    public let adapter: String
+    public let profileKey: String
     public let remote: String
     public let worktrees: [Worktree]
     public let runtime: RepositoryRuntime?

@@ -94,14 +94,14 @@ public struct FixtureStatusProvider: StatusProviding {
         }
     }
 
-    /// Finds `contracts/v1/fixtures/status.json` for development builds:
+    /// Finds `contracts/v2/fixtures/status.json` for development builds:
     /// an explicit environment override first, then a walk up from the
     /// current directory, then a walk up from this source file.
     public static func locateCanonicalFixture(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) throws -> URL {
-        let relativePath = "contracts/v1/fixtures/status.json"
+        let relativePath = "contracts/v2/fixtures/status.json"
         var searched: [String] = []
 
         if let override = environment["SWITCHYARD_STATUS_FIXTURE"] {
@@ -136,7 +136,7 @@ public struct FixtureStatusProvider: StatusProviding {
     /// discovered yet.
     public static let emptyStatusJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "snapshotRevision": 0,
       "generatedAt": "2026-08-14T08:00:00Z",
       "daemon": {

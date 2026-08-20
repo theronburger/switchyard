@@ -11,72 +11,72 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type actionBackend struct {
-	start func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	stop  func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+	start func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error)
+	stop  func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error)
 }
 
 type workspaceActionBackend struct {
-	create  func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	adopt   func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	archive func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
-	prepare func(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
+	create  func(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error)
+	adopt   func(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error)
+	archive func(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error)
+	prepare func(context.Context, contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error)
 }
 
 func (backend workspaceActionBackend) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return backend.create(ctx, request)
 }
 
 func (backend workspaceActionBackend) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return backend.archive(ctx, request)
 }
 
 func (backend workspaceActionBackend) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return backend.adopt(ctx, request)
 }
 
 func (backend workspaceActionBackend) PrepareWorktree(
 	ctx context.Context,
-	request contractv1.PrepareWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.PrepareWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return backend.prepare(ctx, request)
 }
 
 func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
 	backend := workspaceActionBackend{
-		create: func(_ context.Context, request contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error) {
+		create: func(_ context.Context, request contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.RepositoryID != "repository_01" || request.Branch != "feature/example" ||
 				request.StartPoint != "origin/main" {
 				t.Fatalf("create request: %+v", request)
 			}
 			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
 		},
-		adopt: func(_ context.Context, request contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error) {
+		adopt: func(_ context.Context, request contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.WorktreeID != "worktree_01" {
 				t.Fatalf("adopt request: %+v", request)
 			}
 			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
 		},
-		archive: func(_ context.Context, request contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
+		archive: func(_ context.Context, request contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.WorktreeID != "worktree_01" {
 				t.Fatalf("archive request: %+v", request)
 			}
 			return validMutationReceipt(request.RequestID, "", acceptedAt), nil
 		},
-		prepare: func(_ context.Context, request contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error) {
+		prepare: func(_ context.Context, request contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.WorktreeID != "worktree_01" {
 				t.Fatalf("prepare request: %+v", request)
 			}
@@ -92,7 +92,7 @@ func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T
 		t.Fatal(err)
 	}
 	create := serveMutation(t, handler, "/v1/worktrees", map[string]any{
-		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_create",
+		"schemaVersion": contractv2.SchemaVersion, "requestId": "request_create",
 		"idempotencyKey": "create:test", "repositoryId": "repository_01",
 		"branch": "feature/example", "startPoint": "origin/main",
 	})
@@ -100,35 +100,35 @@ func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T
 		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
 	}
 	adopt := serveMutation(t, handler, "/v1/worktrees/worktree_01/adopt", map[string]any{
-		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_adopt",
+		"schemaVersion": contractv2.SchemaVersion, "requestId": "request_adopt",
 		"idempotencyKey": "adopt:test", "worktreeId": "worktree_01",
 	})
 	if adopt.Code != http.StatusAccepted {
 		t.Fatalf("adopt status=%d body=%s", adopt.Code, adopt.Body.String())
 	}
 	archive := serveMutation(t, handler, "/v1/worktrees/worktree_01/archive", map[string]any{
-		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_archive",
+		"schemaVersion": contractv2.SchemaVersion, "requestId": "request_archive",
 		"idempotencyKey": "archive:test", "worktreeId": "worktree_01",
 	})
 	if archive.Code != http.StatusAccepted {
 		t.Fatalf("archive status=%d body=%s", archive.Code, archive.Body.String())
 	}
 	prepare := serveMutation(t, handler, "/v1/worktrees/worktree_01/prepare", map[string]any{
-		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_prepare",
+		"schemaVersion": contractv2.SchemaVersion, "requestId": "request_prepare",
 		"idempotencyKey": "prepare:test", "worktreeId": "worktree_01",
 	})
 	if prepare.Code != http.StatusAccepted {
 		t.Fatalf("prepare status=%d body=%s", prepare.Code, prepare.Body.String())
 	}
 	mismatch := serveMutation(t, handler, "/v1/worktrees/worktree_01/archive", map[string]any{
-		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_mismatch",
+		"schemaVersion": contractv2.SchemaVersion, "requestId": "request_mismatch",
 		"idempotencyKey": "archive:mismatch", "worktreeId": "worktree_02",
 	})
 	if mismatch.Code != http.StatusBadRequest {
 		t.Fatalf("mismatched archive status=%d body=%s", mismatch.Code, mismatch.Body.String())
 	}
 	prepareMismatch := serveMutation(t, handler, "/v1/worktrees/worktree_01/prepare", map[string]any{
-		"schemaVersion": contractv1.SchemaVersion, "requestId": "request_prepare_mismatch",
+		"schemaVersion": contractv2.SchemaVersion, "requestId": "request_prepare_mismatch",
 		"idempotencyKey": "prepare:mismatch", "worktreeId": "worktree_02",
 	})
 	if prepareMismatch.Code != http.StatusBadRequest {
@@ -138,29 +138,29 @@ func TestWorkspaceMutationsReturnAcceptedReceiptsAndBindArchivePath(t *testing.T
 
 func (backend actionBackend) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	return backend.start(ctx, request)
 }
 
 func (backend actionBackend) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	return backend.stop(ctx, environmentID, request)
 }
 
 func TestEnvironmentMutationsReturnAcceptedReceipts(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 14, 13, 30, 0, 0, time.UTC)
 	backend := actionBackend{
-		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(_ context.Context, request contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if request.WorktreeID != "worktree_test" || len(request.ServiceIDs) != 2 {
 				t.Fatalf("start request: %+v", request)
 			}
 			return validMutationReceipt(request.RequestID, "environment_test", acceptedAt), nil
 		},
-		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if environmentID != "environment_test" || request.ExpectedEnvironmentRevision == nil ||
 				*request.ExpectedEnvironmentRevision != 3 {
 				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
@@ -171,7 +171,7 @@ func TestEnvironmentMutationsReturnAcceptedReceipts(t *testing.T) {
 	handler := newMutationTestHandler(t, backend)
 
 	start := serveMutation(t, handler, "/v1/environments", map[string]any{
-		"schemaVersion":  contractv1.SchemaVersion,
+		"schemaVersion":  contractv2.SchemaVersion,
 		"requestId":      "request_start",
 		"idempotencyKey": "start:test",
 		"worktreeId":     "worktree_test",
@@ -183,7 +183,7 @@ func TestEnvironmentMutationsReturnAcceptedReceipts(t *testing.T) {
 	assertMutationReceipt(t, start, "request_start", "environment_test")
 
 	stop := serveMutation(t, handler, "/v1/environments/environment_test/stop", map[string]any{
-		"schemaVersion":               contractv1.SchemaVersion,
+		"schemaVersion":               contractv2.SchemaVersion,
 		"requestId":                   "request_stop",
 		"idempotencyKey":              "stop:test",
 		"expectedEnvironmentRevision": 3,
@@ -197,17 +197,17 @@ func TestEnvironmentMutationsReturnAcceptedReceipts(t *testing.T) {
 func TestEnvironmentMutationsRejectRequestsBeforeBackend(t *testing.T) {
 	calls := 0
 	backend := actionBackend{
-		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
-		stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
 	}
 	handler := newMutationTestHandler(t, backend)
-	valid := `{"schemaVersion":1,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}`
+	valid := `{"schemaVersion":2,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}`
 	tests := []struct {
 		name        string
 		method      string
@@ -220,8 +220,8 @@ func TestEnvironmentMutationsRejectRequestsBeforeBackend(t *testing.T) {
 		{name: "content type", method: http.MethodPost, path: "/v1/environments", contentType: "text/plain", body: valid, status: http.StatusBadRequest},
 		{name: "unknown field", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: strings.TrimSuffix(valid, "}") + `,"surprise":true}`, status: http.StatusBadRequest},
 		{name: "trailing value", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: valid + `{}`, status: http.StatusBadRequest},
-		{name: "null services", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: `{"schemaVersion":1,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":null}`, status: http.StatusBadRequest},
-		{name: "unsafe route", method: http.MethodPost, path: "/v1/environments/bad%20id/stop", contentType: "application/json", body: `{"schemaVersion":1,"requestId":"request","idempotencyKey":"key"}`, status: http.StatusNotFound},
+		{name: "null services", method: http.MethodPost, path: "/v1/environments", contentType: "application/json", body: `{"schemaVersion":2,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":null}`, status: http.StatusBadRequest},
+		{name: "unsafe route", method: http.MethodPost, path: "/v1/environments/bad%20id/stop", contentType: "application/json", body: `{"schemaVersion":2,"requestId":"request","idempotencyKey":"key"}`, status: http.StatusNotFound},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -254,13 +254,13 @@ func TestEnvironmentMutationsRejectRequestsBeforeBackend(t *testing.T) {
 func TestEnvironmentMutationsRequireAuthenticationAndRejectOrigin(t *testing.T) {
 	calls := 0
 	backend := actionBackend{
-		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
-		stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
 	}
 	handler := newMutationTestHandler(t, backend)
@@ -295,7 +295,7 @@ func TestEnvironmentMutationErrorsAreStableAndRedacted(t *testing.T) {
 	}{
 		{
 			name: "public conflict",
-			err: &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+			err: &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 				Code: "ENVIRONMENT_BUSY", Message: "The environment already has an active operation.", Retryable: true,
 				ResourceKind: "environment", ResourceID: "environment_01", Phase: "preparing-services",
 				NextAction: "wait_for_active_operation",
@@ -308,15 +308,15 @@ func TestEnvironmentMutationErrorsAreStableAndRedacted(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			backend := actionBackend{
-				start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
-					return contractv1.MutationReceipt{}, test.err
+				start: func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
+					return contractv2.MutationReceipt{}, test.err
 				},
-				stop: func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
-					return contractv1.MutationReceipt{}, test.err
+				stop: func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
+					return contractv2.MutationReceipt{}, test.err
 				},
 			}
 			response := serveMutation(t, newMutationTestHandler(t, backend), "/v1/environments", map[string]any{
-				"schemaVersion": contractv1.SchemaVersion, "requestId": "request", "idempotencyKey": "key",
+				"schemaVersion": contractv2.SchemaVersion, "requestId": "request", "idempotencyKey": "key",
 				"worktreeId": "worktree", "serviceIds": []string{"organizer"},
 			})
 			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
@@ -371,7 +371,7 @@ func serveMutation(t *testing.T, handler http.Handler, path string, body any) *h
 
 func assertMutationReceipt(t *testing.T, response *httptest.ResponseRecorder, requestID, environmentID string) {
 	t.Helper()
-	var receipt contractv1.MutationReceipt
+	var receipt contractv2.MutationReceipt
 	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -380,9 +380,9 @@ func assertMutationReceipt(t *testing.T, response *httptest.ResponseRecorder, re
 	}
 }
 
-func validMutationReceipt(requestID, environmentID string, acceptedAt time.Time) contractv1.MutationReceipt {
-	return contractv1.MutationReceipt{
-		SchemaVersion: contractv1.SchemaVersion,
+func validMutationReceipt(requestID, environmentID string, acceptedAt time.Time) contractv2.MutationReceipt {
+	return contractv2.MutationReceipt{
+		SchemaVersion: contractv2.SchemaVersion,
 		RequestID:     requestID,
 		OperationID:   "operation_test",
 		AcceptedAt:    acceptedAt,

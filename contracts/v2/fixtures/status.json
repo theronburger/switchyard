@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "snapshotRevision": 42,
   "generatedAt": "2026-08-14T10:00:00Z",
   "daemon": {
@@ -13,7 +13,7 @@
       "id": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
       "displayName": "sample",
       "rootPath": "/Users/example/Developer/sample",
-      "adapter": "sample",
+      "profileKey": "sample",
       "remote": "example/sample",
       "observation": {
         "observedAt": "2026-08-14T09:59:50Z",

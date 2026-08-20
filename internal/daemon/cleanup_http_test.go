@@ -8,24 +8,24 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type cleanupHTTPBackend struct{}
 
-func (cleanupHTTPBackend) Plan(context.Context, contractv1.CleanupPlanRequest) (contractv1.CleanupPlan, error) {
+func (cleanupHTTPBackend) Plan(context.Context, contractv2.CleanupPlanRequest) (contractv2.CleanupPlan, error) {
 	now := time.Date(2026, 8, 20, 22, 0, 0, 0, time.UTC)
-	return contractv1.CleanupPlan{
-		SchemaVersion: contractv1.SchemaVersion, ID: "cleanup_plan_01", Revision: 1,
-		Scope: contractv1.CleanupScope{Kind: "global"}, Candidates: []contractv1.CleanupCandidate{},
-		Protected: []contractv1.CleanupProtection{}, CreatedAt: now, ExpiresAt: now.Add(time.Minute),
+	return contractv2.CleanupPlan{
+		SchemaVersion: contractv2.SchemaVersion, ID: "cleanup_plan_01", Revision: 1,
+		Scope: contractv2.CleanupScope{Kind: "global"}, Candidates: []contractv2.CleanupCandidate{},
+		Protected: []contractv2.CleanupProtection{}, CreatedAt: now, ExpiresAt: now.Add(time.Minute),
 	}, nil
 }
 
-func (cleanupHTTPBackend) Apply(context.Context, contractv1.CleanupApplyRequest) (contractv1.CleanupResult, error) {
-	return contractv1.CleanupResult{
-		SchemaVersion: contractv1.SchemaVersion, PlanID: "cleanup_plan_01", PlanRevision: 1,
-		Removals: []contractv1.CleanupRemoval{}, CompletedAt: time.Date(2026, 8, 20, 22, 0, 0, 0, time.UTC),
+func (cleanupHTTPBackend) Apply(context.Context, contractv2.CleanupApplyRequest) (contractv2.CleanupResult, error) {
+	return contractv2.CleanupResult{
+		SchemaVersion: contractv2.SchemaVersion, PlanID: "cleanup_plan_01", PlanRevision: 1,
+		Removals: []contractv2.CleanupRemoval{}, CompletedAt: time.Date(2026, 8, 20, 22, 0, 0, 0, time.UTC),
 	}, nil
 }
 

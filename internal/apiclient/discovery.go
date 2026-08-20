@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
-const RuntimeDescriptorSchemaVersion = contractv1.SchemaVersion
+const RuntimeDescriptorSchemaVersion = contractv2.SchemaVersion
 
 const (
 	maximumDescriptorBytes = 64 * 1024
@@ -31,7 +31,7 @@ type RuntimePaths struct {
 	Token      string
 }
 
-type RuntimeDescriptor = contractv1.RuntimeDescriptor
+type RuntimeDescriptor = contractv2.RuntimeDescriptor
 
 type ProcessIdentityVerifier func(pid int, startedAt time.Time) error
 

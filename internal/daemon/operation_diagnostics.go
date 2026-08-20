@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -31,7 +31,7 @@ var (
 )
 
 type OperationDiagnosticsStore interface {
-	ReadOperation(context.Context, string) (contractv1.Operation, error)
+	ReadOperation(context.Context, string) (contractv2.Operation, error)
 }
 
 type OperationDiagnosticsReader struct {
@@ -50,39 +50,39 @@ func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 	ctx context.Context,
 	operationID string,
 	maximumBytes int,
-) (contractv1.OperationDiagnostics, error) {
+) (contractv2.OperationDiagnostics, error) {
 	if operationID == "" || strings.ContainsAny(operationID, "/\\\x00") {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
 	}
 	if maximumBytes == 0 {
 		maximumBytes = DefaultOperationDiagnosticBytes
 	}
 	if maximumBytes < 256 || maximumBytes > MaximumOperationDiagnosticBytes {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
 	}
 	operation, err := reader.store.ReadOperation(ctx, operationID)
 	if errors.Is(err, state.ErrOperationNotFound) {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsNotFound
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsNotFound
 	}
 	if err != nil {
-		return contractv1.OperationDiagnostics{}, err
+		return contractv2.OperationDiagnostics{}, err
 	}
 	if operation.Error == nil || operation.Error.LogReference == "" {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
 	// Repository, worktree, and machine scoped profile actions have no
 	// environment; every other operation's logs live under one.
 	if operation.EnvironmentID == "" && operation.Kind != ProfileActionOperationKind {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
 	logDirectory, valid := reader.logDirectory(operation.Kind, operation.EnvironmentID, operation.Error.LogReference)
 	if !valid || !ownedLogDirectory(reader.runtimeRoot, logDirectory) {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
-	diagnostics := contractv1.OperationDiagnostics{
-		SchemaVersion: contractv1.SchemaVersion, OperationID: operation.ID,
+	diagnostics := contractv2.OperationDiagnostics{
+		SchemaVersion: contractv2.SchemaVersion, OperationID: operation.ID,
 		EnvironmentID: operation.EnvironmentID, LogReference: operation.Error.LogReference,
-		Excerpts: make([]contractv1.OperationLogExcerpt, 0, 2),
+		Excerpts: make([]contractv2.OperationLogExcerpt, 0, 2),
 	}
 	for _, stream := range []string{"stdout", "stderr"} {
 		excerpt, found := readOwnedLogExcerpt(filepath.Join(logDirectory, stream+".log"), stream, maximumBytes)
@@ -91,7 +91,7 @@ func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 		}
 	}
 	if len(diagnostics.Excerpts) == 0 {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
 	return diagnostics, nil
 }
@@ -118,16 +118,16 @@ func (reader *OperationDiagnosticsReader) logDirectory(kind, environmentID, refe
 	return directory, pathContainedBy(reader.runtimeRoot, directory)
 }
 
-func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv1.OperationLogExcerpt, bool) {
+func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv2.OperationLogExcerpt, bool) {
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return contractv1.OperationLogExcerpt{}, false
+		return contractv2.OperationLogExcerpt{}, false
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	stat, statOK := infoSyscall(info)
 	if err != nil || !info.Mode().IsRegular() || !statOK || stat.Nlink != 1 || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {
-		return contractv1.OperationLogExcerpt{}, false
+		return contractv2.OperationLogExcerpt{}, false
 	}
 	start := info.Size() - int64(maximumBytes)
 	truncated := start > 0
@@ -137,11 +137,11 @@ func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv1.Oper
 	contents := make([]byte, info.Size()-start)
 	read, err := file.ReadAt(contents, start)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return contractv1.OperationLogExcerpt{}, false
+		return contractv2.OperationLogExcerpt{}, false
 	}
 	text := strings.ToValidUTF8(string(contents[:read]), "?")
 	text, redacted := redactDiagnosticLog(text)
-	return contractv1.OperationLogExcerpt{
+	return contractv2.OperationLogExcerpt{
 		Stream: stream, Content: text, Truncated: truncated, Redacted: redacted,
 	}, true
 }

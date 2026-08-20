@@ -130,12 +130,12 @@ type ServiceLaunch struct {
 }
 
 // PlanIntent is the small, persistence-safe input to deterministic late
-// binding. Adapter-specific planners retain repository paths and other local
+// binding. ProfileKey-specific planners retain repository paths and other local
 // details; the coordinator persists only this intent and assigned leases.
 type PlanIntent struct {
-	Adapter    string
-	TargetID   string
-	ServiceIDs []string
+	ProfileDigest string
+	TargetID      string
+	ServiceIDs    []string
 }
 
 // SourceSnapshot is the repository state captured immediately before an

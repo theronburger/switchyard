@@ -18,7 +18,7 @@ go mod tidy -diff
 go vet ./...
 go test -race ./...
 swift test --package-path app
-swift run --package-path app SwitchyardContractCheck contracts/v1/fixtures/status.json
+swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
 swift build --package-path app -c release --product SwitchyardApp
 "$script_directory/build-binary.sh" "$temporary_directory/switchyard"
 "$temporary_directory/switchyard" version >/dev/null

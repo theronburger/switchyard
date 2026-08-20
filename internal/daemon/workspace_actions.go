@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/state"
@@ -26,10 +26,10 @@ type ManagedWorkspaceBackend interface {
 }
 
 type WorkspaceActionResolver interface {
-	ResolveCreate(context.Context, contractv1.CreateWorktreeRequest) (workspacecontrol.CreateManagedRequest, error)
-	ResolveAdopt(context.Context, contractv1.AdoptWorktreeRequest) (workspacecontrol.AdoptManagedRequest, error)
-	ResolveArchive(context.Context, contractv1.ArchiveWorktreeRequest) (workspacecontrol.ArchiveManagedRequest, error)
-	ResolvePrepare(context.Context, contractv1.PrepareWorktreeRequest) (string, error)
+	ResolveCreate(context.Context, contractv2.CreateWorktreeRequest) (workspacecontrol.CreateManagedRequest, error)
+	ResolveAdopt(context.Context, contractv2.AdoptWorktreeRequest) (workspacecontrol.AdoptManagedRequest, error)
+	ResolveArchive(context.Context, contractv2.ArchiveWorktreeRequest) (workspacecontrol.ArchiveManagedRequest, error)
+	ResolvePrepare(context.Context, contractv2.PrepareWorktreeRequest) (string, error)
 }
 
 type WorkspaceActionServiceConfig struct {
@@ -75,18 +75,18 @@ func NewWorkspaceActionService(config WorkspaceActionServiceConfig) (*WorkspaceA
 
 func (service *WorkspaceActionService) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if request.Validate() != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	resolved, err := service.resolver.ResolveCreate(ctx, request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
 	fingerprint, err := state.FingerprintRequest(request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceCreateOperation, "repository", request.RepositoryID, true, func(string) error {
 		_, err := service.backend.Create(service.lifecycle, resolved)
@@ -96,18 +96,18 @@ func (service *WorkspaceActionService) CreateWorktree(
 
 func (service *WorkspaceActionService) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if request.Validate() != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	resolved, err := service.resolver.ResolveArchive(ctx, request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
 	fingerprint, err := state.FingerprintRequest(request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceArchiveOperation, "worktree", request.WorktreeID, true, func(string) error {
 		_, err := service.backend.Archive(service.lifecycle, resolved)
@@ -117,18 +117,18 @@ func (service *WorkspaceActionService) ArchiveWorktree(
 
 func (service *WorkspaceActionService) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if request.Validate() != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	resolved, err := service.resolver.ResolveAdopt(ctx, request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
 	fingerprint, err := state.FingerprintRequest(request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	return service.accept(ctx, request.MutationRequest, fingerprint, workspaceAdoptOperation, "worktree", request.WorktreeID, true, func(string) error {
 		_, err := service.backend.Adopt(service.lifecycle, resolved)
@@ -138,18 +138,18 @@ func (service *WorkspaceActionService) AdoptWorktree(
 
 func (service *WorkspaceActionService) PrepareWorktree(
 	ctx context.Context,
-	request contractv1.PrepareWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.PrepareWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if request.Validate() != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	worktreeID, err := service.resolver.ResolvePrepare(ctx, request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
 	fingerprint, err := state.FingerprintRequest(request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidWorkspaceAction()
+		return contractv2.MutationReceipt{}, invalidWorkspaceAction()
 	}
 	return service.accept(
 		ctx, request.MutationRequest, fingerprint, workspacePrepareOperation, "worktree", worktreeID, false,
@@ -164,29 +164,29 @@ func (service *WorkspaceActionService) PrepareWorktree(
 
 func (service *WorkspaceActionService) accept(
 	ctx context.Context,
-	request contractv1.MutationRequest,
+	request contractv2.MutationRequest,
 	fingerprint [sha256.Size]byte,
 	kind string,
 	resourceKind string,
 	resourceID string,
 	restartAfterSuccess bool,
 	action func(string) error,
-) (contractv1.MutationReceipt, error) {
+) (contractv2.MutationReceipt, error) {
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	if service.closed || service.lifecycle.Err() != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	operationID, err := service.newID("operation")
 	if err != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	operation, created, err := service.store.CreateOperation(ctx, state.NewOperation{
 		ID: operationID, RequestID: request.RequestID, IdempotencyKey: request.IdempotencyKey,
 		RequestFingerprint: fingerprint, Kind: kind,
 	})
 	if err != nil {
-		return contractv1.MutationReceipt{}, operationCreationError(err)
+		return contractv2.MutationReceipt{}, operationCreationError(err)
 	}
 	if created {
 		service.workers.Add(1)
@@ -222,7 +222,7 @@ func (service *WorkspaceActionService) execute(
 	}
 }
 
-func (service *WorkspaceActionService) fail(operationID string, failure contractv1.ContractError) {
+func (service *WorkspaceActionService) fail(operationID string, failure contractv2.ContractError) {
 	ctx, cancel := context.WithTimeout(context.Background(), actionFinalizationTimeout)
 	defer cancel()
 	_, _ = service.store.TransitionOperation(ctx, operationID, string(domain.OperationFailed), &failure)
@@ -248,8 +248,8 @@ func (service *WorkspaceActionService) CloseAndWait(ctx context.Context) error {
 	}
 }
 
-func workspaceFailure(err error, resourceKind, resourceID string) contractv1.ContractError {
-	failure := contractv1.ContractError{
+func workspaceFailure(err error, resourceKind, resourceID string) contractv2.ContractError {
+	failure := contractv2.ContractError{
 		Code: "WORKSPACE_ACTION_FAILED", Message: "The workspace action could not be completed safely.",
 		Retryable: true, ResourceKind: resourceKind, ResourceID: resourceID,
 		NextAction: "inspect_workspace_diagnostics",
@@ -294,7 +294,7 @@ func workspaceFailure(err error, resourceKind, resourceID string) contractv1.Con
 }
 
 func invalidWorkspaceAction() error {
-	return &ActionError{Status: 400, Contract: contractv1.ContractError{
+	return &ActionError{Status: 400, Contract: contractv2.ContractError{
 		Code: "INVALID_WORKSPACE_ACTION", Message: "The workspace action is invalid.",
 	}}
 }

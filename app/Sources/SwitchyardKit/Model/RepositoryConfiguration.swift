@@ -342,12 +342,12 @@ public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
 
     public static let canonicalPendingJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "state": "pending",
       "acceptedRevision": 4,
       "acceptedDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "candidate": {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
         "sourceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
         "compilerVersion": "profile-compiler/1",
@@ -365,7 +365,7 @@ public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
 
     public static let canonicalAcceptedJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "state": "accepted",
       "acceptedRevision": 5,
       "acceptedDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -374,7 +374,7 @@ public struct FixtureConfigurationActionClient: ConfigurationActionSubmitting {
 
     public static let missingJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "state": "missing",
       "acceptedRevision": 0
     }

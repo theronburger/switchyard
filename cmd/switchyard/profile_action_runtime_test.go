@@ -9,17 +9,17 @@ import (
 	"testing"
 
 	"github.com/theronburger/switchyard/internal/configuration"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	profilecontrol "github.com/theronburger/switchyard/internal/control/profile"
 	"github.com/theronburger/switchyard/internal/daemon"
 )
 
 type actionSnapshotSource struct {
-	snapshot contractv1.StatusSnapshot
+	snapshot contractv2.StatusSnapshot
 	err      error
 }
 
-func (source actionSnapshotSource) ReadSnapshot(context.Context) (contractv1.StatusSnapshot, error) {
+func (source actionSnapshotSource) ReadSnapshot(context.Context) (contractv2.StatusSnapshot, error) {
 	return source.snapshot, source.err
 }
 
@@ -132,7 +132,7 @@ func TestConfiguredProfileActionResolverListsAndPinsAcceptedActions(t *testing.T
 	if resolver.repositories["repository_01"].Primary.WorktreeID != "worktree_primary" {
 		t.Fatal("repository-scoped actions must compile against the checkout at the repository root")
 	}
-	request := contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "tidy", WorktreeID: "worktree_linked"}
+	request := contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "tidy", WorktreeID: "worktree_linked"}
 	resolution, err := resolver.ResolveAction(context.Background(), request)
 	if err != nil || resolution.Definition.ID != "tidy" || resolution.AcceptedDigest != inventory.AcceptedConfigurationDigest ||
 		resolution.Target.WorktreeID != "worktree_linked" {
@@ -142,7 +142,7 @@ func TestConfiguredProfileActionResolverListsAndPinsAcceptedActions(t *testing.T
 	if err != nil || command.Directory != registrations[0].WorktreeRoot || strings.Join(command.Arguments, " ") != "tidy" {
 		t.Fatalf("compiled: %+v err=%v", command, err)
 	}
-	start, err := resolver.ResolveAction(context.Background(), contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "up", WorktreeID: "worktree_linked"})
+	start, err := resolver.ResolveAction(context.Background(), contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "up", WorktreeID: "worktree_linked"})
 	if err != nil || strings.Join(start.StartServiceIDs, ",") != "web" {
 		t.Fatalf("start resolution: %+v err=%v", start, err)
 	}
@@ -155,14 +155,14 @@ func TestConfiguredProfileActionResolverFailsClosedAndValidatesTargets(t *testin
 		t.Fatal(err)
 	}
 	cases := map[string]struct {
-		request contractv1.RunProfileActionRequest
+		request contractv2.RunProfileActionRequest
 		code    string
 	}{
-		"unknown repository":  {contractv1.RunProfileActionRequest{RepositoryID: "repository_02", ActionID: "tidy"}, "REPOSITORY_NOT_FOUND"},
-		"unknown action":      {contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "nope"}, "ACTION_NOT_FOUND"},
-		"foreign worktree":    {contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "tidy", WorktreeID: "worktree_other"}, "WORKTREE_NOT_FOUND"},
-		"foreign environment": {contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "probe", EnvironmentID: "environment_other", ServiceID: "web"}, "ENVIRONMENT_NOT_FOUND"},
-		"unknown service":     {contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "probe", EnvironmentID: "environment_linked", ServiceID: "db"}, "SERVICE_NOT_SUPPORTED"},
+		"unknown repository":  {contractv2.RunProfileActionRequest{RepositoryID: "repository_02", ActionID: "tidy"}, "REPOSITORY_NOT_FOUND"},
+		"unknown action":      {contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "nope"}, "ACTION_NOT_FOUND"},
+		"foreign worktree":    {contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "tidy", WorktreeID: "worktree_other"}, "WORKTREE_NOT_FOUND"},
+		"foreign environment": {contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "probe", EnvironmentID: "environment_other", ServiceID: "web"}, "ENVIRONMENT_NOT_FOUND"},
+		"unknown service":     {contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "probe", EnvironmentID: "environment_linked", ServiceID: "db"}, "SERVICE_NOT_SUPPORTED"},
 	}
 	for name, c := range cases {
 		_, err := resolver.ResolveAction(context.Background(), c.request)
@@ -179,7 +179,7 @@ func TestConfiguredProfileActionResolverFailsClosedAndValidatesTargets(t *testin
 	if err := os.WriteFile(configurationPath, []byte(strings.Replace(string(contents), "displayName: Tidy", "displayName: Tidier", 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = resolver.ResolveAction(context.Background(), contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "tidy", WorktreeID: "worktree_linked"})
+	_, err = resolver.ResolveAction(context.Background(), contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "tidy", WorktreeID: "worktree_linked"})
 	var actionError *daemon.ActionError
 	if !errors.As(err, &actionError) || actionError.Contract.Code != "CONFIGURATION_NOT_ACCEPTED" {
 		t.Fatalf("drifted configuration: %v", err)
@@ -192,14 +192,14 @@ func TestConfiguredProfileActionResolverFailsClosedAndValidatesTargets(t *testin
 
 func TestConfiguredProfileActionResolverCompilesServiceActionsFromCurrentLeases(t *testing.T) {
 	inventory, registrations, configurationPath := actionTestRegistrations(t)
-	snapshot := contractv1.StatusSnapshot{Environments: []contractv1.Environment{{
-		ID: "environment_linked", PortLeases: []contractv1.PortLease{{ServiceID: "web", Purpose: "http", Host: "127.0.0.1", Port: 30555}},
+	snapshot := contractv2.StatusSnapshot{Environments: []contractv2.Environment{{
+		ID: "environment_linked", PortLeases: []contractv2.PortLease{{ServiceID: "web", Purpose: "http", Host: "127.0.0.1", Port: 30555}},
 	}}}
 	resolver, err := newConfiguredProfileActionResolver(inventory, registrations, actionSnapshotSource{snapshot: snapshot}, configurationPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := contractv1.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "probe", EnvironmentID: "environment_linked", ServiceID: "web"}
+	request := contractv2.RunProfileActionRequest{RepositoryID: "repository_01", ActionID: "probe", EnvironmentID: "environment_linked", ServiceID: "web"}
 	resolution, err := resolver.ResolveAction(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
