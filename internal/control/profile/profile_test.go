@@ -101,6 +101,18 @@ func TestProfilePlannerStagesDependenciesBehindReadinessBarriers(t *testing.T) {
 	}
 }
 
+func TestConfiguredInfrastructurePortsAreNotProbedAsFreeBeforeServiceLaunch(t *testing.T) {
+	profile := configuration.Repository{Infrastructure: map[string]configuration.Infrastructure{
+		"queue": {ContainerPorts: map[string]configuration.ContainerPort{
+			"rest": {Service: "web", Purpose: "queue", ContainerPort: 9324},
+		}},
+	}}
+	ports := configuredInfrastructurePorts(profile, "web", []string{"queue"})
+	if _, found := ports["queue"]; !found || len(ports) != 1 {
+		t.Fatalf("infrastructure ports: %+v", ports)
+	}
+}
+
 func TestPrivateArtifactSegmentsResolveLeasedValuesOutsideWorktree(t *testing.T) {
 	registration := profileRegistration(t)
 	registration.Profile.Artifacts["launcher"] = configuration.Artifact{

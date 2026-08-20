@@ -389,8 +389,14 @@ func validateRepositoryRuntime(repositoryKey string, repository Repository) erro
 	}
 	for id, infrastructure := range repository.Infrastructure {
 		if !identifierPattern.MatchString(id) || infrastructure.Kind != "container" ||
-			strings.TrimSpace(infrastructure.Image) == "" || strings.ContainsAny(infrastructure.Image, "\x00\r\n") {
+			strings.TrimSpace(infrastructure.Image) == "" || strings.ContainsAny(infrastructure.Image, "\x00\r\n") ||
+			validateValueEnvironment(infrastructure.Environment, "infrastructure") != nil {
 			return fmt.Errorf("repository %q infrastructure %q is invalid", repositoryKey, id)
+		}
+		for _, value := range infrastructure.Environment {
+			if validateValueRef(value, repository) != nil {
+				return fmt.Errorf("repository %q infrastructure %q environment is invalid", repositoryKey, id)
+			}
 		}
 		for bindingID, binding := range infrastructure.ContainerPorts {
 			service, found := repository.Services[binding.Service]
@@ -551,11 +557,29 @@ func validateValueEnvironment(environment map[string]ValueRef, _ string) error {
 }
 
 func validateValueRef(value ValueRef, repository Repository) error {
+	return validateValueRefDepth(value, repository, 0)
+}
+
+func validateValueRefDepth(value ValueRef, repository Repository, depth int) error {
+	if depth > 8 {
+		return errors.New("value reference nesting is invalid")
+	}
 	count := 0
 	if value.Literal != nil {
 		count++
 		if strings.ContainsRune(*value.Literal, 0) {
 			return errors.New("literal contains NUL")
+		}
+	}
+	if value.Segments != nil {
+		count++
+		if len(value.Segments) == 0 || len(value.Segments) > 128 {
+			return errors.New("value reference segments are invalid")
+		}
+		for _, segment := range value.Segments {
+			if validateValueRefDepth(segment, repository, depth+1) != nil {
+				return errors.New("value reference segment is invalid")
+			}
 		}
 	}
 	for _, reference := range []string{value.Target, value.Artifact, value.Cache, value.Value} {

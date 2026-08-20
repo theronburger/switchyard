@@ -70,6 +70,7 @@ type Goal struct {
 	Name         string
 	Image        string
 	PortBindings []PortBinding
+	Environment  []string
 	Identity     Identity
 	DesiredState DesiredState
 }
@@ -90,6 +91,7 @@ type Action struct {
 	ResourceName string
 	Image        string
 	PortBindings []PortBinding
+	Environment  []string
 	Identity     Identity
 	Command      Command
 }

@@ -21,7 +21,7 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 		return time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	}}).Build(inventory, []Goal{{
 		Kind: ResourceContainer, Name: "switchyard-create", Image: "elasticmq:1.6.16",
-		PortBindings: requestedBindings, Identity: identity, DesiredState: DesiredRunning,
+		PortBindings: requestedBindings, Environment: []string{"VISIBLE_PORT=19324"}, Identity: identity, DesiredState: DesiredRunning,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +36,7 @@ func TestPlannerCreatesResourcesWithTheCompleteOwnershipSetAtomically(t *testing
 		"--label", LabelServiceID + "=" + identity.ServiceID,
 		"--label", LabelRunID + "=" + identity.RunID,
 		"--label", LabelInstanceID + "=" + identity.InstanceID,
+		"--env", "VISIBLE_PORT=19324",
 		"--publish", "127.0.0.1:19324:9324/tcp",
 		"--publish", "127.0.0.1:19325:9325/tcp",
 		"elasticmq:1.6.16",

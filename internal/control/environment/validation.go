@@ -403,7 +403,12 @@ func clonePreparation(preparation PreparationSpec) PreparationSpec {
 }
 
 func cloneGoals(goals []containerhost.Goal) []containerhost.Goal {
-	return append([]containerhost.Goal(nil), goals...)
+	cloned := append([]containerhost.Goal(nil), goals...)
+	for index := range cloned {
+		cloned[index].PortBindings = append([]containerhost.PortBinding(nil), goals[index].PortBindings...)
+		cloned[index].Environment = append([]string(nil), goals[index].Environment...)
+	}
+	return cloned
 }
 
 func cloneProjection(change *ProjectionChange) *ProjectionChange {

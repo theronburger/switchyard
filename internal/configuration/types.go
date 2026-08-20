@@ -128,6 +128,7 @@ type Command struct {
 
 type ValueRef struct {
 	Literal      *string        `yaml:"literal" json:"literal,omitempty"`
+	Segments     []ValueRef     `yaml:"segments,omitempty" json:"segments,omitempty"`
 	Target       string         `yaml:"target" json:"target,omitempty"`
 	Port         *PortReference `yaml:"port" json:"port,omitempty"`
 	URL          *URLReference  `yaml:"url" json:"url,omitempty"`
@@ -167,6 +168,7 @@ type StatusRange struct {
 type Infrastructure struct {
 	Kind           string                   `yaml:"kind" json:"kind"`
 	Image          string                   `yaml:"image" json:"image"`
+	Environment    map[string]ValueRef      `yaml:"environment" json:"environment"`
 	ContainerPorts map[string]ContainerPort `yaml:"containerPorts" json:"containerPorts"`
 }
 
@@ -178,7 +180,7 @@ type ContainerPort struct {
 
 type Artifact struct {
 	Content    string     `yaml:"content" json:"content"`
-	Segments   []ValueRef `yaml:"segments" json:"segments"`
+	Segments   []ValueRef `yaml:"segments,omitempty" json:"segments,omitempty"`
 	Filename   string     `yaml:"filename" json:"filename"`
 	Executable bool       `yaml:"executable" json:"executable"`
 }

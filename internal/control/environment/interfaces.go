@@ -98,6 +98,7 @@ func (host ContainerInfrastructureHost) StopOwned(ctx context.Context, goals []c
 		absent[index].DesiredState = containerhost.DesiredAbsent
 		absent[index].Image = ""
 		absent[index].PortBindings = nil
+		absent[index].Environment = nil
 	}
 	return host.apply(ctx, absent)
 }

@@ -94,12 +94,15 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 		}
 		resolvedEnvironment = mergeEnvironment(resolvedEnvironment, commandEnvironment)
 		portKeys := make([]portlease.Key, 0, len(service.Ports))
+		infrastructurePorts := configuredInfrastructurePorts(profile, serviceID, service.Infrastructure)
 		for purpose := range service.Ports {
 			key := portlease.Key{EnvironmentID: request.EnvironmentID, ServiceID: serviceID, Purpose: purpose}
 			if _, found := leases[key]; !found {
 				return environmentcontrol.ExecutionPlan{}, ErrProfileInvalid
 			}
-			portKeys = append(portKeys, key)
+			if _, ownedByInfrastructure := infrastructurePorts[purpose]; !ownedByInfrastructure {
+				portKeys = append(portKeys, key)
+			}
 		}
 		sort.Slice(portKeys, func(left, right int) bool { return portKeys[left].Purpose < portKeys[right].Purpose })
 		plan.Services = append(plan.Services, environmentcontrol.ServiceLaunch{
@@ -125,10 +128,14 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	}
 	for _, infrastructureID := range sortedSet(infrastructureSet) {
 		definition := profile.Infrastructure[infrastructureID]
+		containerEnvironment, err := resolveConfiguredEnvironment(registration, runRoot, definition.Environment, leases)
+		if err != nil {
+			return environmentcontrol.ExecutionPlan{}, err
+		}
 		goal := containerhost.Goal{
 			Kind:  containerhost.ResourceContainer,
 			Name:  "switchyard-" + shortIdentity(request.EnvironmentID) + "-" + infrastructureID,
-			Image: definition.Image, DesiredState: containerhost.DesiredRunning,
+			Image: definition.Image, Environment: containerEnvironment, DesiredState: containerhost.DesiredRunning,
 			Identity: containerhost.Identity{
 				EnvironmentID: request.EnvironmentID, ServiceID: infrastructureID,
 				RunID: request.RunID, InstanceID: registration.DaemonInstanceID,
@@ -155,6 +162,35 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	plan.ServiceStages = stages
 	plan.Services = nil
 	return plan, nil
+}
+
+func resolveConfiguredEnvironment(registration Registration, runRoot string, values map[string]configuration.ValueRef, leases map[portlease.Key]portlease.Lease) ([]string, error) {
+	keys := make([]string, 0, len(values))
+	for name := range values {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, name := range keys {
+		value, err := resolveValue(registration, runRoot, "", values[name], nil, leases)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, name+"="+value)
+	}
+	return result, nil
+}
+
+func configuredInfrastructurePorts(profile configuration.Repository, serviceID string, infrastructureIDs []string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, infrastructureID := range infrastructureIDs {
+		for _, binding := range profile.Infrastructure[infrastructureID].ContainerPorts {
+			if binding.Service == serviceID {
+				result[binding.Purpose] = struct{}{}
+			}
+		}
+	}
+	return result
 }
 
 func stagedServices(profile configuration.Repository, launches []environmentcontrol.ServiceLaunch) ([][]environmentcontrol.ServiceLaunch, error) {
@@ -320,6 +356,12 @@ func resolveValue(registration Registration, runRoot, serviceID string, value co
 	switch {
 	case value.Literal != nil:
 		return *value.Literal, nil
+	case value.Segments != nil:
+		segments, err := resolveValues(registration, runRoot, serviceID, value.Segments, targets, leases)
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(segments, ""), nil
 	case value.Target != "":
 		target, found := targets[value.Target]
 		if !found || target.Target != "" {
