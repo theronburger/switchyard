@@ -80,6 +80,15 @@ public enum WorkspaceActionState: Sendable, Equatable {
     }
 }
 
+public enum CleanupActionState: Sendable, Equatable {
+    case idle
+    case planning
+    case review(CleanupPlan)
+    case applying(CleanupPlan)
+    case completed(CleanupResult)
+    case failed(String)
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -100,6 +109,7 @@ public final class AppModel {
     public private(set) var lifecycleState: DaemonLifecycleState = .idle
     public private(set) var environmentActionState: EnvironmentActionState = .idle
     public private(set) var workspaceActionState: WorkspaceActionState = .idle
+    public private(set) var cleanupActionState: CleanupActionState = .idle
     public private(set) var scenario: FixtureScenario
     public let isFixtureMode: Bool
     public var selection: SidebarSelection?
@@ -107,6 +117,7 @@ public final class AppModel {
     @ObservationIgnored private let liveController: (any DaemonLifecycleControlling)?
     @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
     @ObservationIgnored private let workspaceActions: (any WorkspaceActionSubmitting)?
+    @ObservationIgnored private let cleanupActions: (any CleanupActionSubmitting)?
     @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
     @ObservationIgnored private var fixtureProvider: (any StatusProviding)?
     @ObservationIgnored private let canonicalFixtureURL: URL?
@@ -177,6 +188,7 @@ public final class AppModel {
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         workspaceActions: any WorkspaceActionSubmitting = LiveWorkspaceActionClient(),
+        cleanupActions: any CleanupActionSubmitting = LiveCleanupActionClient(),
         agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
         pollingInterval: Duration = .seconds(5)
     ) {
@@ -185,6 +197,7 @@ public final class AppModel {
         self.liveController = liveController
         self.environmentActions = environmentActions
         self.workspaceActions = workspaceActions
+        self.cleanupActions = cleanupActions
         self.agentConnections = agentConnections
         self.canonicalFixtureURL = nil
         self.pollingInterval = pollingInterval
@@ -196,6 +209,7 @@ public final class AppModel {
         self.liveController = nil
         self.environmentActions = nil
         self.workspaceActions = nil
+        self.cleanupActions = nil
         self.agentConnections = nil
         self.canonicalFixtureURL = canonicalFixtureURL
         self.pollingInterval = .seconds(5)
@@ -228,6 +242,7 @@ public final class AppModel {
                 liveController: lifecycle,
                 environmentActions: LiveEnvironmentActionClient(connectionFactory: connectionFactory),
                 workspaceActions: LiveWorkspaceActionClient(connectionFactory: connectionFactory),
+                cleanupActions: LiveCleanupActionClient(connectionFactory: connectionFactory),
                 agentConnections: agentConnections,
                 pollingInterval: pollingInterval
             )
@@ -519,6 +534,36 @@ public final class AppModel {
     public func dismissWorkspaceAction() {
         guard !workspaceActionState.isActive else { return }
         workspaceActionState = .idle
+    }
+
+    public func planCleanup(scope: CleanupScope = .global) async {
+        guard !isFixtureMode, lifecycleState.isOperational, let cleanupActions else { return }
+        cleanupActionState = .planning
+        do {
+            cleanupActionState = .review(try await cleanupActions.planCleanup(CleanupPlanRequest(scope: scope)))
+        } catch {
+            cleanupActionState = .failed(Self.actionFailureMessage(error))
+        }
+    }
+
+    public func applyCleanup(candidateIds: Set<String>) async {
+        guard case .review(let plan) = cleanupActionState, let cleanupActions else { return }
+        cleanupActionState = .applying(plan)
+        do {
+            let result = try await cleanupActions.applyCleanup(CleanupApplyRequest(
+                planId: plan.id,
+                expectedRevision: plan.revision,
+                candidateIds: candidateIds.sorted()
+            ))
+            cleanupActionState = .completed(result)
+            await refresh()
+        } catch {
+            cleanupActionState = .failed(Self.actionFailureMessage(error))
+        }
+    }
+
+    public func dismissCleanup() {
+        cleanupActionState = .idle
     }
 
     private func monitorWorkspaceAction(_ kind: WorkspaceActionKind, receipt: MutationReceipt) {

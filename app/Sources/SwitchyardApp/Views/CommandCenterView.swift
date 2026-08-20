@@ -10,6 +10,7 @@ enum CommandCenterLayout {
 
 struct CommandCenterView: View {
     @Bindable var model: AppModel
+    @State private var showsCleanup = false
 
     var body: some View {
         NavigationSplitView {
@@ -20,6 +21,9 @@ struct CommandCenterView: View {
         }
         .navigationTitle(windowTitle)
         .toolbar { toolbarContent }
+        .sheet(isPresented: $showsCleanup, onDismiss: { model.dismissCleanup() }) {
+            CleanupReviewSheet(model: model, isPresented: $showsCleanup)
+        }
         .task { model.startPolling() }
         .onReceive(NotificationCenter.default.publisher(for: .switchyardOpenCommandCenter)) { _ in
             CommandCenterWindowPresenter.presentWhenAvailable()
@@ -259,6 +263,16 @@ struct CommandCenterView: View {
                 .pickerStyle(.segmented)
                 .help("Development data source: \(model.scenario.blurb)")
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                showsCleanup = true
+                Task { await model.planCleanup() }
+            } label: {
+                Label("Cleanup…", systemImage: "trash.slash")
+            }
+            .disabled(model.isFixtureMode || !model.lifecycleState.isOperational)
+            .help("Review positively owned resources before removing anything")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {

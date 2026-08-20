@@ -419,6 +419,86 @@ public struct ContractError: Decodable, Error, Sendable {
     public let exitCode: Int?
 }
 
+public struct CleanupScope: Codable, Sendable, Equatable {
+    public let kind: String
+    public let id: String?
+
+    public static let global = CleanupScope(kind: "global", id: nil)
+
+    public init(kind: String, id: String? = nil) {
+        self.kind = kind
+        self.id = id
+    }
+}
+
+public struct CleanupPlanRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let scope: CleanupScope
+
+    public init(scope: CleanupScope = .global) {
+        self.schemaVersion = contractSchemaVersion
+        self.scope = scope
+    }
+}
+
+public struct CleanupApplyRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let planId: String
+    public let expectedRevision: Int64
+    public let candidateIds: [String]
+
+    public init(planId: String, expectedRevision: Int64, candidateIds: [String]) {
+        self.schemaVersion = contractSchemaVersion
+        self.planId = planId
+        self.expectedRevision = expectedRevision
+        self.candidateIds = candidateIds
+    }
+}
+
+public struct CleanupCandidate: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let kind: String
+    public let profileKey: String
+    public let worktreeId: String
+    public let fingerprint: String
+    public let bytes: Int64
+    public let path: String
+}
+
+public struct CleanupProtection: Decodable, Sendable, Identifiable, Equatable {
+    public var id: String { "\(kind):\(path)" }
+    public let kind: String
+    public let path: String
+    public let reason: String
+    public let profileKey: String?
+    public let worktreeId: String?
+}
+
+public struct CleanupPlan: Decodable, Sendable, Identifiable, Equatable {
+    public let schemaVersion: Int
+    public let id: String
+    public let revision: Int64
+    public let scope: CleanupScope
+    public let candidates: [CleanupCandidate]
+    public let protected: [CleanupProtection]
+    public let createdAt: Date
+    public let expiresAt: Date
+}
+
+public struct CleanupRemoval: Decodable, Sendable, Equatable {
+    public let candidateId: String
+    public let removed: Bool
+    public let reason: String?
+}
+
+public struct CleanupResult: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let planId: String
+    public let planRevision: Int64
+    public let removals: [CleanupRemoval]
+    public let completedAt: Date
+}
+
 public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let requestId: String

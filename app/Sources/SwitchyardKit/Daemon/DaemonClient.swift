@@ -211,6 +211,39 @@ public struct DaemonClient: Sendable {
         return receipt
     }
 
+    public func planCleanup(_ request: CleanupPlanRequest) async throws -> CleanupPlan {
+        guard request.schemaVersion == contractSchemaVersion,
+              request.scope.kind == "global" && request.scope.id == nil ||
+                ((request.scope.kind == "repository" || request.scope.kind == "worktree") &&
+                    Self.validOpaqueValue(request.scope.id ?? "", maximumBytes: 256)) else {
+            throw DaemonClientError.invalidRequest("cleanup scope is invalid")
+        }
+        return try await post(
+            CleanupPlan.self,
+            pathComponents: ["v1", "cleanup", "plans"],
+            body: request,
+            requestId: "cleanup_\(UUID().uuidString.lowercased())",
+            successStatus: 201
+        )
+    }
+
+    public func applyCleanup(_ request: CleanupApplyRequest) async throws -> CleanupResult {
+        guard request.schemaVersion == contractSchemaVersion,
+              Self.validPathIdentifier(request.planId), request.expectedRevision > 0,
+              request.candidateIds.count <= 1_024,
+              Set(request.candidateIds).count == request.candidateIds.count,
+              request.candidateIds.allSatisfy({ Self.validOpaqueValue($0, maximumBytes: 256) }) else {
+            throw DaemonClientError.invalidRequest("cleanup selection is invalid")
+        }
+        return try await post(
+            CleanupResult.self,
+            pathComponents: ["v1", "cleanup", "plans", request.planId, "apply"],
+            body: request,
+            requestId: "cleanup_\(UUID().uuidString.lowercased())",
+            successStatus: 200
+        )
+    }
+
     private func get<Value: Decodable>(_ type: Value.Type, path: String) async throws -> Value {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "GET"
@@ -226,7 +259,8 @@ public struct DaemonClient: Sendable {
         _ type: Value.Type,
         pathComponents: [String],
         body: Body,
-        requestId: String
+        requestId: String,
+        successStatus: Int = 202
     ) async throws -> Value {
         let url = pathComponents.reduce(baseURL) { partial, component in
             partial.appending(path: component)
@@ -243,7 +277,7 @@ public struct DaemonClient: Sendable {
         } catch {
             throw DaemonClientError.invalidRequest("request body could not be encoded")
         }
-        return try await send(request, decoding: type, successStatus: 202)
+        return try await send(request, decoding: type, successStatus: successStatus)
     }
 
     private func send<Value: Decodable>(
