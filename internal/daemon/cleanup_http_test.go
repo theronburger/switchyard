@@ -102,6 +102,7 @@ func TestCleanupHTTPPublishesClaimConflictsAndInterruption(t *testing.T) {
 		request.Header.Set("Authorization", "Bearer secret")
 		request.Header.Set(contractv2.SchemaVersionHeader, "2")
 		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(contractv2.SchemaVersionHeader, "2")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != testCase.status || !strings.Contains(response.Body.String(), testCase.code) || !strings.Contains(response.Body.String(), testCase.retryable) {

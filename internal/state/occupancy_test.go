@@ -241,14 +241,15 @@ func TestReleasedOccupancyHistoryIsBounded(t *testing.T) {
 	}
 }
 
-func TestMigration12AddsOccupancyToAnExistingV11Database(t *testing.T) {
+func TestMigration12AddsOccupancyToAnExistingDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	store := openTestStore(t, path)
 	if _, err := store.CommitSnapshot(ctx, occupancySnapshot()); err != nil {
 		t.Fatal(err)
 	}
-	// Roll the ledger back to a database that predates occupancy leases.
+	// Roll the ledger back to a database that predates occupancy leases:
+	// migration 11 (claimed cleanup applies) is present, 12 is not.
 	for _, statement := range []string{
 		"DROP TABLE occupancy_leases",
 		"DELETE FROM schema_migrations WHERE version = 12",
@@ -264,6 +265,10 @@ func TestMigration12AddsOccupancyToAnExistingV11Database(t *testing.T) {
 	var version int
 	if err := migrated.database.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 12 {
 		t.Fatalf("schema version after reopen: %d %v", version, err)
+	}
+	var applies int
+	if err := migrated.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM cleanup_applies").Scan(&applies); err != nil || applies != 0 {
+		t.Fatalf("cleanup_applies after reopen: %d %v", applies, err)
 	}
 	if _, _, err := migrated.AcquireOccupancy(ctx, NewOccupancyLease{
 		ID: "occupancy_01", RequestID: "request_01", WorktreeID: "worktree_01",
