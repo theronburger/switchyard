@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cleanupcontrol "github.com/theronburger/switchyard/internal/control/cleanup"
+	"github.com/theronburger/switchyard/internal/events"
 )
 
 func savedCleanupPlan(ctx context.Context, t *testing.T, store *Store, id string, now time.Time, lifetime time.Duration) cleanupcontrol.Plan {
@@ -154,5 +155,122 @@ func TestCleanupClaimRequiresAnUnexpiredPlan(t *testing.T) {
 	savedCleanupPlan(ctx, t, store, "plan_after", now, time.Minute)
 	if _, replay, err := store.ClaimCleanupApply(ctx, fresh.ID, fresh.Revision, []string{}); err != nil || !replay.Completed() {
 		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+}
+
+func cleanupAppliedEvents(ctx context.Context, t *testing.T, store *Store) []events.Event {
+	t.Helper()
+	page, err := store.ReadEvents(ctx, 0, events.MaximumPageSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied []events.Event
+	for _, event := range page.Events {
+		if event.Kind == events.KindCleanupApplied {
+			applied = append(applied, event)
+		}
+	}
+	return applied
+}
+
+func TestCleanupCompletionAuditIsTransactionalAndEmittedOnce(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, err := store.CommitSnapshot(ctx, auditSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	plan := savedCleanupPlan(ctx, t, store, "plan_audit", now, time.Minute)
+	requested := []string{"candidate_01", "candidate_02"}
+	_, claim, err := store.ClaimCleanupApply(ctx, plan.ID, plan.Revision, requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim, err = claim.Begin("candidate_01"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCleanupApply(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	// Claiming and journaling progress are not completion: no event yet.
+	if applied := cleanupAppliedEvents(ctx, t, store); len(applied) != 0 {
+		t.Fatalf("incomplete claim emitted completion audit: %+v", applied)
+	}
+	if claim, err = claim.Finish(cleanupcontrol.Removal{CandidateID: "candidate_01", Removed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if claim, err = claim.Finish(cleanupcontrol.Removal{CandidateID: "candidate_02", Reason: cleanupcontrol.ReasonInterrupted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCleanupApply(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	if applied := cleanupAppliedEvents(ctx, t, store); len(applied) != 0 {
+		t.Fatalf("final outcomes without completion emitted audit: %+v", applied)
+	}
+	completed, err := claim.Complete(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// If the audit event cannot be appended, neither the completed claim
+	// nor the consumed plan may commit: the apply stays resumable.
+	if _, err := store.database.ExecContext(ctx, `
+CREATE TRIGGER refuse_cleanup_audit BEFORE INSERT ON events
+WHEN NEW.kind = 'cleanup.applied'
+BEGIN SELECT RAISE(ABORT, 'audit refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteCleanupApply(ctx, completed); err == nil || !containsAny(err.Error(), "audit refused") {
+		t.Fatalf("completion with a failing audit append: %v", err)
+	}
+	if _, err := store.ReadCleanupPlan(ctx, plan.ID, plan.Revision); err != nil {
+		t.Fatalf("plan consumed despite rolled-back completion: %v", err)
+	}
+	_, resumed, err := store.ClaimCleanupApply(ctx, plan.ID, plan.Revision, requested)
+	if err != nil || resumed.Completed() || resumed.Attempts != 2 || resumed.InFlight != "" || len(resumed.Outcomes) != 2 {
+		t.Fatalf("claim after rolled-back completion: %+v err=%v", resumed, err)
+	}
+	if applied := cleanupAppliedEvents(ctx, t, store); len(applied) != 0 {
+		t.Fatalf("rolled-back completion left an event: %+v", applied)
+	}
+	if _, err := store.database.ExecContext(ctx, `DROP TRIGGER refuse_cleanup_audit`); err != nil {
+		t.Fatal(err)
+	}
+
+	if completed, err = resumed.Complete(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteCleanupApply(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	applied := cleanupAppliedEvents(ctx, t, store)
+	if len(applied) != 1 || applied[0].Revision <= 0 || applied[0].EnvironmentID != "" {
+		t.Fatalf("completion audit: %+v", applied)
+	}
+	var payload events.CleanupAuditPayload
+	if err := decodeStrict(applied[0].Payload, &payload); err != nil {
+		t.Fatalf("payload %s: %v", applied[0].Payload, err)
+	}
+	want := events.CleanupAuditPayload{PlanID: plan.ID, PlanRevision: plan.Revision, Attempts: 2, Requested: 2, Removed: 1, Interrupted: 1}
+	if payload != want {
+		t.Fatalf("payload=%+v want=%+v", payload, want)
+	}
+	if containsAny(string(applied[0].Payload), "/private/", "candidate_0") {
+		t.Fatalf("audit payload carries candidate identity: %s", applied[0].Payload)
+	}
+	// Re-completion is refused and appends nothing more.
+	if err := store.CompleteCleanupApply(ctx, completed); !errors.Is(err, ErrCleanupApplyStale) {
+		t.Fatalf("second completion: %v", err)
+	}
+	if _, replay, err := store.ClaimCleanupApply(ctx, plan.ID, plan.Revision, requested); err != nil || !replay.Completed() {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if applied := cleanupAppliedEvents(ctx, t, store); len(applied) != 1 {
+		t.Fatalf("completion audited more than once: %+v", applied)
 	}
 }

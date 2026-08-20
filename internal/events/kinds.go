@@ -20,6 +20,11 @@ const (
 	// KindOccupancyReleased records that a handoff lease ended.
 	// Payload: OccupancyAuditPayload.
 	KindOccupancyReleased = "occupancy.released"
+	// KindCleanupApplied records that a claimed cleanup apply completed and
+	// consumed its plan. It is appended once per claim, in the transaction
+	// that records the completed outcomes; an interrupted or resumed apply
+	// emits nothing until it completes. Payload: CleanupAuditPayload.
+	KindCleanupApplied = "cleanup.applied"
 )
 
 type OperationAuditPayload struct {
@@ -40,4 +45,17 @@ type OccupancyAuditPayload struct {
 	LeaseID    string `json:"leaseId"`
 	WorktreeID string `json:"worktreeId"`
 	HolderKind string `json:"holderKind"`
+}
+
+// CleanupAuditPayload summarizes one completed cleanup apply. It carries
+// opaque identifiers and counts only: no candidate paths, sizes, or profile
+// identity. Outcome counts always sum to the number of requested candidates.
+type CleanupAuditPayload struct {
+	PlanID       string `json:"planId"`
+	PlanRevision int64  `json:"planRevision"`
+	Attempts     int    `json:"attempts"`
+	Requested    int    `json:"requested"`
+	Removed      int    `json:"removed"`
+	Skipped      int    `json:"skipped"`
+	Interrupted  int    `json:"interrupted"`
 }

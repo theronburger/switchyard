@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	cleanupcontrol "github.com/theronburger/switchyard/internal/control/cleanup"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
+	"github.com/theronburger/switchyard/internal/events"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -162,6 +164,22 @@ func (fixture *cleanupFixture) assertForeignSurvives(t *testing.T) {
 	}
 }
 
+// cleanupAuditEvents returns every `cleanup.applied` event in the feed.
+func (fixture *cleanupFixture) cleanupAuditEvents(t *testing.T) []events.Event {
+	t.Helper()
+	page, err := fixture.store.ReadEvents(fixture.ctx, 0, events.MaximumPageSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied []events.Event
+	for _, event := range page.Events {
+		if event.Kind == events.KindCleanupApplied {
+			applied = append(applied, event)
+		}
+	}
+	return applied
+}
+
 func exists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
@@ -268,6 +286,10 @@ func TestCleanupApplyRepresentsInterruptionAndResumesExactly(t *testing.T) {
 	if exists(fixture.owned[0]) || !exists(fixture.owned[1]) {
 		t.Fatal("interruption did not stop exactly between candidates")
 	}
+	// An incomplete apply is not a completed one: nothing is audited yet.
+	if applied := fixture.cleanupAuditEvents(t); len(applied) != 0 {
+		t.Fatalf("interrupted apply emitted completion audit: %+v", applied)
+	}
 	// The plan is not consumed and not silently applicable as if untouched:
 	// a different request is refused, and the journal names the in-flight
 	// candidate.
@@ -288,10 +310,34 @@ func TestCleanupApplyRepresentsInterruptionAndResumesExactly(t *testing.T) {
 	if exists(fixture.owned[1]) {
 		t.Fatal("resumed candidate remains")
 	}
-	// Retrying the completed request replays the identical result.
+	// Completion is audited exactly once, with identifiers and counts only.
+	applied := fixture.cleanupAuditEvents(t)
+	if len(applied) != 1 {
+		t.Fatalf("completed apply audit events: %+v", applied)
+	}
+	var payload events.CleanupAuditPayload
+	if err := json.Unmarshal(applied[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload != (events.CleanupAuditPayload{PlanID: plan.ID, PlanRevision: plan.Revision, Attempts: 2, Requested: 2, Removed: 2}) {
+		t.Fatalf("audit payload: %+v", payload)
+	}
+	for _, candidate := range plan.Candidates {
+		if strings.Contains(string(applied[0].Payload), candidate.Path) || strings.Contains(string(applied[0].Payload), candidate.ID) {
+			t.Fatalf("audit payload carries candidate identity: %s", applied[0].Payload)
+		}
+	}
+	if strings.Contains(string(applied[0].Payload), fixture.runtimeRoot) || strings.Contains(string(applied[0].Payload), "profile") {
+		t.Fatalf("audit payload carries a path or profile: %s", applied[0].Payload)
+	}
+	// Retrying the completed request replays the identical result without
+	// a second audit event.
 	replay, err := restarted.Apply(fixture.ctx, fixture.request(plan))
 	if err != nil || replay.Attempts != 2 || !replay.CompletedAt.Equal(result.CompletedAt) || len(replay.Removals) != 2 {
 		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if applied := fixture.cleanupAuditEvents(t); len(applied) != 1 {
+		t.Fatalf("replay duplicated the completion audit: %+v", applied)
 	}
 	if _, err := restarted.Apply(fixture.ctx, fixture.request(plan, second)); !errors.Is(err, state.ErrCleanupPlanConsumed) {
 		t.Fatalf("different request after completion: %v", err)

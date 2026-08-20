@@ -11,6 +11,7 @@ import (
 	"time"
 
 	cleanupcontrol "github.com/theronburger/switchyard/internal/control/cleanup"
+	"github.com/theronburger/switchyard/internal/events"
 )
 
 // ClaimCleanupApply atomically claims authorization to apply exactly one plan
@@ -141,9 +142,12 @@ func (store *Store) RecordCleanupApply(ctx context.Context, claim cleanupcontrol
 	return nil
 }
 
-// CompleteCleanupApply closes the claim and consumes the plan in one
-// transaction, so a plan is never consumed without its recorded outcomes and
-// never left open once its outcomes are final.
+// CompleteCleanupApply closes the claim, consumes the plan, and appends the
+// `cleanup.applied` audit event in one transaction, so a plan is never
+// consumed without its recorded outcomes, never left open once its outcomes
+// are final, and never completed without its audit record. Because the claim
+// row can be completed only once, an identical replay never appends a second
+// event.
 func (store *Store) CompleteCleanupApply(ctx context.Context, claim cleanupcontrol.Claim) error {
 	if err := claim.Validate(); err != nil {
 		return err
@@ -168,10 +172,31 @@ UPDATE cleanup_plans SET consumed_at = ? WHERE id = ? AND revision = ? AND consu
 	if updated, err := result.RowsAffected(); err != nil || updated != 1 {
 		return ErrCleanupPlanConsumed
 	}
+	if err := store.recordAuditEvent(ctx, transaction, events.KindCleanupApplied, "", cleanupAuditPayload(claim)); err != nil {
+		return err
+	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit cleanup completion: %w", err)
 	}
 	return nil
+}
+
+func cleanupAuditPayload(claim cleanupcontrol.Claim) events.CleanupAuditPayload {
+	payload := events.CleanupAuditPayload{
+		PlanID: claim.PlanID, PlanRevision: claim.PlanRevision,
+		Attempts: claim.Attempts, Requested: len(claim.CandidateIDs),
+	}
+	for _, outcome := range claim.Outcomes {
+		switch {
+		case outcome.Removed:
+			payload.Removed++
+		case outcome.Reason == cleanupcontrol.ReasonInterrupted:
+			payload.Interrupted++
+		default:
+			payload.Skipped++
+		}
+	}
+	return payload
 }
 
 func (store *Store) writeCleanupClaim(ctx context.Context, transaction *sql.Tx, claim cleanupcontrol.Claim, updatedAt time.Time) error {
