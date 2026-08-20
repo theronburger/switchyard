@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/theronburger/switchyard/internal/domain"
+	"github.com/theronburger/switchyard/internal/runtime/containerhost"
+	"github.com/theronburger/switchyard/internal/runtime/portlease"
 	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
@@ -42,6 +44,10 @@ func (coordinator *Coordinator) failStart(
 		if err := transitionEnvironment(&operation, domain.EnvironmentFailed); err != nil {
 			persistenceError = errors.Join(persistenceError, err)
 		}
+		// A partial rollback already released every resource whose entry it
+		// disarmed. Publishing those as still owned would let a later
+		// allocation of the same port conflict with this record on restart.
+		result = resourcesStillArmed(result, operation.Rollback)
 	}
 	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		if operation.State == domain.OperationSucceeded {
@@ -279,4 +285,56 @@ func safeFailureDetail(err error, phase OperationPhase) OperationFailure {
 		Code: "ENVIRONMENT_OPERATION_FAILED", Message: "Environment operation failed.",
 		Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: "inspect_operation_diagnostics",
 	}
+}
+
+// resourcesStillArmed drops from result every resource whose rollback entry
+// has been disarmed, so a failed environment publishes exactly the resources
+// it still owns.
+func resourcesStillArmed(result EnvironmentResult, rollback []RollbackEntry) EnvironmentResult {
+	releasedPorts := make(map[portlease.Key]struct{})
+	releasedInfrastructure := make(map[string]struct{})
+	releasedServices := make(map[string]struct{})
+	for _, entry := range rollback {
+		if entry.Armed {
+			continue
+		}
+		switch entry.Kind {
+		case RollbackPorts:
+			for _, key := range entry.PortKeys {
+				releasedPorts[key] = struct{}{}
+			}
+		case RollbackProjection:
+			result.Projection = nil
+		case RollbackInfrastructure:
+			for _, goal := range entry.Infrastructure {
+				releasedInfrastructure[string(goal.Kind)+"\x00"+goal.Name] = struct{}{}
+			}
+		case RollbackProcess:
+			if entry.Process != nil {
+				releasedServices[entry.Process.ID] = struct{}{}
+			}
+		}
+	}
+	ports := make([]portlease.Lease, 0, len(result.Ports))
+	for _, lease := range result.Ports {
+		if _, released := releasedPorts[lease.Key]; !released {
+			ports = append(ports, lease)
+		}
+	}
+	result.Ports = ports
+	infrastructure := make([]containerhost.Goal, 0, len(result.Infrastructure))
+	for _, goal := range result.Infrastructure {
+		if _, released := releasedInfrastructure[string(goal.Kind)+"\x00"+goal.Name]; !released {
+			infrastructure = append(infrastructure, goal)
+		}
+	}
+	result.Infrastructure = infrastructure
+	services := make([]ServiceResult, 0, len(result.Services))
+	for _, service := range result.Services {
+		if _, released := releasedServices[service.ID]; !released {
+			services = append(services, service)
+		}
+	}
+	result.Services = services
+	return result
 }

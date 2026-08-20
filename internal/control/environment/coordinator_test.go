@@ -931,3 +931,49 @@ func TestRestartReconciliationRefusesCrashWindowIntentEvidence(t *testing.T) {
 		t.Fatalf("crash-window orphan was marked clean: %+v", operation)
 	}
 }
+
+// TestPartialRollbackPublishesOnlyResourcesStillOwned proves that when one
+// rollback entry fails (here an unverifiable process group), the failed
+// environment result no longer lists the port leases, projection, and
+// infrastructure that the other entries already released. Publishing released
+// leases as owned would let a later allocation of the same port conflict with
+// this durable record when leases are restored after a restart.
+func TestPartialRollbackPublishesOnlyResourcesStillOwned(t *testing.T) {
+	journal := newMemoryJournal()
+	calls := make([]string, 0)
+	ports := newFakePorts(7200, &calls)
+	projection := &fakeProjection{journal: journal, operationID: "op_partial", calls: &calls}
+	infrastructure := &fakeInfrastructure{journal: journal, operationID: "op_partial", calls: &calls}
+	processes := &fakeProcesses{journal: journal, operationID: "op_partial", calls: &calls, stopErr: processhost.ErrOwnershipMismatch}
+	planner := &staticPlanner{plan: fullExecutionPlan(t, "env_partial", "run_partial")}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: ports, Planner: planner, Projections: projection,
+		Infrastructure: infrastructure, Processes: processes,
+		Readiness: &fakeReadiness{err: errors.New("service never became ready")}, RollbackTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(
+		context.Background(), fullStartRequest(t, "op_partial", "env_partial", "run_partial"),
+	)
+	if !errors.Is(err, processhost.ErrOwnershipMismatch) {
+		t.Fatalf("start error: got %v, want ownership mismatch", err)
+	}
+	if result.State != domain.EnvironmentFailed {
+		t.Fatalf("environment state: %s", result.State)
+	}
+	if ports.leaseCount() != 0 {
+		t.Fatalf("allocator still holds %d leases after rollback released them", ports.leaseCount())
+	}
+	if len(result.Ports) != 0 || result.Projection != nil || len(result.Infrastructure) != 0 {
+		t.Fatalf("released resources were published as owned: ports=%+v projection=%+v infrastructure=%+v", result.Ports, result.Projection, result.Infrastructure)
+	}
+	if len(result.Services) == 0 {
+		t.Fatal("the unverifiable process group must remain published so it is not forgotten")
+	}
+	current, found, err := journal.Current(context.Background(), "env_partial")
+	if err != nil || !found || len(current.Ports) != 0 || len(current.Services) == 0 {
+		t.Fatalf("persisted result: %+v found=%v err=%v", current, found, err)
+	}
+}
