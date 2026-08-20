@@ -12,7 +12,7 @@ All notable changes are documented here. The project follows [Semantic Versionin
 
 ### Added
 
-- Native macOS command center and menu-bar app for isolated Marketplace worktree environments.
+- Native macOS command center and menu-bar app for isolated, configured worktree environments.
 - Daemon-owned workspace preparation, ports, processes, Docker resources, health, and cleanup state.
 - Safe create, adopt, archive, start, stop, rebuild, CLI, and MCP workflows.
 - Codex and Claude Code Connection Doctor with managed MCP and skill installation.

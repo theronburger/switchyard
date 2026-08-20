@@ -11,7 +11,6 @@ import (
 
 	"github.com/theronburger/switchyard/internal/configuration"
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
-	controlconfig "github.com/theronburger/switchyard/internal/control/config"
 	"github.com/theronburger/switchyard/internal/control/inventory"
 	"github.com/theronburger/switchyard/internal/control/repository"
 	"github.com/theronburger/switchyard/internal/state"
@@ -26,8 +25,7 @@ func discoverAcceptedRepositoryInventory(
 	if errors.Is(err, state.ErrConfigurationNotAccepted) {
 		return repositoryInventory{
 			Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{},
-			Configurations: map[string]controlconfig.RepositoryConfiguration{},
-			Profiles:       map[string]configuration.Repository{}, ProfileKeys: map[string]string{},
+			Profiles: map[string]configuration.Repository{}, ProfileKeys: map[string]string{},
 			ProfileDigests: map[string]string{},
 			Complete:       true, AttemptedAt: observedAt.UTC(),
 		}, nil
@@ -93,8 +91,7 @@ func discoverConfiguredRepositories(
 ) repositoryInventory {
 	result := repositoryInventory{
 		Repositories: []contractv1.Repository{}, Alerts: []contractv1.Alert{},
-		Configurations: map[string]controlconfig.RepositoryConfiguration{},
-		Profiles:       make(map[string]configuration.Repository), ProfileKeys: make(map[string]string),
+		Profiles: make(map[string]configuration.Repository), ProfileKeys: make(map[string]string),
 		ProfileDigests: make(map[string]string),
 		Complete:       true, AttemptedAt: observedAt.UTC(),
 	}

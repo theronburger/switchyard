@@ -51,6 +51,24 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 			return nil, err
 		}
 	}
+	if len(discovered.Repositories) == 0 {
+		journal, err := state.NewEnvironmentJournal(store, configuredEnvironmentProjector(nil))
+		if err != nil {
+			return nil, err
+		}
+		current, err := journal.ListCurrent(ctx, "", 1)
+		if err != nil {
+			return nil, err
+		}
+		incomplete, err := journal.Incomplete(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(current.Results) != 0 || current.HasMore || len(incomplete) != 0 {
+			return nil, errors.New("persisted environments cannot be recovered without an accepted repository profile")
+		}
+		return &environmentRuntime{}, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -83,6 +101,10 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 				}
 			}
 			executablePath := configuredExecutablePath(home, profile)
+			values, err := profilecontrol.ReadValues(profile, repository.RootPath, worktree.Path)
+			if err != nil {
+				return nil, err
+			}
 			metadata := configuredEnvironment{
 				EnvironmentID: environmentID, RepositoryID: repository.ID, Worktree: worktree,
 				ProfileKey: profileKey, ProfileDigest: profileDigest, Profile: profile,
@@ -94,7 +116,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 				WorktreeRoot: worktree.Path, RuntimeRoot: runtimeRoot, CacheRoot: cacheRoot,
 				HomeDirectory: homeDirectory, TemporaryDirectory: temporaryDirectory,
 				ExecutablePath: executablePath, DaemonInstanceID: instanceID,
-				Values: map[string]string{}, Profile: profile,
+				Values: values, Profile: profile,
 			})
 			if len(profile.Preparation.Steps) != 0 {
 				ownership := workspacecontrol.OwnershipAdopted

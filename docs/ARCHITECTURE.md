@@ -77,13 +77,13 @@ It does not know Node, Yarn, Go, Deed environment variable names, or Turbo comma
 
 ### Workspace before environment
 
-Every environment start passes through `workspace.Ensure` first. The coordinator serializes per worktree, computes an adapter-provided content fingerprint, re-verifies readiness requirements on cache hits, durably checkpoints each finite step, and publishes a repository-neutral readiness result to SQLite and the status snapshot. Marketplace fingerprints `.nvmrc`, Yarn configuration/lock state, and bounded package manifests; generated `node_modules` content is excluded. It uses immutable Yarn hydration and shared content-addressed caches while leaving each worktree's mutable install tree separate.
+Every environment start passes through `workspace.Ensure` first. The coordinator serializes per worktree, computes a profile-defined content fingerprint, re-verifies readiness requirements on cache hits, durably checkpoints each finite step, and publishes a repository-neutral readiness result to SQLite and the status snapshot. Profiles can fingerprint toolchain files, lockfiles, and bounded package manifests while excluding generated dependency trees. Shared content-addressed caches remain available while each worktree keeps its own mutable install tree.
 
 Git creation/adoption/removal is a separate positively-owned lifecycle. Existing worktrees are auto-discovered with run-only `adopted` inventory ownership. An explicit adoption may promote an eligible non-primary checkout to `managed` only when it is a clean, pushed, non-symlinked direct child of the configured managed root and Git proves it belongs to the exact repository. Switchyard-managed worktrees have a durable private ownership record bound to repository root, exact worktree path, branch, upstream/start revision, and Git administrative directory. Archive re-verifies that identity and refuses primary, active, dirty, unpushed, foreign, or unverifiable worktrees.
 
 ### Repository adapters
 
-An adapter translates repository-specific reality into the core:
+A private repository profile translates repository-specific reality into generic control-plane inputs:
 
 - discovery and identity;
 - affected-service calculation;
@@ -94,7 +94,7 @@ An adapter translates repository-specific reality into the core:
 - worktree bootstrap hints;
 - integration/union provenance.
 
-Marketplace is built in first. The boundary should be a small Go interface plus a schema-versioned local manifest, not a runtime plugin marketplace.
+Profiles are data, not compiled adapters. Adding or changing a consuming repository must not require product code changes. Generic capabilities belong in the control plane only when they can be described, validated, planned, and tested without repository identity.
 
 ## State and identity
 

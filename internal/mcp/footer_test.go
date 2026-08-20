@@ -87,7 +87,7 @@ func TestBuildEnvironmentContextIncludesPullRequestStatus(t *testing.T) {
 				PullRequest: &contractv1.PullRequestObservation{
 					Status: "found", Stale: true,
 					PullRequest: &contractv1.PullRequest{
-						Number: 9556, URL: "https://github.com/example/marketplace/pull/42",
+						Number: 9556, URL: "https://github.com/example/sample/pull/42",
 						State: "open", Mergeable: "mergeable", ReviewDecision: "review_required",
 						HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 						Checks:       contractv1.PullRequestChecks{State: "passing"},

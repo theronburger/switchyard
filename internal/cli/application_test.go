@@ -836,9 +836,9 @@ func cliStatusSnapshot() contractv1.StatusSnapshot {
 		SchemaVersion: contractv1.SchemaVersion, SnapshotRevision: 19, GeneratedAt: now,
 		Daemon: contractv1.DaemonStatus{InstanceID: "daemon_test", Version: "test", State: "ready", StartedAt: now},
 		Repositories: []contractv1.Repository{{
-			ID: "repository_test", DisplayName: "marketplace", RootPath: "/Developer/marketplace", Adapter: "marketplace",
+			ID: "repository_test", DisplayName: "sample", RootPath: "/Developer/sample", Adapter: "sample",
 			Worktrees: []contractv1.Worktree{
-				{ID: "worktree_primary", Path: "/Developer/marketplace", Branch: "main", HeadRevision: "aaaaaaaaaaaaaaaa", IsPrimary: true},
+				{ID: "worktree_primary", Path: "/Developer/sample", Branch: "main", HeadRevision: "aaaaaaaaaaaaaaaa", IsPrimary: true},
 				{ID: "worktree_feature", Path: "/Developer/worktrees/feature-a", Branch: "feature/a", HeadRevision: "bbbbbbbbbbbbbbbb"},
 			},
 		}},

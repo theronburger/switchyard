@@ -51,7 +51,7 @@ struct SwitchyardPresentationTests {
         let operation = try #require(snapshot.operations.first)
         let row = OperationRowPresentation(operation: operation, snapshot: snapshot)
 
-        #expect(row.repositoryName == "marketplace")
+        #expect(row.repositoryName == "sample")
         #expect(row.worktreeName == "feature/demo-environment")
         #expect(row.hoverDetail.contains("Target: testing"))
         #expect(row.hoverDetail.contains("Operation: \(operation.id)"))
@@ -104,7 +104,7 @@ struct SwitchyardPresentationTests {
     }
 
     @Test
-    func `Jira reference is derived from Marketplace branch without inventing metadata`() throws {
+    func `Jira reference is derived from configured repository branch without inventing metadata`() throws {
         let reference = try #require(JiraIssueReference.detect(in: "feature/PROJ-830/example-change"))
         #expect(reference.key == "PROJ-830")
         #expect(JiraIssueReference.detect(in: "maintenance/no-ticket") == nil)

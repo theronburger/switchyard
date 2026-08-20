@@ -180,7 +180,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	); err != nil {
 		return err
 	}
-	runtime, err := buildEnvironmentRuntime(
+	runtime, err := buildConfiguredProfileRuntime(
 		ctx, store, paths, instanceID, discoveredRepositories, restartDaemon,
 	)
 	if err != nil {

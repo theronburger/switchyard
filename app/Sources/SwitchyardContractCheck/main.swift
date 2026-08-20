@@ -439,7 +439,7 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(snapshot.daemon.state == .ready, "daemon state did not decode")
     try expect(snapshot.repositories.count == 1, "expected one repository")
     let repository = snapshot.repositories[0]
-    try expect(repository.adapter == "marketplace", "repository adapter did not decode")
+    try expect(repository.adapter == "sample", "repository adapter did not decode")
     try expect(repository.observation?.stale == false, "repository observation freshness did not decode")
     try expect(repository.runtime?.defaultTargetId == "testing", "repository runtime default did not decode")
     try expect(repository.runtime?.targets.count == 4, "repository targets did not decode")
@@ -526,7 +526,7 @@ runner.check("canonical fixture derivations are correct") {
     guard let environment = snapshot.environments.first else {
         throw CheckError("canonical environment is missing")
     }
-    try expect(snapshot.repository(for: environment)?.displayName == "marketplace", "repository lookup")
+    try expect(snapshot.repository(for: environment)?.displayName == "sample", "repository lookup")
     try expect(snapshot.worktree(for: environment)?.branch == "feature/demo-environment", "worktree lookup")
     try expect(snapshot.alerts(forEnvironment: environment.id).count == 1, "environment alert lookup")
     try expect(snapshot.operations(forEnvironment: environment.id).count == 1, "environment operation lookup")

@@ -40,7 +40,7 @@ public enum FixtureScenario: String, CaseIterable, Sendable, Identifiable {
     public var blurb: String {
         switch self {
         case .canonical:
-            return "The frozen contract fixture: one Marketplace worktree with a degraded environment."
+            return "The frozen contract fixture: one configured repository worktree with a degraded environment."
         case .empty:
             return "A healthy daemon that has not discovered any repositories yet."
         case .failure:

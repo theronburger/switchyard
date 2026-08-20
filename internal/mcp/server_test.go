@@ -101,7 +101,7 @@ func TestServerInitializesListsToolsAndReturnsExactWorktreeContext(t *testing.T)
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/marketplace/services/nonprofit"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/sample/services/nonprofit"}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -163,7 +163,7 @@ func TestServerSupportsStatelessModernDiscoveryListAndCall(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMetadata + `}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{` + modernMetadata + `}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/marketplace"},` + modernMetadata + `}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/sample"},` + modernMetadata + `}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -652,11 +652,11 @@ func serverSnapshot() contractv1.StatusSnapshot {
 			StartedAt:  now.Add(-time.Hour),
 		},
 		Repositories: []contractv1.Repository{{
-			ID: "repository_test", DisplayName: "marketplace", RootPath: "/Developer/marketplace",
-			Adapter: "marketplace", Remote: "example/marketplace",
+			ID: "repository_test", DisplayName: "sample", RootPath: "/Developer/sample",
+			Adapter: "sample", Remote: "example/sample",
 			Worktrees: []contractv1.Worktree{
-				{ID: "worktree_test", Path: "/Developer/marketplace", Branch: "feature/test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-				{ID: "worktree_foreign", Path: "/Developer/marketplace-worktrees/foreign", Branch: "feature/foreign", HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+				{ID: "worktree_test", Path: "/Developer/sample", Branch: "feature/test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				{ID: "worktree_foreign", Path: "/Developer/sample-worktrees/foreign", Branch: "feature/foreign", HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 			},
 		}},
 		Environments: []contractv1.Environment{

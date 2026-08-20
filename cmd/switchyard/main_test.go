@@ -72,7 +72,6 @@ func TestApplicationDirectoryNameSeparatesBuildChannels(t *testing.T) {
 
 func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(repositoryRootOverride, root)
 	t.Setenv(gitExecutableOverride, "/usr/bin/false")
 	paths := applicationPaths{
 		directory:         root,

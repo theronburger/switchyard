@@ -48,7 +48,7 @@ func (builder *recordingPlanBuilder) Build(
 func TestContainerInfrastructureHostDoesNotApplyProtectedForeignCollision(t *testing.T) {
 	inventory, err := containerhost.NewInventory([]containerhost.Resource{{
 		Kind: containerhost.ResourceContainer, ID: "foreign-id", Name: "switchyard-queue",
-		Labels: map[string]string{"team": "marketplace"},
+		Labels: map[string]string{"team": "sample"},
 	}})
 	if err != nil {
 		t.Fatal(err)

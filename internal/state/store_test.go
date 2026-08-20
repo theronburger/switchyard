@@ -304,7 +304,7 @@ func TestOperationExpectedEnvironmentRevisionIsAtomicAndRetrySafe(t *testing.T) 
 	snapshot := validSnapshot()
 	snapshot.Repositories = []contractv1.Repository{{
 		ID: "repository_01", DisplayName: "repository", RootPath: "/tmp/repository",
-		Adapter: "marketplace", Worktrees: []contractv1.Worktree{{
+		Adapter: "sample", Worktrees: []contractv1.Worktree{{
 			ID: "worktree_01", Path: "/tmp/repository", HeadRevision: "abc",
 		}},
 	}}

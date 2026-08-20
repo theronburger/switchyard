@@ -891,7 +891,7 @@ func TestRestartReconciliationRefusesCrashWindowIntentEvidence(t *testing.T) {
 	intent := processhost.LaunchIntent{
 		SchemaVersion: processhost.LaunchIntentSchemaVersion,
 		EnvironmentID: service.EnvironmentID, ServiceID: service.ID, RunID: service.RunID,
-		Executable: "/tmp/marketplace-service", LaunchFingerprint: strings.Repeat("0", 64),
+		Executable: "/tmp/sample-service", LaunchFingerprint: strings.Repeat("0", 64),
 		RunDirectory: runDirectory, CreatedAt: now, UpdatedAt: now,
 	}
 	intentPayload, err := json.Marshal(intent)

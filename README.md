@@ -9,7 +9,7 @@
   </p>
 </div>
 
-Switchyard turns a Marketplace Git worktree into the smallest useful local environment without port collisions, cross-worktree state leaks, unexplained process forests, or terminal setup. A native SwiftUI app, human CLI, Codex, and Claude Code all use the same Go daemon—the sole owner of runtime state, ports, processes, Docker resources, health, and cleanup.
+Switchyard turns configured Git worktrees into small, isolated local environments without port collisions, cross-worktree state leaks, unexplained process forests, or terminal setup. A native SwiftUI app, human CLI, Codex, and Claude Code all use the same Go daemon—the sole owner of runtime state, ports, processes, Docker resources, health, and cleanup.
 
 <p align="center">
   <img src="assets/switchyard-command-center-v1.png" alt="Switchyard command center showing a fictional worktree and environment" width="900">
@@ -21,7 +21,7 @@ Switchyard turns a Marketplace Git worktree into the smallest useful local envir
 
 - macOS 15 Sequoia or newer
 - Apple Silicon or Intel Mac
-- A local Marketplace checkout for the built-in Marketplace adapter
+- At least one local Git repository configured in Switchyard
 - Docker through Colima for services that require isolated infrastructure
 
 ## Install
@@ -52,7 +52,7 @@ sy doctor
 
 `sy status` resolves the containing known worktree, even from a child directory. `--all` is the deliberate machine-wide inventory. Environment and worktree mutations are also available through the app and the installed MCP server.
 
-Switchyard currently ships one rich repository adapter: Marketplace. The core lifecycle and contracts remain repository-neutral, but the product deliberately does not pretend a generic plugin framework exists before a second real repository needs one.
+Repository behavior comes from private, schema-versioned profiles stored under Application Support. A profile declares preparation, services, readiness probes, infrastructure, artifacts, and bounded value sources. It can configure several repositories at once without adding Switchyard files to any repository.
 
 ## Agent connections
 
@@ -73,9 +73,9 @@ SwiftUI app ────────────┘                             
 
 The daemon is the only runtime-state writer. MCP has no repository or lifecycle logic. Switchyard signals only positively owned process groups, removes only labelled owned Docker resources, and refuses to archive dirty, unpushed, active, locked, or unverifiable worktrees. Cleanup is plan-then-apply; global Docker prune and kill-by-name are never used.
 
-Marketplace's tracked files, public `.gitignore`, and `scripts/start-changed.sh` are never edited. Local projections and personal configuration stay private to the checkout.
+Switchyard never edits a configured repository's tracked files or public `.gitignore`. Personal configuration and generated artifacts live outside repositories unless an accepted profile explicitly projects a bounded runtime artifact into a worktree.
 
-Read the [architecture](docs/ARCHITECTURE.md), [safety invariants](docs/SAFETY.md), and [Marketplace adapter design](docs/MARKETPLACE.md) for the complete boundary.
+Read the [architecture](docs/ARCHITECTURE.md), [private profile model](docs/PRIVATE_REPOSITORY_PROFILES.md), and [safety invariants](docs/SAFETY.md) for the complete boundary.
 
 ## Updates
 

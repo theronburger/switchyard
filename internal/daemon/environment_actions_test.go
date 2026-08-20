@@ -163,7 +163,7 @@ func TestEnvironmentActionServiceEnsuresWorkspaceBeforeEnvironment(t *testing.T)
 		}},
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{Adapter: "sample", ServiceIDs: []string{"organizer"}},
 		}},
 		NewID: func(prefix string) (string, error) {
 			if prefix == "operation" {
@@ -212,7 +212,7 @@ func TestEnvironmentActionServiceDoesNotStartEnvironmentWhenWorkspaceFails(t *te
 		}},
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{Adapter: "sample", ServiceIDs: []string{"organizer"}},
 		}},
 		NewID: func(prefix string) (string, error) {
 			if prefix == "operation" {
@@ -429,7 +429,7 @@ func newTestActionService(
 				Key:            portlease.Key{EnvironmentID: "environment_01", ServiceID: "organizer", Purpose: "http"},
 				PreferredPorts: []int{7005},
 			}},
-			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{Adapter: "sample", ServiceIDs: []string{"organizer"}},
 		}},
 		NewID: func(string) (string, error) {
 			identifier := identifiers[index]

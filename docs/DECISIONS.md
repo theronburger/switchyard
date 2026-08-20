@@ -6,11 +6,11 @@ Accepted decisions are durable until deliberately amended here. Open decisions a
 
 ### D-001: Personal public project
 
-Switchyard lives publicly in Theron's personal GitHub namespace. It is a personal project that locally operates a Marketplace checkout the user already controls.
+Switchyard lives publicly in Theron's personal GitHub namespace. It is a personal project that locally operates repositories the user already controls.
 
-### D-002: Marketplace-first, repository-open core
+### D-002: Generic product, private repository profiles
 
-Optimize deeply for Marketplace through a rich adapter. Keep the core vocabulary and control plane repository-neutral so future repositories require configuration or a small adapter rather than a rewrite. Do not build a general plugin marketplace before a second repository exists.
+Keep repository identity, commands, service catalogs, and values out of the product. Store schema-versioned profiles under Application Support so several repositories can be configured concurrently without writing configuration into their worktrees. Improve real repository performance by adding reusable, declarative primitives rather than repository branches in application code.
 
 ### D-003: Go control plane and Swift presentation
 
@@ -28,13 +28,13 @@ The app bundles, starts, upgrades, validates, and repairs the helper. Normal use
 
 For current-task reads, MCP requires the exact absolute workspace path and returns a worktree-scoped projection. A separate tool reads one exact environment and a deliberately global tool reads inventory; MCP process working directory and inventory ordering never imply context. Accepted environment mutations include a compact Forge-style context footer. Switchyard does not inject unsolicited chat messages, wake sleeping agents, or interrupt running agents.
 
-### D-007: Personal local Marketplace manifest
+### D-007: Private external configuration
 
-`.switchyard.yaml` is schema-versioned but untracked. The app adds it and owned runtime projections such as `.switchyard.env.cjs` to the shared local `.git/info/exclude`, never the public `.gitignore`.
+Configuration is schema-versioned and stored under Application Support, never in the consuming repository. Runtime artifacts are generated in Switchyard-owned private storage and projected only when an accepted profile explicitly requires them.
 
-### D-008: Existing Marketplace helper is untouched
+### D-008: Existing repository tooling is untouched
 
-Do not edit, wrap, replace, or require `scripts/start-changed.sh`. It remains available to colleagues. Switchyard implements its own adapter.
+Do not edit, wrap, or replace repository tooling. Switchyard invokes only the exact commands in an accepted private profile.
 
 ### D-009: Safety through positive ownership
 

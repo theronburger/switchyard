@@ -110,7 +110,7 @@ func TestGitHubObserverPublishesFoundPullRequest(t *testing.T) {
 		observation.PullRequest == nil || observation.PullRequest.Number != 830 || observation.Stale {
 		t.Fatalf("unexpected observation: %#v", observation)
 	}
-	if client.authCalls != 1 || client.queryCalls != 1 || client.repositories[0] != "example/marketplace" {
+	if client.authCalls != 1 || client.queryCalls != 1 || client.repositories[0] != "example/sample" {
 		t.Fatalf("unexpected client calls: %#v", client)
 	}
 }
@@ -182,8 +182,8 @@ func githubObserverSnapshot() contractv1.StatusSnapshot {
 			StartedAt: time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC),
 		},
 		Repositories: []contractv1.Repository{{
-			ID: "repository_test", DisplayName: "marketplace", RootPath: "/repo",
-			Adapter: "marketplace", Remote: "example/marketplace",
+			ID: "repository_test", DisplayName: "sample", RootPath: "/repo",
+			Adapter: "sample", Remote: "example/sample",
 			Worktrees: []contractv1.Worktree{{
 				ID: "worktree_test", Path: "/repo", Branch: "PROJ-830/imports",
 				HeadRevision: "0123456789abcdef0123456789abcdef01234567", IsPrimary: true,
@@ -196,7 +196,7 @@ func githubObserverSnapshot() contractv1.StatusSnapshot {
 func testPullRequest(updatedAt time.Time) contractv1.PullRequest {
 	completedAt := updatedAt
 	return contractv1.PullRequest{
-		Number: 830, Title: "Chapter imports", URL: "https://github.com/example/marketplace/pull/830",
+		Number: 830, Title: "Chapter imports", URL: "https://github.com/example/sample/pull/830",
 		State: "open", Mergeable: "mergeable", MergeState: "clean", ReviewDecision: "approved",
 		BaseBranch: "main", HeadBranch: "PROJ-830/imports",
 		HeadRevision: "0123456789abcdef0123456789abcdef01234567",

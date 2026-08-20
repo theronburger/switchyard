@@ -1,13 +1,10 @@
 package main
 
 import (
-	"context"
-	"os"
 	"testing"
 	"time"
 
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
-	controlconfig "github.com/theronburger/switchyard/internal/control/config"
 )
 
 func TestMergeRepositoryInventoryPreservesRepositoriesWithEnvironments(t *testing.T) {
@@ -118,78 +115,9 @@ func previousSlice(repository contractv1.Repository) []contractv1.Repository {
 	return []contractv1.Repository{repository}
 }
 
-func TestMarketplaceRuntimeCatalogUsesLocalOrderingAndCompleteAvailability(t *testing.T) {
-	runtime, err := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{
-		DefaultTarget:      "testing",
-		Targets:            []string{"testing", "production"},
-		WarnOnStartTargets: []string{"production"},
-		Services:           []string{"organizer", "auth-service", "app"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runtime.DefaultTargetID != "testing" || len(runtime.Targets) != 2 ||
-		runtime.Targets[0].WarnOnStart || runtime.Targets[1].ID != "production" ||
-		!runtime.Targets[1].WarnOnStart || runtime.Targets[1].Risk != "production" {
-		t.Fatalf("runtime targets: %+v", runtime)
-	}
-	if len(runtime.Services) != 3 || !runtime.Services[0].Available ||
-		!runtime.Services[1].Available || runtime.Services[1].UnavailableReason != "" ||
-		!runtime.Services[2].Available {
-		t.Fatalf("runtime services: %+v", runtime.Services)
-	}
-}
-
-func TestMarketplaceRuntimeCatalogRejectsUnknownLocalEntries(t *testing.T) {
-	_, err := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{
-		DefaultTarget: "testing", Targets: []string{"testing"}, Services: []string{"made-up-service"},
-	})
-	if err == nil {
-		t.Fatal("unknown local service was accepted")
-	}
-}
-
-func TestMarketplaceRuntimeCatalogAllowsExplicitEmptyWarningOverride(t *testing.T) {
-	runtime, err := marketplaceRuntimeCatalog(controlconfig.RuntimeSettings{
-		DefaultTarget:      "testing",
-		Targets:            []string{"testing", "production"},
-		WarnOnStartTargets: []string{},
-		Services:           []string{"organizer"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runtime.Targets[1].WarnOnStart {
-		t.Fatal("explicit empty warn-on-start override was ignored")
-	}
-}
-
-func TestRealMarketplaceInventoryProbe(t *testing.T) {
-	if os.Getenv("SWITCHYARD_TEST_REAL_MARKETPLACE") != "1" {
-		t.Skip("set SWITCHYARD_TEST_REAL_MARKETPLACE=1 for the read-only local probe")
-	}
-	t.Setenv(repositoryRootOverride, "/Users/example/Developer/marketplace")
-	t.Setenv(gitExecutableOverride, configuredGitExecutable())
-	discovered := discoverRepositoryInventory(context.Background(), time.Now().UTC())
-	if !discovered.Complete || len(discovered.Repositories) != 1 {
-		t.Fatalf("Marketplace inventory is incomplete: %+v", discovered.Alerts)
-	}
-	if len(discovered.Repositories[0].Worktrees) < 1 {
-		t.Fatal("Marketplace inventory contains no worktrees")
-	}
-}
-
-func TestDevelopmentInventoryDoesNotDiscoverARealRepositoryByDefault(t *testing.T) {
-	t.Setenv(repositoryRootOverride, "")
-	discovered := discoverRepositoryInventory(context.Background(), time.Now().UTC())
-	if !discovered.Complete || len(discovered.Repositories) != 0 || len(discovered.Alerts) != 0 {
-		t.Fatalf("development inventory was not isolated: %+v", discovered)
-	}
-}
-
 func inventoryTestRepository(id, worktreeID, root string) contractv1.Repository {
 	return contractv1.Repository{
-		ID: id, DisplayName: id, RootPath: root, Adapter: "marketplace", Remote: "owner/repository",
+		ID: id, DisplayName: id, RootPath: root, Adapter: "sample", Remote: "owner/repository",
 		Worktrees: []contractv1.Worktree{{
 			ID: worktreeID, Path: root, HeadRevision: "0123456789abcdef0123456789abcdef01234567",
 			IsPrimary: true,

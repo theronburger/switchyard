@@ -1,6 +1,6 @@
 # Parallel build plan
 
-Current status: Waves 0 through 3 are complete. The live app, daemon, Marketplace runtime, CLI/MCP surfaces, workspace lifecycle, and golden two-worktree demonstration have passed their acceptance gates. Public distribution and signed update operations are tracked in `RELEASING.md`.
+Current status: Waves 0 through 3 established the daemon, native app, CLI/MCP surfaces, workspace lifecycle, and two-worktree safety proof. The profile migration replaces the original compiled repository behavior with private external configuration. Public distribution and update operations are tracked in `RELEASING.md`.
 
 ## Coordination rule
 
@@ -36,7 +36,7 @@ Exit gate:
 | --- | --- | --- | --- |
 | Coordination | root Codex | contracts, root manifests, integration tests, docs | Stable contract and integration |
 | Daemon | Codex agent A | `internal/daemon`, `internal/state`, `internal/events`, `internal/runtime` | SQLite, daemon lifecycle, reconciliation, owned process supervision |
-| Marketplace | Codex agent B | `internal/adapters/marketplace`, Marketplace fixtures | discovery, service plans, routing, infrastructure model |
+| Repository runtime | Codex agent B | repository fixtures and runtime compiler | discovery, service plans, routing, infrastructure model |
 | Agent surfaces | Codex agent C | `internal/mcp`, CLI command packages | MCP/CLI clients and state footer |
 | Native app | Fable | `app/` | SwiftUI fixture-driven app, setup and status UX |
 
@@ -45,16 +45,16 @@ The coordinator may move the process supervisor or lease allocator into a separa
 Exit gate:
 
 - each lane has focused tests;
-- no lane requires a live Marketplace service for its unit tests;
+- no lane requires a live consuming-repository service for its unit tests;
 - the app renders fixture states;
 - daemon, CLI, and MCP communicate through the frozen contract;
-- Marketplace detection runs read-only against the real checkout.
+- profile-driven detection runs read-only against a real checkout.
 
 ## Wave 2: integration fan-out — complete
 
 Parallel tracks:
 
-- daemon plus Marketplace adapter;
+- daemon plus repository runtime compiler;
 - Swift app plus real daemon;
 - MCP and CLI plus real daemon;
 - install/startup/Connection Doctor;
@@ -69,7 +69,7 @@ Exit gate:
 - crash, restart, conflict, and stale-state paths are visible;
 - the safety suite proves foreign resources survive.
 
-## Wave 3: Marketplace golden demonstration — complete
+## Wave 3: two-worktree golden demonstration — complete
 
 Run representative web and API services in two simultaneous worktrees.
 
@@ -107,4 +107,4 @@ High-value Fable work:
 - adversarial lifecycle, cleanup, and recovery review;
 - end-to-end audit after integration.
 
-Avoid giving Fable shared contract ownership or live destructive Marketplace actions.
+Avoid giving Fable shared contract ownership or live destructive repository actions.

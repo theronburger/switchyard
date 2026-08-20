@@ -12,11 +12,11 @@ import (
 
 func TestWorktreeByPathSelectsDeepestContainingWorktreeAndScopesState(t *testing.T) {
 	snapshot := statusViewSnapshot()
-	context, err := WorktreeByPath(snapshot, "/Developer/marketplace-worktrees/feature-a/services/api")
+	context, err := WorktreeByPath(snapshot, "/Developer/sample-worktrees/feature-a/services/api")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context.Worktree.ID != "worktree_linked" || context.Repository.ID != "repository_marketplace" {
+	if context.Worktree.ID != "worktree_linked" || context.Repository.ID != "repository_sample" {
 		t.Fatalf("context: %+v", context)
 	}
 	if context.Repository.Observation == nil || context.Repository.Observation.Stale {
@@ -27,7 +27,7 @@ func TestWorktreeByPathSelectsDeepestContainingWorktreeAndScopesState(t *testing
 		len(context.Alerts) != 1 || context.Alerts[0].ID != "alert_linked" {
 		t.Fatalf("scoped state: environments=%+v operations=%+v alerts=%+v", context.Environments, context.Operations, context.Alerts)
 	}
-	if _, err := WorktreeByPath(snapshot, "/Developer/marketplace-worktrees/feature-a-copy"); !errors.Is(err, ErrWorktreeNotFound) {
+	if _, err := WorktreeByPath(snapshot, "/Developer/sample-worktrees/feature-a-copy"); !errors.Is(err, ErrWorktreeNotFound) {
 		t.Fatalf("path-prefix collision: %v", err)
 	}
 }
@@ -99,17 +99,17 @@ func statusViewSnapshot() contractv1.StatusSnapshot {
 		SchemaVersion: contractv1.SchemaVersion, SnapshotRevision: 42, GeneratedAt: now,
 		Daemon: contractv1.DaemonStatus{InstanceID: "daemon_test", Version: "test", State: "ready", StartedAt: now},
 		Repositories: []contractv1.Repository{{
-			ID: "repository_marketplace", DisplayName: "marketplace", RootPath: "/Developer/marketplace",
-			Adapter: "marketplace", Remote: "example/marketplace",
+			ID: "repository_sample", DisplayName: "sample", RootPath: "/Developer/sample",
+			Adapter: "sample", Remote: "example/sample",
 			Observation: &contractv1.RepositoryObservation{ObservedAt: &now, LastAttemptAt: now},
 			Worktrees: []contractv1.Worktree{
-				{ID: "worktree_primary", Path: "/Developer/marketplace", Branch: "main", IsPrimary: true},
-				{ID: "worktree_linked", Path: "/Developer/marketplace-worktrees/feature-a", Branch: "feature/a"},
+				{ID: "worktree_primary", Path: "/Developer/sample", Branch: "main", IsPrimary: true},
+				{ID: "worktree_linked", Path: "/Developer/sample-worktrees/feature-a", Branch: "feature/a"},
 			},
 		}},
 		Environments: []contractv1.Environment{
-			{ID: "environment_primary", RepositoryID: "repository_marketplace", WorktreeID: "worktree_primary", URLs: map[string]string{}, Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{}, AttentionAlertIDs: []string{}},
-			{ID: "environment_linked", RepositoryID: "repository_marketplace", WorktreeID: "worktree_linked", URLs: map[string]string{}, Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{}, AttentionAlertIDs: []string{"alert_linked"}},
+			{ID: "environment_primary", RepositoryID: "repository_sample", WorktreeID: "worktree_primary", URLs: map[string]string{}, Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{}, AttentionAlertIDs: []string{}},
+			{ID: "environment_linked", RepositoryID: "repository_sample", WorktreeID: "worktree_linked", URLs: map[string]string{}, Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{}, AttentionAlertIDs: []string{"alert_linked"}},
 		},
 		Operations: []contractv1.Operation{
 			{ID: "operation_old", EnvironmentID: "environment_linked", UpdatedAt: now.Add(-time.Minute)},

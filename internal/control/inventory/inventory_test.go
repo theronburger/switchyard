@@ -26,8 +26,8 @@ func TestDiscoverRepositoryProjectsStableOpaqueContractSnapshot(t *testing.T) {
 	if first.Repository == nil || len(first.Errors) != 0 {
 		t.Fatalf("discovery result: %#v", first)
 	}
-	if first.Repository.RootPath != "/Users/example/Marketplace" ||
-		first.Repository.DisplayName != "Marketplace" ||
+	if first.Repository.RootPath != "/Users/example/configured repository" ||
+		first.Repository.DisplayName != "configured repository" ||
 		first.Repository.Adapter != "example" ||
 		first.Repository.Remote != "owner/repository" {
 		t.Fatalf("repository projection: %#v", first.Repository)
@@ -43,7 +43,7 @@ func TestDiscoverRepositoryProjectsStableOpaqueContractSnapshot(t *testing.T) {
 		first.Repository.Worktrees[0].ID,
 		first.Repository.Worktrees[1].ID,
 	} {
-		if strings.Contains(identity, "Marketplace") || strings.Contains(identity, "feature") ||
+		if strings.Contains(identity, "configured repository") || strings.Contains(identity, "feature") ||
 			strings.Contains(identity, "/Users/") {
 			t.Fatalf("identity is not opaque: %q", identity)
 		}
@@ -119,7 +119,7 @@ func TestDiscoverRepositoryRefusesInvalidAdapterObservationWithoutEchoingData(t 
 
 func TestDiscoverRepositoryRejectsPublicOrMismatchedExcludePath(t *testing.T) {
 	observation := validRepositoryObservation()
-	observation.SharedExcludePath = "/Users/example/Marketplace/.gitignore"
+	observation.SharedExcludePath = "/Users/example/configured repository/.gitignore"
 	inventoryService, err := New(fixedRepositoryReader{observation: observation})
 	if err != nil {
 		t.Fatal(err)
@@ -135,20 +135,20 @@ func TestDiscoverRepositoryRejectsPublicOrMismatchedExcludePath(t *testing.T) {
 func validRepositoryObservation() RepositoryObservation {
 	return RepositoryObservation{
 		AdapterName:       "example",
-		CommonDirectory:   "/Users/example/Marketplace/.git",
-		SharedExcludePath: "/Users/example/Marketplace/.git/info/exclude",
+		CommonDirectory:   "/Users/example/configured repository/.git",
+		SharedExcludePath: "/Users/example/configured repository/.git/info/exclude",
 		Remote:            "owner/repository",
 		Worktrees: []WorktreeObservation{
 			{
-				Path:                   "/Users/example/Marketplace",
-				AdministrativeIdentity: "/Users/example/Marketplace/.git",
+				Path:                   "/Users/example/configured repository",
+				AdministrativeIdentity: "/Users/example/configured repository/.git",
 				Branch:                 "main",
 				HeadRevision:           strings.Repeat("1", 40),
 				IsPrimary:              true,
 			},
 			{
-				Path:                   "/Users/example/Marketplace Worktrees/feature",
-				AdministrativeIdentity: "/Users/example/Marketplace/.git/worktrees/feature",
+				Path:                   "/Users/example/configured repository Worktrees/feature",
+				AdministrativeIdentity: "/Users/example/configured repository/.git/worktrees/feature",
 				Branch:                 "feature/ticket",
 				HeadRevision:           strings.Repeat("2", 40),
 				Locked:                 true,

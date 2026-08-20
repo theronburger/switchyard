@@ -51,10 +51,10 @@ Plans expire when relevant state changes. The UI must make destructive scope leg
 ## Configuration and hooks
 
 - Personal configuration may contain absolute paths but no secrets.
-- Shared local exclude edits are idempotent, marker-delimited, append-only, and preserve existing content. This is Switchyard's only permitted write under Marketplace's common `.git` directory.
+- Switchyard configuration and ownership markers stay outside consuming repositories. No tracked file, public ignore file, or shared Git metadata is mutated.
 - Never source an environment file as shell code merely to read values.
 - Repository-provided commands discovered from configuration require an inspectable plan before first execution.
-- Do not mutate tracked Marketplace files.
+- Do not mutate tracked files in consuming repositories.
 - Do not write public ignore rules for a personal tool.
 - Codex and Claude MCP mutations go through each host's exact CLI. Switchyard bounds and validates owner-controlled configuration before repair, serializes mutations, and uses compare-and-swap restoration that never overwrites a concurrent change.
 

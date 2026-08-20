@@ -31,9 +31,9 @@ func (store *fakeRepositoryObserverStore) UpdateSnapshot(
 
 func TestRepositoryObserverRefreshesRepositoryWithoutOverwritingEnvironment(t *testing.T) {
 	observedAt := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	previous := inventoryTestRepository("repo_test", "worktree_test", "/tmp/marketplace")
+	previous := inventoryTestRepository("repo_test", "worktree_test", "/tmp/sample")
 	previous.Worktrees[0].HeadRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	latest := inventoryTestRepository("repo_test", "worktree_test", "/tmp/marketplace")
+	latest := inventoryTestRepository("repo_test", "worktree_test", "/tmp/sample")
 	latest.Worktrees[0].HeadRevision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	latest.Worktrees[0].Git.HasTrackedChanges = true
 	latest.Observation = &contractv1.RepositoryObservation{
@@ -70,7 +70,7 @@ func TestRepositoryObserverRefreshesRepositoryWithoutOverwritingEnvironment(t *t
 func TestFailedRepositoryRefreshPreservesDataAndMarksObservationStale(t *testing.T) {
 	observedAt := time.Date(2026, 8, 18, 11, 0, 0, 0, time.UTC)
 	attemptedAt := observedAt.Add(time.Minute)
-	repository := inventoryTestRepository("repo_test", "worktree_test", "/tmp/marketplace")
+	repository := inventoryTestRepository("repo_test", "worktree_test", "/tmp/sample")
 	repository.Observation = &contractv1.RepositoryObservation{
 		ObservedAt: &observedAt, LastAttemptAt: observedAt,
 	}

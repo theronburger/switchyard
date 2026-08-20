@@ -1,6 +1,0 @@
-{
-  "packages": [
-    {"name": "organizer", "path": "organizer"},
-    {"name": "wallet-service", "path": "services/wallet"}
-  ]
-}

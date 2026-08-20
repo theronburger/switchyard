@@ -11,10 +11,10 @@
   "repositories": [
     {
       "id": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
-      "displayName": "marketplace",
-      "rootPath": "/Users/example/Developer/marketplace",
-      "adapter": "marketplace",
-      "remote": "example/marketplace",
+      "displayName": "sample",
+      "rootPath": "/Users/example/Developer/sample",
+      "adapter": "sample",
+      "remote": "example/sample",
       "observation": {
         "observedAt": "2026-08-14T09:59:50Z",
         "lastAttemptAt": "2026-08-14T09:59:50Z",
@@ -52,7 +52,7 @@
       "worktrees": [
         {
           "id": "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX",
-          "path": "/Users/example/Developer/marketplace-worktrees/demo-environment",
+          "path": "/Users/example/Developer/sample-worktrees/demo-environment",
           "branch": "feature/demo-environment",
           "headRevision": "0123456789abcdef0123456789abcdef01234567",
           "isPrimary": false,
@@ -91,7 +91,7 @@
             "pullRequest": {
               "number": 42,
               "title": "Demo: isolate local service routes",
-              "url": "https://github.com/example/marketplace/pull/42",
+              "url": "https://github.com/example/sample/pull/42",
               "state": "open",
               "draft": false,
               "mergeable": "mergeable",
@@ -116,7 +116,7 @@
                     "workflow": "CI",
                     "state": "success",
                     "bucket": "pass",
-                    "url": "https://github.com/example/marketplace/actions/runs/1001",
+                    "url": "https://github.com/example/sample/actions/runs/1001",
                     "startedAt": "2026-08-14T09:50:00Z",
                     "completedAt": "2026-08-14T09:52:00Z"
                   },
@@ -125,7 +125,7 @@
                     "workflow": "CI",
                     "state": "success",
                     "bucket": "pass",
-                    "url": "https://github.com/example/marketplace/actions/runs/1002",
+                    "url": "https://github.com/example/sample/actions/runs/1002",
                     "startedAt": "2026-08-14T09:50:00Z",
                     "completedAt": "2026-08-14T09:55:00Z"
                   },
@@ -134,7 +134,7 @@
                     "workflow": "CI",
                     "state": "in_progress",
                     "bucket": "pending",
-                    "url": "https://github.com/example/marketplace/actions/runs/1003",
+                    "url": "https://github.com/example/sample/actions/runs/1003",
                     "startedAt": "2026-08-14T09:50:00Z"
                   },
                   {
@@ -142,7 +142,7 @@
                     "workflow": "CI",
                     "state": "skipped",
                     "bucket": "skipping",
-                    "url": "https://github.com/example/marketplace/actions/runs/1004"
+                    "url": "https://github.com/example/sample/actions/runs/1004"
                   }
                 ]
               }

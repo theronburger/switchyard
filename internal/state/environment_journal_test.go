@@ -741,7 +741,7 @@ func seedEnvironmentJournalSnapshot(t *testing.T, store *Store) {
 	t.Helper()
 	snapshot := validSnapshot()
 	snapshot.Repositories = []contractv1.Repository{{
-		ID: "repo_01", DisplayName: "Marketplace", Worktrees: []contractv1.Worktree{{ID: "worktree_01"}},
+		ID: "repo_01", DisplayName: "configured repository", Worktrees: []contractv1.Worktree{{ID: "worktree_01"}},
 	}}
 	if _, err := store.CommitSnapshot(context.Background(), snapshot); err != nil {
 		t.Fatal(err)
