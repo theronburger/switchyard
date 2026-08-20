@@ -2,6 +2,7 @@ package profile
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,9 @@ func actionRegistration(t *testing.T) Registration {
 	registration := profileRegistration(t)
 	literal := func(value string) configuration.ValueRef { return configuration.ValueRef{Literal: &value} }
 	registration.Values = map[string]string{"token-name": "resolved-value"}
+	if err := os.MkdirAll(filepath.Join(registration.WorktreeRoot, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	registration.Profile.Actions = map[string]configuration.Action{
 		"tidy": {
 			DisplayName: "Tidy", Scope: "worktree", Risk: "local",
@@ -132,6 +136,9 @@ func TestCompileActionFailsClosedForUnresolvableOrNonCommandActions(t *testing.T
 func TestCompileActionUsesRepositoryRootForRepositoryScope(t *testing.T) {
 	registration := actionRegistration(t)
 	registration.RepositoryRoot = filepath.Join(registration.RuntimeRoot, "primary")
+	if err := os.MkdirAll(filepath.Join(registration.RepositoryRoot, "tools"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	literal := "ok"
 	registration.Profile.Actions["audit"] = configuration.Action{
 		DisplayName: "Audit", Scope: "repository", Risk: "remote-write",
@@ -143,5 +150,30 @@ func TestCompileActionUsesRepositoryRootForRepositoryScope(t *testing.T) {
 	command, err := CompileAction(ActionCompileRequest{Registration: registration, ActionID: "audit", OperationID: "operation_08"})
 	if err != nil || command.Directory != filepath.Join(registration.RepositoryRoot, "tools") {
 		t.Fatalf("repository-scoped command: err=%v command=%+v", err, command)
+	}
+}
+
+// TestCompileActionRefusesWorkingDirectoryOutsideTheWorktree proves that a
+// symlink committed into the checkout cannot redirect an accepted command's
+// working directory outside the worktree it was accepted for.
+func TestCompileActionRefusesWorkingDirectoryOutsideTheWorktree(t *testing.T) {
+	registration := actionRegistration(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(registration.WorktreeRoot, "apps")); err != nil {
+		t.Fatal(err)
+	}
+	literal := "ok"
+	registration.Profile.Actions["tidy"] = configuration.Action{
+		DisplayName: "Tidy", Scope: "worktree", Risk: "local",
+		Command: &configuration.Command{
+			Executable: "/usr/bin/true", WorkingDirectory: "apps/web", Timeout: "1m",
+			Arguments: []configuration.ValueRef{{Literal: &literal}},
+		},
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "web"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CompileAction(ActionCompileRequest{Registration: registration, ActionID: "tidy", OperationID: "operation_09"}); !errors.Is(err, ErrProfileInvalid) {
+		t.Fatalf("symlinked working directory was accepted: %v", err)
 	}
 }

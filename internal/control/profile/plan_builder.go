@@ -12,6 +12,8 @@ import (
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
 	"github.com/theronburger/switchyard/internal/runtime/processhost"
+
+	"github.com/theronburger/switchyard/internal/runtime/safepath"
 )
 
 const artifactProjectionID = "private-artifacts-v1"
@@ -106,12 +108,16 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 			}
 		}
 		sort.Slice(portKeys, func(left, right int) bool { return portKeys[left].Purpose < portKeys[right].Purpose })
+		serviceDirectory, contained := safepath.RealDirectoryWithin(registration.WorktreeRoot, service.Command.WorkingDirectory)
+		if !contained {
+			return environmentcontrol.ExecutionPlan{}, ErrProfileInvalid
+		}
 		plan.Services = append(plan.Services, environmentcontrol.ServiceLaunch{
 			ID: serviceID,
 			Process: processhost.LaunchSpec{
 				EnvironmentID: request.EnvironmentID, ServiceID: serviceID, RunID: request.RunID,
 				Executable: service.Command.Executable, Arguments: arguments, Environment: resolvedEnvironment,
-				Directory:    filepath.Join(registration.WorktreeRoot, service.Command.WorkingDirectory),
+				Directory:    serviceDirectory,
 				RunDirectory: filepath.Join(runRoot, "services", serviceID),
 			},
 			PortKeys: portKeys, Readiness: environmentcontrol.ReadinessSpec{ID: readinessID(serviceID)},
@@ -301,12 +307,16 @@ func finiteCommand(registration Registration, runRoot, runID, serviceID, id stri
 	if err != nil {
 		return environmentcontrol.PreparationSpec{}, err
 	}
+	directory, contained := safepath.RealDirectoryWithin(registration.WorktreeRoot, command.WorkingDirectory)
+	if !contained {
+		return environmentcontrol.PreparationSpec{}, ErrProfileInvalid
+	}
 	return environmentcontrol.PreparationSpec{
 		ID: serviceID + "." + id, ServiceID: serviceID,
 		LogReference: filepath.ToSlash(filepath.Join(runID, "preparations", serviceID, id)),
 		Executable:   command.Executable, Arguments: arguments,
 		Environment:  mergeEnvironment(baseEnvironment, environment),
-		Directory:    filepath.Join(registration.WorktreeRoot, command.WorkingDirectory),
+		Directory:    directory,
 		RunDirectory: filepath.Join(runRoot, "preparations", serviceID, id), Timeout: duration,
 	}, nil
 }

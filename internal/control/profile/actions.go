@@ -8,6 +8,8 @@ import (
 	"github.com/theronburger/switchyard/internal/configuration"
 	actioncontrol "github.com/theronburger/switchyard/internal/control/action"
 	"github.com/theronburger/switchyard/internal/runtime/portlease"
+
+	"github.com/theronburger/switchyard/internal/runtime/safepath"
 )
 
 // ActionDefinitions projects the accepted profile's actions into the generic
@@ -83,9 +85,13 @@ func CompileAction(request ActionCompileRequest) (actioncontrol.ExactCommand, er
 	if err != nil || timeout <= 0 || timeout > actioncontrol.MaximumTimeout {
 		return actioncontrol.ExactCommand{}, ErrProfileInvalid
 	}
+	directory, contained := safepath.RealDirectoryWithin(root, command.WorkingDirectory)
+	if !contained {
+		return actioncontrol.ExactCommand{}, ErrProfileInvalid
+	}
 	return actioncontrol.ExactCommand{
 		Executable: command.Executable, Arguments: arguments, Environment: environment,
-		Directory: filepath.Join(root, command.WorkingDirectory), Timeout: timeout,
+		Directory: directory, Timeout: timeout,
 		RunDirectory: runRoot,
 	}, nil
 }

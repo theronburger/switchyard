@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
+
+	"github.com/theronburger/switchyard/internal/runtime/safepath"
 )
 
 const (
@@ -75,7 +77,9 @@ func (builder ProfilePlanBuilder) Build(request PlanningRequest) (Plan, error) {
 		Requirements: make([]Requirement, 0, len(registration.Preparation.Verify)), Toolchains: []Toolchain{},
 	}
 	for _, configured := range registration.Preparation.Steps {
-		directory, valid := containedWorktreePath(registration.WorktreeRoot, configured.WorkingDirectory)
+		// The working directory must be physically inside the worktree: a
+		// symlink committed in the checkout must not redirect an accepted step.
+		directory, valid := safepath.RealDirectoryWithin(registration.WorktreeRoot, configured.WorkingDirectory)
 		if !valid {
 			return Plan{}, ErrInvalidPlan
 		}
