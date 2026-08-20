@@ -99,6 +99,11 @@ public enum DaemonClientError: Error, Sendable, CustomStringConvertible {
 public struct DaemonClient: Sendable {
     /// Stable machine-readable code the daemon uses for version mismatches.
     public static let upgradeRequiredCode = "UPGRADE_REQUIRED"
+    /// Every request declares this client's exact contract schema version so
+    /// the daemon can answer a mismatch with HTTP 426 and the stable code.
+    public static let schemaVersionHeader = "X-Switchyard-Schema-Version"
+    /// HTTP status the daemon uses for an exact-version mismatch.
+    public static let upgradeRequiredStatus = 426
 
     private let baseURL: URL
     private let descriptor: EndpointDescriptor
@@ -119,10 +124,18 @@ public struct DaemonClient: Sendable {
 
     public func handshake() async throws -> HandshakeResponse {
         let handshake = try await get(HandshakeResponse.self, path: "handshake")
+        guard handshake.daemonInstanceId == descriptor.daemonInstanceId else {
+            throw DaemonClientError.malformedResponse("handshake identity does not match the runtime descriptor")
+        }
+        guard handshake.schemaVersion > 0, !handshake.supportedSchemaVersions.isEmpty,
+              handshake.supportedSchemaVersions.allSatisfy({ $0 > 0 }) else {
+            throw DaemonClientError.malformedResponse("handshake schema versions are invalid")
+        }
         guard handshake.schemaVersion == EndpointDescriptor.supportedSchemaVersion,
-              handshake.supportedSchemaVersions.contains(EndpointDescriptor.supportedSchemaVersion),
-              handshake.daemonInstanceId == descriptor.daemonInstanceId else {
-            throw DaemonClientError.malformedResponse("handshake identity or schema does not match the runtime descriptor")
+              handshake.supportedSchemaVersions.contains(EndpointDescriptor.supportedSchemaVersion) else {
+            throw DaemonClientError.upgradeRequired(
+                message: "daemon speaks contract schema version \(handshake.schemaVersion); this app requires \(EndpointDescriptor.supportedSchemaVersion)"
+            )
         }
         guard handshake.daemonVersion == descriptor.daemonVersion else {
             throw DaemonClientError.upgradeRequired(message: "daemon version does not match the runtime descriptor")
@@ -319,6 +332,7 @@ public struct DaemonClient: Sendable {
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue(token.authorizationHeaderValue, forHTTPHeaderField: "Authorization")
+        request.setValue(String(contractSchemaVersion), forHTTPHeaderField: Self.schemaVersionHeader)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Switchyard-Request-Id")
 
@@ -339,6 +353,7 @@ public struct DaemonClient: Sendable {
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue(token.authorizationHeaderValue, forHTTPHeaderField: "Authorization")
+        request.setValue(String(contractSchemaVersion), forHTTPHeaderField: Self.schemaVersionHeader)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(requestId, forHTTPHeaderField: "X-Switchyard-Request-Id")
@@ -375,6 +390,14 @@ public struct DaemonClient: Sendable {
             }
         case 401, 403:
             throw DaemonClientError.unauthorized
+        case Self.upgradeRequiredStatus:
+            // The status line alone is authoritative: an unreadable envelope
+            // still means the daemon and app disagree on the exact contract.
+            if let envelope = try? decoder.decode(ContractErrorEnvelope.self, from: data),
+               envelope.error.code == Self.upgradeRequiredCode {
+                throw DaemonClientError.upgradeRequired(message: envelope.error.message)
+            }
+            throw DaemonClientError.upgradeRequired(message: "the daemon requires a different contract schema version")
         default:
             if let envelope = try? decoder.decode(ContractErrorEnvelope.self, from: data) {
                 if envelope.error.code == Self.upgradeRequiredCode {

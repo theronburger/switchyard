@@ -75,7 +75,7 @@ func (c *Client) postConfiguration(ctx context.Context, path string, value any) 
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.connection.token)
+	c.declareContract(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return contractv2.ConfigurationStatus{}, newCodedError(ErrorDaemonUnavailable, err)

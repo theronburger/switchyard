@@ -114,6 +114,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required", false)
 		return
 	}
+	if routeRequiresAuthentication(request.URL.Path) && enforceSchemaDeclaration(response, request) {
+		return
+	}
 
 	switch request.URL.Path {
 	case "/handshake":

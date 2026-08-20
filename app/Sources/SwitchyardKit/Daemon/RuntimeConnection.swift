@@ -122,6 +122,14 @@ public enum RuntimeConnectionError: Error, Sendable, CustomStringConvertible {
         }
     }
 
+    /// A readable descriptor that belongs to a different contract generation.
+    /// The daemon and app must be brought to the same exact version; retrying
+    /// or repairing the endpoint alone cannot fix it.
+    public var requiresUpgrade: Bool {
+        if case .descriptor(.unsupportedSchemaVersion) = self { return true }
+        return false
+    }
+
     public var descriptorIsMissing: Bool {
         switch self {
         case .descriptor(.missing):

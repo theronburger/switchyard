@@ -126,7 +126,7 @@ func (c *Client) postMutation(
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.connection.token)
+	c.declareContract(request)
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {

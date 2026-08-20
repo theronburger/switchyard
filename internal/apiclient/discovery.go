@@ -138,12 +138,20 @@ func decodeDescriptor(contents []byte, policy DiscoveryPolicy) (RuntimeDescripto
 	if err := requireJSONEnd(decoder); err != nil {
 		return RuntimeDescriptor{}, nil, newCodedError(ErrorRuntimeDescriptorInvalid, err)
 	}
-	if descriptor.SchemaVersion != RuntimeDescriptorSchemaVersion ||
-		descriptor.DaemonInstanceID == "" || descriptor.DaemonVersion == "" || descriptor.PID <= 0 ||
-		descriptor.ProcessStartedAt.IsZero() || descriptor.GeneratedAt.IsZero() {
+	if descriptor.DaemonInstanceID == "" || descriptor.DaemonVersion == "" || descriptor.PID <= 0 ||
+		descriptor.ProcessStartedAt.IsZero() || descriptor.GeneratedAt.IsZero() || descriptor.SchemaVersion <= 0 {
 		return RuntimeDescriptor{}, nil, newCodedError(
 			ErrorRuntimeDescriptorInvalid,
 			fmt.Errorf("required descriptor fields are missing or invalid"))
+	}
+	if descriptor.SchemaVersion != RuntimeDescriptorSchemaVersion {
+		// A well-formed descriptor from another contract generation is an
+		// upgrade problem, not a corrupt file: the client and daemon must be
+		// brought to the same exact version before any request is made.
+		return RuntimeDescriptor{}, nil, newCodedError(
+			ErrorUpgradeRequired,
+			fmt.Errorf("descriptor schema version %d does not match client schema version %d",
+				descriptor.SchemaVersion, RuntimeDescriptorSchemaVersion))
 	}
 
 	now := time.Now()

@@ -138,6 +138,7 @@ public enum DaemonLifecycleEvent: Sendable, Equatable {
     case endpointFound(EndpointDescriptor)
     case endpointMissing
     case endpointInvalid(reason: String)
+    case endpointUpgradeRequired(message: String)
     case daemonStarted
     case daemonStartFailed(reason: String)
     case handshakeSucceeded(DaemonSession)
@@ -159,6 +160,7 @@ public enum DaemonLifecycleEvent: Sendable, Equatable {
         case .endpointFound: return "endpointFound"
         case .endpointMissing: return "endpointMissing"
         case .endpointInvalid: return "endpointInvalid"
+        case .endpointUpgradeRequired: return "endpointUpgradeRequired"
         case .daemonStarted: return "daemonStarted"
         case .daemonStartFailed: return "daemonStartFailed"
         case .handshakeSucceeded: return "handshakeSucceeded"
@@ -231,6 +233,11 @@ public struct DaemonLifecycleMachine: Sendable, Equatable {
             return .startingDaemon
         case (.locatingEndpoint, .endpointInvalid(let reason)):
             return .unreachable(reason: reason)
+        // A well-formed descriptor from another contract generation is an
+        // update problem, not a missing daemon: the app must replace its
+        // bundled helper (or be updated itself) before reconnecting.
+        case (.locatingEndpoint, .endpointUpgradeRequired(let message)):
+            return .upgradeRequired(message: message)
 
         case (.startingDaemon, .daemonStarted):
             return .locatingEndpoint

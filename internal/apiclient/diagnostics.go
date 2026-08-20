@@ -36,7 +36,7 @@ func (c *Client) OperationDiagnostics(
 		return contractv2.OperationDiagnostics{}, newCodedError(ErrorDaemonUnavailable, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.connection.token)
+	c.declareContract(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return contractv2.OperationDiagnostics{}, newCodedError(ErrorDaemonUnavailable, err)

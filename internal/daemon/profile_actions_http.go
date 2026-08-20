@@ -47,7 +47,7 @@ func (handler *apiHandler) profileActions(response http.ResponseWriter, request 
 		}
 		var mutation contractv2.RunProfileActionRequest
 		if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
-			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The profile action request is invalid", false)
+			writeDecodeFailure(response, err, "INVALID_REQUEST", "The profile action request is invalid")
 			return true
 		}
 		if handler.config.ProfileActions == nil {

@@ -54,6 +54,7 @@ func profileActionsHandler(t *testing.T, backend ProfileActions) http.Handler {
 func serveProfileActions(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -102,7 +103,8 @@ func TestProfileActionsHTTPRejectsInvalidRequests(t *testing.T) {
 		"run mismatched confirmation":     {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","confirmedActionId":"other"}`, http.StatusBadRequest},
 		"run worktree and environment":    {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","worktreeId":"w","environmentId":"e"}`, http.StatusBadRequest},
 		"run service without environment": {http.MethodPost, "/v1/actions/run", `{"schemaVersion":2,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy","serviceId":"s"}`, http.StatusBadRequest},
-		"run wrong schema":                {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy"}`, http.StatusBadRequest},
+		"run wrong schema":                {http.MethodPost, "/v1/actions/run", `{"schemaVersion":1,"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy"}`, http.StatusUpgradeRequired},
+		"run missing schema":              {http.MethodPost, "/v1/actions/run", `{"requestId":"r","idempotencyKey":"k","repositoryId":"repository_01","actionId":"tidy"}`, http.StatusBadRequest},
 		"unknown action route":            {http.MethodPost, "/v1/actions/tidy/run", `{}`, http.StatusNotFound},
 	}
 	for name, c := range cases {

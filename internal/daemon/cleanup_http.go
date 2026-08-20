@@ -24,8 +24,8 @@ func (handler *apiHandler) cleanup(response http.ResponseWriter, request *http.R
 			return true
 		}
 		var cleanupRequest contractv2.CleanupPlanRequest
-		if decodeMutationRequest(request, &cleanupRequest) != nil || cleanupRequest.Validate() != nil {
-			writeError(response, http.StatusBadRequest, "INVALID_CLEANUP_REQUEST", "Cleanup plan request is invalid", false)
+		if err := decodeMutationRequest(request, &cleanupRequest); err != nil || cleanupRequest.Validate() != nil {
+			writeDecodeFailure(response, err, "INVALID_CLEANUP_REQUEST", "Cleanup plan request is invalid")
 			return true
 		}
 		plan, err := handler.config.Cleanup.Plan(request.Context(), cleanupRequest)
@@ -55,8 +55,8 @@ func (handler *apiHandler) cleanup(response http.ResponseWriter, request *http.R
 		return true
 	}
 	var applyRequest contractv2.CleanupApplyRequest
-	if decodeMutationRequest(request, &applyRequest) != nil || applyRequest.Validate() != nil || applyRequest.PlanID != planID {
-		writeError(response, http.StatusBadRequest, "INVALID_CLEANUP_REQUEST", "Cleanup apply request is invalid", false)
+	if err := decodeMutationRequest(request, &applyRequest); err != nil || applyRequest.Validate() != nil || applyRequest.PlanID != planID {
+		writeDecodeFailure(response, err, "INVALID_CLEANUP_REQUEST", "Cleanup apply request is invalid")
 		return true
 	}
 	result, err := handler.config.Cleanup.Apply(request.Context(), applyRequest)

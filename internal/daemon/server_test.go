@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"io"
 	"net"
 	"net/http"
@@ -28,6 +29,7 @@ func TestLoopbackServerServesAndShutsDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)

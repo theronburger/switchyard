@@ -205,6 +205,7 @@ func newTestHandler(t *testing.T, snapshot contractv2.StatusSnapshot) http.Handl
 func authenticatedRequest(method, path string) *http.Request {
 	request := httptest.NewRequest(method, path, nil)
 	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	return request
 }
 

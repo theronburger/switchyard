@@ -34,8 +34,8 @@ func (handler *apiHandler) configuration(response http.ResponseWriter, request *
 			return true
 		}
 		var validation contractv2.ConfigurationValidationRequest
-		if decodeMutationRequest(request, &validation) != nil || validation.Validate() != nil {
-			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "Configuration validation request is invalid", false)
+		if err := decodeMutationRequest(request, &validation); err != nil || validation.Validate() != nil {
+			writeDecodeFailure(response, err, "INVALID_REQUEST", "Configuration validation request is invalid")
 			return true
 		}
 		status, err := handler.config.Configuration.Validate(request.Context(), validation)
@@ -47,8 +47,8 @@ func (handler *apiHandler) configuration(response http.ResponseWriter, request *
 			return true
 		}
 		var acceptance contractv2.ConfigurationAcceptanceRequest
-		if decodeMutationRequest(request, &acceptance) != nil || acceptance.Validate() != nil {
-			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "Configuration acceptance request is invalid", false)
+		if err := decodeMutationRequest(request, &acceptance); err != nil || acceptance.Validate() != nil {
+			writeDecodeFailure(response, err, "INVALID_REQUEST", "Configuration acceptance request is invalid")
 			return true
 		}
 		status, err := handler.config.Configuration.Accept(request.Context(), acceptance)
@@ -60,8 +60,8 @@ func (handler *apiHandler) configuration(response http.ResponseWriter, request *
 			return true
 		}
 		var mutation contractv2.ConfigurationRepositoryMutationRequest
-		if decodeMutationRequest(request, &mutation) != nil || mutation.Validate() != nil {
-			writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "Configuration repository mutation is invalid", false)
+		if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
+			writeDecodeFailure(response, err, "INVALID_REQUEST", "Configuration repository mutation is invalid")
 			return true
 		}
 		status, err := handler.config.Configuration.MutateRepository(request.Context(), mutation)

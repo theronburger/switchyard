@@ -1843,6 +1843,101 @@ await runner.checkAsync("daemon client maps the stable upgrade-required error") 
     }
 }
 
+await runner.checkAsync("daemon client declares its exact schema version on every request") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let declared = LockedRecorder<String>()
+    let handshake = """
+    {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
+    """
+    let receipt = """
+    {"schemaVersion":2,"requestId":"request_declared","operationId":"operation_declared",
+     "acceptedAt":"2026-08-14T10:00:00Z"}
+    """
+    let transport = MockTransport { request in
+        declared.append(request.value(forHTTPHeaderField: DaemonClient.schemaVersionHeader) ?? "")
+        let isHandshake = request.url?.path() == "/handshake"
+        return (Data((isHandshake ? handshake : receipt).utf8), httpResponse(for: request, status: isHandshake ? 200 : 202))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    _ = try await client.handshake()
+    _ = try await client.prepareWorktree(PrepareWorktreeRequest(
+        requestId: "request_declared", idempotencyKey: "prepare:declared", worktreeId: "worktree_app"
+    ))
+    try expect(declared.values == ["2", "2"], "GET and POST must both declare schema version 2, got \(declared.values)")
+}
+
+await runner.checkAsync("daemon client maps HTTP 426 to upgradeRequired even without a readable envelope") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let envelope = """
+    {"schemaVersion":2,"error":{"code":"UPGRADE_REQUIRED","message":"This client's contract schema version is not supported by the daemon.","retryable":false,"currentState":"3","requestedState":"2","nextAction":"upgrade_client"}}
+    """
+    for body in [envelope, "not json", "{\"error\":{\"code\":\"OTHER\",\"message\":\"x\",\"retryable\":false}}"] {
+        let transport = MockTransport { request in
+            (Data(body.utf8), httpResponse(for: request, status: 426))
+        }
+        let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+        do {
+            _ = try await client.status()
+            throw CheckError("expected upgradeRequired for 426")
+        } catch let error as DaemonClientError {
+            guard case .upgradeRequired(let message) = error else {
+                throw CheckError("expected upgradeRequired for 426, got \(error)")
+            }
+            if body == envelope {
+                try expect(message == "This client's contract schema version is not supported by the daemon.", "daemon message did not survive")
+            }
+        }
+    }
+}
+
+await runner.checkAsync("handshake schema mismatches are upgrade problems, not malformed responses") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let cases: [(String, Bool)] = [
+        ("""
+        {"schemaVersion":3,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+         "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[3]}
+        """, true),
+        ("""
+        {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+         "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+        """, true),
+        ("""
+        {"schemaVersion":0,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+         "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
+        """, false),
+    ]
+    for (body, upgrade) in cases {
+        let transport = MockTransport { request in
+            (Data(body.utf8), httpResponse(for: request, status: 200))
+        }
+        let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+        do {
+            _ = try await client.handshake()
+            throw CheckError("expected handshake failure")
+        } catch let error as DaemonClientError {
+            switch (error, upgrade) {
+            case (.upgradeRequired, true), (.malformedResponse, false):
+                break
+            default:
+                throw CheckError("unexpected handshake mapping \(error) for upgrade=\(upgrade)")
+            }
+        }
+    }
+}
+
+runner.check("a descriptor from another contract generation routes to upgradeRequired") {
+    let error = RuntimeConnectionError.descriptor(.unsupportedSchemaVersion(1))
+    try expect(error.requiresUpgrade, "unsupported schema descriptor must require an upgrade")
+    try expect(!RuntimeConnectionError.descriptor(.malformed("x")).requiresUpgrade, "malformed descriptors are not upgrade problems")
+    try expect(!error.retryableWhileDaemonStarts, "an upgrade requirement must not be retried as a startup race")
+
+    var machine = DaemonLifecycleMachine(state: .locatingEndpoint)
+    try machine.handle(.endpointUpgradeRequired(message: "update"))
+    try expect(machine.state == .upgradeRequired(message: "update"), "descriptor mismatch should reach upgradeRequired")
+    try expect(machine.state.needsUserAction && machine.state.canRepair, "upgradeRequired needs the user and offers repair")
+}
+
 await runner.checkAsync("daemon client surfaces contract errors") {
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let body = """

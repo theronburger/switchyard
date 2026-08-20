@@ -4,6 +4,16 @@ import "time"
 
 const SchemaVersion = 2
 
+// SchemaVersionHeader carries a client's exact declared contract schema
+// version on every daemon request. The daemon answers any declaration other
+// than SchemaVersion, and any undeclared versioned request, with HTTP 426 and
+// the stable UpgradeRequiredCode error instead of a generic validation error.
+const SchemaVersionHeader = "X-Switchyard-Schema-Version"
+
+// UpgradeRequiredCode is the stable machine-readable error code for an exact
+// contract version mismatch between a client and the daemon.
+const UpgradeRequiredCode = "UPGRADE_REQUIRED"
+
 type RuntimeDescriptor struct {
 	SchemaVersion    int       `json:"schemaVersion"`
 	Endpoint         string    `json:"endpoint"`

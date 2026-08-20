@@ -25,6 +25,7 @@ const (
 	ErrorDaemonUnauthorized           ErrorCode = "DAEMON_UNAUTHORIZED"
 	ErrorDaemonUnknown                ErrorCode = "DAEMON_UNKNOWN"
 	ErrorDaemonIncompatible           ErrorCode = "DAEMON_INCOMPATIBLE"
+	ErrorUpgradeRequired              ErrorCode = contractv2.UpgradeRequiredCode
 	ErrorDaemonResponseInvalid        ErrorCode = "DAEMON_RESPONSE_INVALID"
 	ErrorDaemonStatusInvalid          ErrorCode = "DAEMON_STATUS_INVALID"
 	ErrorActionRequestInvalid         ErrorCode = "ACTION_REQUEST_INVALID"

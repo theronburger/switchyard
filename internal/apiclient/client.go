@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
@@ -65,12 +66,21 @@ func (c *Client) Handshake(ctx context.Context) (Handshake, error) {
 	if err := c.getJSON(ctx, "/handshake", maximumHandshakeBytes, &handshake); err != nil {
 		return Handshake{}, err
 	}
-	if handshake.SchemaVersion != RuntimeDescriptorSchemaVersion ||
-		handshake.DaemonInstanceID == "" || handshake.DaemonVersion == "" ||
+	if handshake.DaemonInstanceID == "" || handshake.DaemonVersion == "" ||
 		len(handshake.SupportedSchemaVersions) == 0 {
 		return Handshake{}, newCodedError(
 			ErrorDaemonResponseInvalid,
 			fmt.Errorf("handshake is missing required fields"))
+	}
+	if handshake.SchemaVersion != contractv2.SchemaVersion {
+		if handshake.SchemaVersion <= 0 {
+			return Handshake{}, newCodedError(
+				ErrorDaemonResponseInvalid,
+				fmt.Errorf("handshake schema version is invalid"))
+		}
+		return Handshake{}, newCodedError(
+			ErrorUpgradeRequired,
+			fmt.Errorf("daemon speaks contract schema version %d, client requires %d", handshake.SchemaVersion, contractv2.SchemaVersion))
 	}
 	if handshake.DaemonInstanceID != c.connection.descriptor.DaemonInstanceID {
 		return Handshake{}, newCodedError(
@@ -85,7 +95,7 @@ func (c *Client) Handshake(ctx context.Context) (Handshake, error) {
 	}
 	if !slices.Contains(handshake.SupportedSchemaVersions, contractv2.SchemaVersion) {
 		return Handshake{}, newCodedError(
-			ErrorDaemonIncompatible,
+			ErrorUpgradeRequired,
 			fmt.Errorf("daemon does not support schema version %d", contractv2.SchemaVersion))
 	}
 	return handshake, nil
@@ -123,7 +133,7 @@ func (c *Client) getJSON(ctx context.Context, path string, maximumBytes int64, d
 		return newCodedError(ErrorDaemonUnavailable, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.connection.token)
+	c.declareContract(request)
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -137,6 +147,8 @@ func (c *Client) getJSON(ctx context.Context, path string, maximumBytes int64, d
 		return newCodedError(ErrorDaemonUnauthorized, fmt.Errorf("daemon rejected authentication"))
 	case http.StatusNotFound:
 		return newCodedError(ErrorDaemonUnknown, fmt.Errorf("endpoint does not identify a Switchyard daemon"))
+	case http.StatusUpgradeRequired:
+		return upgradeRequiredError(response)
 	default:
 		return newCodedError(
 			ErrorDaemonResponseInvalid,
@@ -163,6 +175,30 @@ func (c *Client) getJSON(ctx context.Context, path string, maximumBytes int64, d
 		return newCodedError(ErrorDaemonResponseInvalid, err)
 	}
 	return nil
+}
+
+// declareContract authenticates a request and declares this client's exact
+// contract schema version so the daemon can answer a mismatch with the stable
+// UPGRADE_REQUIRED error instead of a generic validation failure.
+func (c *Client) declareContract(request *http.Request) {
+	request.Header.Set("Authorization", "Bearer "+c.connection.token)
+	request.Header.Set(contractv2.SchemaVersionHeader, strconv.Itoa(contractv2.SchemaVersion))
+}
+
+// upgradeRequiredError maps an HTTP 426 answer to ErrorUpgradeRequired. The
+// daemon's bounded error context is preserved when the envelope is readable;
+// an unreadable envelope still reports the stable code because the status line
+// alone is authoritative for the version mismatch.
+func upgradeRequiredError(response *http.Response) error {
+	contents, err := io.ReadAll(io.LimitReader(response.Body, maximumHandshakeBytes+1))
+	if err == nil && int64(len(contents)) <= maximumHandshakeBytes {
+		var failure mutationErrorResponse
+		if decodeSingleJSON(contents, &failure) == nil && failure.Error.Code == contractv2.UpgradeRequiredCode &&
+			failure.Error.Message != "" {
+			return newContractError(failure.Error, fmt.Errorf("daemon requires a different contract schema version"))
+		}
+	}
+	return newCodedError(ErrorUpgradeRequired, fmt.Errorf("daemon requires a different contract schema version"))
 }
 
 type Connector struct {

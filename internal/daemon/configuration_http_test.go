@@ -172,6 +172,7 @@ func TestConfigurationHTTPMapsRepositoryMutationOutcomes(t *testing.T) {
 	}
 	get := httptest.NewRequest(http.MethodGet, "/v1/configuration/repositories", nil)
 	get.Header.Set("Authorization", "Bearer "+testToken)
+	get.Header.Set(contractv2.SchemaVersionHeader, "2")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, get)
 	if recorder.Code != http.StatusMethodNotAllowed {
@@ -182,6 +183,7 @@ func TestConfigurationHTTPMapsRepositoryMutationOutcomes(t *testing.T) {
 func configurationRequest(handler http.Handler, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

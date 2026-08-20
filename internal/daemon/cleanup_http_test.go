@@ -39,8 +39,9 @@ func TestCleanupHTTPBindsApplyBodyToPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/cleanup/plans/different/apply", strings.NewReader(`{"schemaVersion":1,"planId":"cleanup_plan_01","expectedRevision":1,"candidateIds":[]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/cleanup/plans/different/apply", strings.NewReader(`{"schemaVersion":2,"planId":"cleanup_plan_01","expectedRevision":1,"candidateIds":[]}`))
 	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -57,8 +58,9 @@ func TestCleanupHTTPRejectsUnknownPlanFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/cleanup/plans", strings.NewReader(`{"schemaVersion":1,"scope":{"kind":"global"},"extra":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/cleanup/plans", strings.NewReader(`{"schemaVersion":2,"scope":{"kind":"global"},"extra":true}`))
 	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
