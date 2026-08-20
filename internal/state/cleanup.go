@@ -1,13 +1,11 @@
 package state
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	cleanupcontrol "github.com/theronburger/switchyard/internal/control/cleanup"
@@ -17,6 +15,11 @@ var (
 	ErrCleanupPlanNotFound = errors.New("cleanup plan was not found")
 	ErrCleanupPlanConsumed = errors.New("cleanup plan was already consumed")
 	ErrCleanupPlanExpired  = errors.New("cleanup plan expired")
+	// ErrCleanupApplyMismatch reports a retry that names the claimed plan
+	// revision but a different candidate list; a claim authorizes exactly
+	// one request shape.
+	ErrCleanupApplyMismatch = errors.New("cleanup apply does not match the claimed request")
+	ErrCleanupApplyStale    = errors.New("cleanup apply journal is stale")
 )
 
 func (store *Store) SaveCleanupPlan(ctx context.Context, plan cleanupcontrol.Plan) (cleanupcontrol.Plan, error) {
@@ -29,7 +32,14 @@ func (store *Store) SaveCleanupPlan(ctx context.Context, plan cleanupcontrol.Pla
 		return cleanupcontrol.Plan{}, fmt.Errorf("begin cleanup plan: %w", err)
 	}
 	defer func() { _ = transaction.Rollback() }()
-	if _, err := transaction.ExecContext(ctx, `DELETE FROM cleanup_plans WHERE consumed_at IS NOT NULL OR expires_at <= ?`,
+	// Expired plans are pruned unless an apply claimed them and has not
+	// finished: an interrupted cleanup is never forgotten merely because its
+	// plan aged out. Consumed plans stay until expiry so a retried apply can
+	// replay its recorded result deterministically.
+	if _, err := transaction.ExecContext(ctx, `
+DELETE FROM cleanup_plans
+WHERE expires_at <= ?
+  AND revision NOT IN (SELECT plan_revision FROM cleanup_applies WHERE completed_at IS NULL)`,
 		store.now().UTC().Format(timeFormat)); err != nil {
 		return cleanupcontrol.Plan{}, fmt.Errorf("prune cleanup plans: %w", err)
 	}
@@ -89,16 +99,7 @@ SELECT revision, plan_json, expires_at, consumed_at FROM cleanup_plans WHERE id 
 	if !store.now().UTC().Before(expiration) {
 		return cleanupcontrol.Plan{}, ErrCleanupPlanExpired
 	}
-	var plan cleanupcontrol.Plan
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	decodeErr := decoder.Decode(&plan)
-	var trailing any
-	trailingErr := decoder.Decode(&trailing)
-	if decodeErr != nil || !errors.Is(trailingErr, io.EOF) || plan.ID != id || plan.Revision != revision {
-		return cleanupcontrol.Plan{}, errors.New("stored cleanup plan is invalid")
-	}
-	return plan, nil
+	return decodeCleanupPlan(payload, id, revision)
 }
 
 func (store *Store) ConsumeCleanupPlan(ctx context.Context, id string, revision int64) error {

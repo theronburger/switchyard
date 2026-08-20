@@ -85,7 +85,7 @@ func TestMigrationRewritesLegacyAdapterNamingFrom010State(t *testing.T) {
 		{"UPDATE environment_current_results SET schema_version = 1", "", ""},
 		{"UPDATE workspace_operation_records SET schema_version = 1", "", ""},
 		{"UPDATE workspace_current_results SET schema_version = 1, result_json = REPLACE(result_json, ?, ?)", `"ProfileKey"`, `"Adapter"`},
-		{"DELETE FROM schema_migrations WHERE version = 10", "", ""},
+		{"DELETE FROM schema_migrations WHERE version >= 10", "", ""},
 	}
 	for _, step := range downgrade {
 		var err error
@@ -170,7 +170,7 @@ func TestMigrationRefusesMalformedLegacyIntent(t *testing.T) {
 	}
 	for _, statement := range []string{
 		`UPDATE environment_operation_records SET schema_version = 1, record_json = REPLACE(record_json, '"Intent":{', '"Intent":{"Adapter":"sha256:other",')`,
-		"DELETE FROM schema_migrations WHERE version = 10",
+		"DELETE FROM schema_migrations WHERE version >= 10",
 	} {
 		if _, err := store.database.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -214,7 +214,7 @@ func TestMigrationRefusesEveryMalformedLegacyShape(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.sqlite")
 			store := openTestStore(t, path)
 			seedLegacyMigrationFixture(t, store)
-			for _, statement := range []string{testCase.statement, "DELETE FROM schema_migrations WHERE version = 10"} {
+			for _, statement := range []string{testCase.statement, "DELETE FROM schema_migrations WHERE version >= 10"} {
 				if _, err := store.database.ExecContext(ctx, statement); err != nil {
 					t.Fatalf("%s: %v", statement, err)
 				}

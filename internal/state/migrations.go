@@ -218,6 +218,23 @@ ALTER TABLE configuration_revisions
 		version: 10,
 		apply:   migrateLegacyProfileNaming,
 	},
+	{
+		// Cleanup apply is a claimed transaction: authorization for one plan
+		// revision is recorded atomically before any owned resource is
+		// mutated, every candidate outcome is journaled as it becomes final,
+		// and an interrupted apply survives restarts as an incomplete claim.
+		version: 11,
+		sql: `
+CREATE TABLE IF NOT EXISTS cleanup_applies (
+    plan_revision INTEGER PRIMARY KEY REFERENCES cleanup_plans(revision) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL UNIQUE,
+    claim_json BLOB NOT NULL,
+    claimed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {
