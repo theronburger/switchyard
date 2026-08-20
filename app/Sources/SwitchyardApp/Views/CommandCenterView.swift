@@ -483,24 +483,19 @@ struct OverviewView: View {
 
     private var overviewHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: model.lifecycleState.systemImage)
-                    .font(.title2)
-                    .foregroundStyle(model.lifecycleState.tint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Switchyard")
-                        .font(.largeTitle.bold())
-                    Text(model.lifecycleState.summary)
-                        .foregroundStyle(.secondary)
+            // At the window's minimum width the title and both actions do not
+            // fit on one line; fall back to stacking the actions under the
+            // title instead of hyphenating "Switchyard" and truncating buttons.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 12) {
+                    overviewTitle
+                    Spacer(minLength: 24)
+                    overviewActions
                 }
-                Spacer()
-                Button {
-                    showsCreateWorktree = true
-                } label: {
-                    Label("New worktree", systemImage: "plus")
+                VStack(alignment: .leading, spacing: 12) {
+                    overviewTitle
+                    overviewActions
                 }
-                .disabled(!model.canSubmitWorkspaceAction || model.snapshot?.repositories.isEmpty != false)
-                Button("Connection Doctor") { model.selection = .connectionDoctor }
             }
             if let summary = model.summary {
                 ScrollView(.horizontal) {
@@ -518,6 +513,37 @@ struct OverviewView: View {
                 .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
         }
+    }
+}
+
+extension OverviewView {
+    fileprivate var overviewTitle: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: model.lifecycleState.systemImage)
+                .font(.title2)
+                .foregroundStyle(model.lifecycleState.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Switchyard")
+                    .font(.largeTitle.bold())
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(model.lifecycleState.summary)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    fileprivate var overviewActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                showsCreateWorktree = true
+            } label: {
+                Label("New worktree", systemImage: "plus")
+            }
+            .disabled(!model.canSubmitWorkspaceAction || model.snapshot?.repositories.isEmpty != false)
+            Button("Connection Doctor") { model.selection = .connectionDoctor }
+        }
+        .fixedSize()
     }
 }
 
@@ -686,7 +712,7 @@ private struct RepositoryInventoryCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(repository.displayName)
                     .font(.headline)
-                Text("\(repository.worktrees.count) worktrees · profile \(repository.profileKey)")
+                Text("\(pluralized(repository.worktrees.count, "worktree")) · profile \(repository.profileKey)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

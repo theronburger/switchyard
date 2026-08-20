@@ -37,7 +37,7 @@ struct ConnectionDoctorView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(accounts.isEmpty ? "GitHub observation active" : "Authenticated as \(accounts.joined(separator: ", "))")
                             .font(.callout.weight(.medium))
-                        Text("\(observations.count(where: { $0.status == .found })) pull requests · \(observations.count(where: { $0.status == .none })) branches without a PR · \(observations.count(where: { $0.stale })) stale")
+                        Text("\(pluralized(observations.count(where: { $0.status == .found }), "pull request")) · \(pluralized(observations.count(where: { $0.status == .none }), "branch", "branches")) without a PR · \(observations.count(where: { $0.stale })) stale")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -72,7 +72,7 @@ struct ConfigurationStatusCard: View {
                         KeyValueRow(key: "Compiler", value: candidate.compilerVersion, monospaced: true)
                         KeyValueRow(key: "Staged", value: candidate.stagedAt.formatted(date: .abbreviated, time: .standard))
                         FullWidthDisclosure(isExpanded: $showsCandidateDetail) {
-                            Text("Revision preview · \(candidate.repositoryDigests.count) repositories · \(candidate.executableDigests.count) executables")
+                            Text("Revision preview · \(pluralized(candidate.repositoryDigests.count, "repository", "repositories")) · \(pluralized(candidate.executableDigests.count, "executable"))")
                                 .font(.callout.weight(.medium))
                             Spacer()
                         } content: {

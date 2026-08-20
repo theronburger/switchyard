@@ -292,7 +292,7 @@ public struct ConfigurationAcceptancePresentation: Sendable, Equatable {
         case .pending:
             if let candidate = status.candidate {
                 let changed = changedRepositoryKeys(candidate).count
-                return "A validated candidate staged at \(candidate.stagedAt.formatted(date: .abbreviated, time: .shortened)) is waiting for acceptance (\(changed) repository \(changed == 1 ? "entry" : "entries"), \(candidate.executableDigests.count) executable fingerprints)."
+                return "A validated candidate staged at \(candidate.stagedAt.formatted(date: .abbreviated, time: .shortened)) is waiting for acceptance (\(pluralized(changed, "repository entry", "repository entries")), \(pluralized(candidate.executableDigests.count, "executable fingerprint")))."
             }
             return "A validated candidate is waiting for acceptance."
         case .unknown:
@@ -350,7 +350,7 @@ public struct ConfigurationAcceptancePresentation: Sendable, Equatable {
             return "configuration.yaml cannot be edited until it is fixed: \(problem)"
         }
         let count = desired.repositories.count
-        return "configuration.yaml lists \(count) repository \(count == 1 ? "entry" : "entries")."
+        return "configuration.yaml lists \(pluralized(count, "repository entry", "repository entries"))."
     }
 }
 
