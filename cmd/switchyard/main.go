@@ -165,7 +165,10 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
-	discoveredRepositories := discoverRepositoryInventory(ctx, time.Now().UTC())
+	discoveredRepositories, err := discoverAcceptedRepositoryInventory(ctx, store, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 	if err := annotateWorkspaceInventory(paths, &discoveredRepositories); err != nil {
 		return err
 	}

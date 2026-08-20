@@ -31,7 +31,13 @@ type repositoryObserver struct {
 func newRepositoryObserver(store *state.Store, paths applicationPaths, restart func()) *repositoryObserver {
 	return &repositoryObserver{
 		store: store, paths: paths, interval: repositoryObserverSweep, now: time.Now,
-		discover: discoverRepositoryInventory,
+		discover: func(ctx context.Context, observedAt time.Time) repositoryInventory {
+			discovered, err := discoverAcceptedRepositoryInventory(ctx, store, observedAt)
+			if err != nil {
+				return inventoryFailure(observedAt, "CONFIGURATION_UNAVAILABLE", "Accepted configuration is unavailable.")
+			}
+			return discovered
+		},
 		annotate: annotateWorkspaceInventory,
 		restore: func(ctx context.Context, inventory *repositoryInventory) error {
 			return restoreWorkspaceInventory(ctx, store, inventory)

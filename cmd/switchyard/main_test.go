@@ -93,6 +93,11 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 	deadline := time.Now().Add(5 * time.Second)
 	var daemonErr error
 	for {
+		select {
+		case runErr := <-errCh:
+			t.Fatalf("daemon exited before readiness: %v", runErr)
+		default:
+		}
 		snapshot, err := connector.Status(context.Background())
 		if err == nil {
 			if snapshot.Daemon.State != "ready" || snapshot.Daemon.Version != version {

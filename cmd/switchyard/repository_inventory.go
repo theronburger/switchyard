@@ -13,6 +13,7 @@ import (
 	"time"
 
 	marketplaceadapter "github.com/theronburger/switchyard/internal/adapters/marketplace"
+	"github.com/theronburger/switchyard/internal/configuration"
 	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
 	controlconfig "github.com/theronburger/switchyard/internal/control/config"
 	"github.com/theronburger/switchyard/internal/control/inventory"
@@ -29,6 +30,8 @@ type repositoryInventory struct {
 	Repositories   []contractv1.Repository
 	Alerts         []contractv1.Alert
 	Configurations map[string]controlconfig.RepositoryConfiguration
+	Profiles       map[string]configuration.Repository
+	ProfileKeys    map[string]string
 	Complete       bool
 	AttemptedAt    time.Time
 }
@@ -406,7 +409,7 @@ func mergeRepositoryInventory(
 	discovered repositoryInventory,
 ) contractv1.StatusSnapshot {
 	if discovered.Complete {
-		repositories := append([]contractv1.Repository(nil), discovered.Repositories...)
+		repositories := append([]contractv1.Repository{}, discovered.Repositories...)
 		preservePullRequestObservations(repositories, snapshot.Repositories)
 		knownRepositories := make(map[string]int, len(repositories))
 		for index, repository := range repositories {
