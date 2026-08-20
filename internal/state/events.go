@@ -2,7 +2,9 @@ package state
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +43,17 @@ func (store *Store) AppendEvent(ctx context.Context, newEvent events.NewEvent) (
 	}
 	defer func() { _ = transaction.Rollback() }()
 
+	event, err := appendEventTransaction(ctx, transaction, newEvent)
+	if err != nil {
+		return events.Event{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return events.Event{}, fmt.Errorf("commit event append: %w", err)
+	}
+	return event, nil
+}
+
+func appendEventTransaction(ctx context.Context, transaction *sql.Tx, newEvent events.NewEvent) (events.Event, error) {
 	result, err := transaction.ExecContext(ctx, `
 INSERT INTO events(id, snapshot_revision, kind, environment_id, occurred_at, payload_json)
 VALUES (?, ?, ?, NULLIF(?, ''), ?, ?)`,
@@ -63,9 +76,6 @@ WHERE sequence <= COALESCE((SELECT MAX(sequence) - ? FROM events), 0)`, retained
 	if err != nil {
 		return events.Event{}, fmt.Errorf("read event cursor: %w", err)
 	}
-	if err := transaction.Commit(); err != nil {
-		return events.Event{}, fmt.Errorf("commit event append: %w", err)
-	}
 	return events.Event{
 		Cursor:        events.Cursor(sequence),
 		ID:            newEvent.ID,
@@ -75,6 +85,45 @@ WHERE sequence <= COALESCE((SELECT MAX(sequence) - ? FROM events), 0)`, retained
 		OccurredAt:    newEvent.OccurredAt,
 		Payload:       append(json.RawMessage(nil), newEvent.Payload...),
 	}, nil
+}
+
+// recordAuditEvent appends a daemon audit event inside the transaction that
+// performs the audited change, so the event history and the durable record
+// commit or roll back together. The event carries the snapshot revision that
+// was current when the change was made.
+func (store *Store) recordAuditEvent(
+	ctx context.Context,
+	transaction *sql.Tx,
+	kind string,
+	environmentID string,
+	payload any,
+) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode %s audit event: %w", kind, err)
+	}
+	id, err := newEventID()
+	if err != nil {
+		return fmt.Errorf("allocate %s audit event id: %w", kind, err)
+	}
+	var revision int64
+	err = transaction.QueryRowContext(ctx, "SELECT revision FROM current_snapshot WHERE singleton = 1").Scan(&revision)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read snapshot revision for %s audit event: %w", kind, err)
+	}
+	_, err = appendEventTransaction(ctx, transaction, events.NewEvent{
+		ID: id, Revision: revision, Kind: kind, EnvironmentID: environmentID,
+		OccurredAt: store.now().UTC(), Payload: encoded,
+	})
+	return err
+}
+
+func newEventID() (string, error) {
+	randomBytes := make([]byte, 12)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+	return "event_" + base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }
 
 func (store *Store) ReadEvents(ctx context.Context, after events.Cursor, requestedLimit int) (events.Page, error) {

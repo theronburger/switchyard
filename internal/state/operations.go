@@ -11,6 +11,7 @@ import (
 	"time"
 
 	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
+	"github.com/theronburger/switchyard/internal/events"
 )
 
 var (
@@ -149,6 +150,12 @@ INSERT INTO operations(
 		_ = transaction.Rollback()
 		return contractv2.Operation{}, false, err
 	}
+	if err := store.recordAuditEvent(ctx, transaction, events.KindOperationCreated, request.EnvironmentID, events.OperationAuditPayload{
+		OperationID: request.ID, Kind: request.Kind, State: "pending", RunID: request.RunID, EnvironmentID: request.EnvironmentID,
+	}); err != nil {
+		_ = transaction.Rollback()
+		return contractv2.Operation{}, false, err
+	}
 	if err := transaction.Commit(); err != nil {
 		return contractv2.Operation{}, false, fmt.Errorf("commit operation: %w", err)
 	}
@@ -239,6 +246,10 @@ func (store *Store) FailInterruptedOperations(
 		operationErrorCopy := operationError
 		operation.Error = &operationErrorCopy
 		interrupted = append(interrupted, operation)
+		if err := store.recordAuditEvent(ctx, transaction, events.KindOperationTransitioned, operation.EnvironmentID, operationAuditPayload(operation)); err != nil {
+			_ = transaction.Rollback()
+			return nil, err
+		}
 	}
 	if len(interrupted) == 0 {
 		_ = transaction.Rollback()
@@ -335,14 +346,28 @@ func (store *Store) TransitionOperation(
 		_ = transaction.Rollback()
 		return contractv2.Operation{}, err
 	}
-	if err := transaction.Commit(); err != nil {
-		return contractv2.Operation{}, fmt.Errorf("commit operation transition: %w", err)
-	}
-
 	operation.State = nextState
 	operation.UpdatedAt = updatedAt
 	operation.Error = operationError
+	if err := store.recordAuditEvent(ctx, transaction, events.KindOperationTransitioned, operation.EnvironmentID, operationAuditPayload(operation)); err != nil {
+		_ = transaction.Rollback()
+		return contractv2.Operation{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return contractv2.Operation{}, fmt.Errorf("commit operation transition: %w", err)
+	}
 	return operation, nil
+}
+
+func operationAuditPayload(operation contractv2.Operation) events.OperationAuditPayload {
+	payload := events.OperationAuditPayload{
+		OperationID: operation.ID, Kind: operation.Kind, State: operation.State,
+		RunID: operation.RunID, EnvironmentID: operation.EnvironmentID,
+	}
+	if operation.Error != nil {
+		payload.ErrorCode = operation.Error.Code
+	}
+	return payload
 }
 
 func operationTransitionAllowed(currentState, nextState string) bool {

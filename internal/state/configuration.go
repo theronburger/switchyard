@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/configuration"
+	"github.com/theronburger/switchyard/internal/events"
 )
 
 var (
@@ -159,6 +160,11 @@ ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision`, revision); e
 		return ConfigurationRevision{}, fmt.Errorf("remove accepted configuration candidate: %w", err)
 	}
 	if err := pruneConfigurationRevisions(ctx, transaction); err != nil {
+		return ConfigurationRevision{}, err
+	}
+	if err := store.recordAuditEvent(ctx, transaction, events.KindConfigurationAccepted, "", events.ConfigurationAuditPayload{
+		Revision: revision, Digest: candidate.Digest,
+	}); err != nil {
 		return ConfigurationRevision{}, err
 	}
 	if err := transaction.Commit(); err != nil {
