@@ -7,13 +7,13 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/theronburger/switchyard/internal/runtime/childgroup"
+	"github.com/theronburger/switchyard/internal/runtime/finiterun"
+	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
 const maximumStepLogBytes = 4 * 1024 * 1024
@@ -25,9 +25,21 @@ type stepOwnershipMarker struct {
 	StepID        string `json:"stepId"`
 }
 
+// ExactStepRunner executes one compiled preparation step in a positively
+// owned process group. The step's run directory under RuntimeRoot keeps the
+// private-preparation ownership marker and bounded logs the cleanup planner
+// identifies; the process evidence that makes the launch crash-durable (the
+// launch intent persisted before fork and the verified leader identity
+// persisted immediately after) lives in the separate per-launch tree under
+// RuntimeRoot/preparation-runs, where finiterun.RecoverInterruptedRuns stops
+// groups a crashed daemon left running.
 type ExactStepRunner struct {
 	RuntimeRoot string
+	// GracePeriod is the TERM-to-KILL grace used when Processes is nil.
 	GracePeriod time.Duration
+	// Processes owns launch, verification, and signalling. When nil a host
+	// with GracePeriod is used for each run.
+	Processes *processhost.Host
 }
 
 func (runner ExactStepRunner) Run(ctx context.Context, step StepSpec) error {
@@ -52,32 +64,36 @@ func (runner ExactStepRunner) Run(ctx context.Context, step StepSpec) error {
 	}
 	defer func() { _ = stderr.Close() }()
 
-	stepContext, cancel := context.WithTimeout(ctx, step.Timeout)
-	defer cancel()
-	command := exec.Command(step.Executable, step.Arguments...)
-	command.Dir = step.Directory
-	command.Env = append([]string(nil), step.Environment...)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := command.Start(); err != nil {
-		return ErrStepFailed
-	}
-	grace := runner.GracePeriod
-	if grace <= 0 {
-		grace = 2 * time.Second
-	}
-	supervised := childgroup.Supervise(stepContext, command, grace)
-	if supervised.Interrupted {
-		if supervised.WaitErr != nil {
-			return errors.Join(stepContext.Err(), ErrStepFailed)
-		}
-		return stepContext.Err()
-	}
-	if supervised.WaitErr != nil {
+	outcome, err := runner.finite().Run(ctx, finiterun.Spec{
+		ID: step.ID, Executable: step.Executable, Arguments: step.Arguments,
+		Environment: step.Environment, Directory: step.Directory,
+		Stdout: stdout, Stderr: stderr, Timeout: step.Timeout,
+	})
+	switch {
+	case errors.Is(err, finiterun.ErrInvalidSpec), errors.Is(err, finiterun.ErrInvalidRoot):
+		return ErrInvalidPlan
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case err != nil:
+		return errors.Join(ErrStepFailed, err)
+	case outcome.TimedOut:
+		return errors.Join(context.DeadlineExceeded, ErrStepFailed)
+	case outcome.ExitCode != 0 || outcome.Signal != 0:
 		return ErrStepFailed
 	}
 	return nil
+}
+
+func (runner ExactStepRunner) finite() finiterun.Runner {
+	processes := runner.Processes
+	if processes == nil {
+		grace := runner.GracePeriod
+		if grace <= 0 {
+			grace = 2 * time.Second
+		}
+		processes = processhost.New(processhost.Config{GracePeriod: grace, KillWait: 2 * time.Second})
+	}
+	return finiterun.Runner{RuntimeRoot: runner.RuntimeRoot, Processes: processes}
 }
 
 func ensureStepOwnershipMarker(directory, stepID string) error {

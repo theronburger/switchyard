@@ -5,22 +5,37 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
-
-	"github.com/theronburger/switchyard/internal/runtime/childgroup"
+	"github.com/theronburger/switchyard/internal/runtime/finiterun"
+	"github.com/theronburger/switchyard/internal/runtime/processhost"
 )
 
 const maximumFiniteLogBytes = 4 * 1024 * 1024
 
-type FiniteRunner struct{}
+var (
+	ErrFiniteCommandStart  = errors.New("finite profile command could not start")
+	ErrFiniteCommandFailed = errors.New("finite profile command failed")
+)
 
-func (FiniteRunner) Run(ctx context.Context, step environmentcontrol.PreparationSpec) error {
+// FiniteRunner executes one compiled environment initialization command in a
+// positively owned process group. Bounded logs stay in the command's run
+// directory under the environment run, where operation diagnostics read
+// them; the crash-durable process evidence lives in the per-launch tree
+// under RuntimeRoot/preparation-runs, where finiterun.RecoverInterruptedRuns
+// stops groups a crashed daemon left running before any profile is consulted.
+type FiniteRunner struct {
+	RuntimeRoot string
+	// Processes owns launch, verification, and signalling. When nil a host
+	// with the finite preparation termination grace is used for each run.
+	Processes *processhost.Host
+}
+
+func (runner FiniteRunner) Run(ctx context.Context, step environmentcontrol.PreparationSpec) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -40,28 +55,32 @@ func (FiniteRunner) Run(ctx context.Context, step environmentcontrol.Preparation
 		return err
 	}
 	defer func() { _ = stderr.Close() }()
-	stepContext, cancel := context.WithTimeout(ctx, step.Timeout)
-	defer cancel()
-	command := exec.Command(step.Executable, step.Arguments...)
-	command.Dir = step.Directory
-	command.Env = append([]string(nil), step.Environment...)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := command.Start(); err != nil {
-		return errors.New("finite profile command could not start")
-	}
-	supervised := childgroup.Supervise(stepContext, command, 2*time.Second)
-	if supervised.Interrupted {
-		return stepContext.Err()
-	}
-	if supervised.WaitErr != nil {
-		return errors.New("finite profile command failed")
+	outcome, err := finiterun.Runner{RuntimeRoot: runner.RuntimeRoot, Processes: runner.Processes}.Run(ctx, finiterun.Spec{
+		ID: step.ID, Executable: step.Executable, Arguments: step.Arguments,
+		Environment: step.Environment, Directory: step.Directory,
+		Stdout: stdout, Stderr: stderr, Timeout: step.Timeout,
+	})
+	switch {
+	case errors.Is(err, finiterun.ErrInvalidSpec), errors.Is(err, finiterun.ErrInvalidRoot):
+		return ErrProfileInvalid
+	case errors.Is(err, finiterun.ErrStart):
+		return ErrFiniteCommandStart
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case err != nil:
+		return errors.Join(ErrFiniteCommandFailed, err)
+	case outcome.TimedOut:
+		return context.DeadlineExceeded
+	case outcome.ExitCode != 0 || outcome.Signal != 0:
+		return ErrFiniteCommandFailed
 	}
 	return nil
 }
 
 func validFiniteStep(step environmentcontrol.PreparationSpec) bool {
+	if step.ID == "" {
+		return false
+	}
 	for _, path := range []string{step.Executable, step.Directory, step.RunDirectory} {
 		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
 			return false
