@@ -85,6 +85,14 @@ public struct WorkspaceStatus: Decodable, Sendable {
     public let fingerprint: String
     public let preparedAt: Date
     public let toolchains: [WorkspaceToolchain]
+
+    /// The daemon publishes an unprepared workspace with Go's zero time
+    /// (`0001-01-01T00:00:00Z`) and an empty fingerprint; contract v2 requires
+    /// exactly that. Only a prepared workspace has a preparation time to show.
+    public var preparedAtIfKnown: Date? {
+        guard state != .unprepared, preparedAt.timeIntervalSince1970 > 0 else { return nil }
+        return preparedAt
+    }
 }
 
 public enum WorkspaceOwnership: String, ForwardCompatibleDecodable {

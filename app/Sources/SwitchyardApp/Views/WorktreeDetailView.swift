@@ -248,8 +248,12 @@ struct WorktreeDetailView: View {
             }
             if let workspace = worktree.workspace {
                 KeyValueRow(key: "Ownership", value: workspace.ownership.rawValue.capitalized)
-                KeyValueRow(key: "Prepared", value: Format.relative(workspace.preparedAt))
-                KeyValueRow(key: "Input fingerprint", value: workspace.fingerprint, monospaced: true, copyable: true)
+                if let preparedAt = workspace.preparedAtIfKnown {
+                    KeyValueRow(key: "Prepared", value: Format.relative(preparedAt))
+                }
+                if !workspace.fingerprint.isEmpty {
+                    KeyValueRow(key: "Input fingerprint", value: workspace.fingerprint, monospaced: true, copyable: true)
+                }
                 ForEach(workspace.toolchains) { toolchain in
                     KeyValueRow(
                         key: "Toolchain · \(toolchain.id)",

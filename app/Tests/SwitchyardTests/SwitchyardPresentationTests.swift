@@ -640,3 +640,21 @@ private enum RenderAppearance: CaseIterable, Equatable {
 private enum PresentationTestError: Error {
     case fixtureDidNotLoad
 }
+
+struct WorkspaceStatusPresentationTests {
+    @Test
+    func `an unprepared workspace decodes its zero preparation time and hides it`() throws {
+        let payload = Data("""
+        {"ownership":"adopted","state":"unprepared","fingerprint":"","preparedAt":"0001-01-01T00:00:00Z","toolchains":[]}
+        """.utf8)
+        let workspace = try ContractDecoder().decode(WorkspaceStatus.self, from: payload)
+        #expect(workspace.state == .unprepared)
+        #expect(workspace.preparedAtIfKnown == nil)
+
+        let prepared = Data("""
+        {"ownership":"managed","state":"ready","fingerprint":"sha256:abc","preparedAt":"2026-08-20T12:00:00Z","toolchains":[]}
+        """.utf8)
+        let ready = try ContractDecoder().decode(WorkspaceStatus.self, from: prepared)
+        #expect(ready.preparedAtIfKnown != nil)
+    }
+}
