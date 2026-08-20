@@ -114,6 +114,14 @@ Repository behavior is accepted private configuration stored only under Switchya
 
 The owner reviews and accepts one immutable configuration revision as a transaction. Its preview includes every resolved executable, argument shape, working directory, non-secret environment shape, private artifact digest, shell, interpreter, and generated wrapper. Routine execution of that accepted revision does not prompt again. A changed revision or executable fingerprint requires re-acceptance; explicitly high-risk targets and actions may still require per-run confirmation. MCP and unattended setup hooks can execute accepted behavior but cannot accept configuration.
 
+### D-026: Contract v2 names profiles, pins digests, and bounds state
+
+Switchyard 0.2.0 publishes contract v2. The public repository record carries `profileKey` instead of the legacy `adapter` field; no client-facing payload names an adapter. Contract v2 changed only where the product contract changed: every other v1 shape is carried forward and the handshake advertises only version 2.
+
+Pinned operation intent identifies the accepted repository-profile digest, not an adapter, and every environment result records that digest. A restarted daemon recovers the exact pinned payload from retained accepted configuration revisions even after later acceptances; a pinned digest without its payload fails boot closed. Existing 0.1.0 state is migrated in place by state migration 10 and is never guessed at when malformed.
+
+Durable state is bounded transactionally: one current snapshot row, 10,000 events, 500 terminal operations, and 16 unreferenced configuration revisions, with every referenced or incomplete record retained regardless of age.
+
 ## Open
 
 There are no open release-blocking identity or installation decisions. The bundle identifier is `com.theronburger.switchyard`.

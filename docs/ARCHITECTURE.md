@@ -8,7 +8,7 @@ Switchyard is a machine-local control plane. It coordinates developer resources 
 Codex / Claude ── MCP ──┐
                         │
 Human shell ──── CLI ───┼── local versioned API ── Go daemon
-                        │                         ├── repository adapters
+                        │                         ├── accepted repository profiles
 SwiftUI app ────────────┘                         ├── leases and supervisor
                                                   ├── health and reconciliation
                                                   ├── Docker/Colima observer
@@ -73,7 +73,7 @@ The core knows these generic concepts:
 - `AgentSession`
 - `Event`
 
-It does not know Node, Yarn, Go, Deed environment variable names, or Turbo commands. An adapter turns repository inputs into exact finite workspace steps, generic toolchain metadata, requirements, and environment plans.
+It does not know package managers, language runtimes, repository-specific environment variable names, or build orchestrators. The profile compiler turns an accepted private repository profile into exact finite workspace steps, generic toolchain metadata, requirements, and environment plans.
 
 ### Workspace before environment
 
@@ -81,7 +81,7 @@ Every environment start passes through `workspace.Ensure` first. The coordinator
 
 Git creation/adoption/removal is a separate positively-owned lifecycle. Existing worktrees are auto-discovered with run-only `adopted` inventory ownership. An explicit adoption may promote an eligible non-primary checkout to `managed` only when it is a clean, pushed, non-symlinked direct child of the configured managed root and Git proves it belongs to the exact repository. Switchyard-managed worktrees have a durable private ownership record bound to repository root, exact worktree path, branch, upstream/start revision, and Git administrative directory. Archive re-verifies that identity and refuses primary, active, dirty, unpushed, foreign, or unverifiable worktrees.
 
-### Repository adapters
+### Repository profiles
 
 A private repository profile translates repository-specific reality into generic control-plane inputs:
 
@@ -100,6 +100,16 @@ Profiles are data, not compiled adapters. Adding or changing a consuming reposit
 
 State lives under `~/Library/Application Support/Switchyard/` unless the final name changes. SQLite is authoritative; generated files are projections.
 
+Durable state is bounded and pinned:
+
+- the atomic status snapshot is one row with a monotonic revision; history is never retained merely to update a timestamp;
+- event history keeps the most recent 10,000 events;
+- terminal operations keep the most recent 500 unless a current environment or workspace result still references them; incomplete operations are never pruned;
+- accepted configuration revisions keep the head, the most recent 16 revisions, and every revision whose repository digest is pinned by a current environment result or an incomplete environment operation;
+- every environment result and operation intent records the accepted repository-profile digest it was compiled from, so a restart after a later acceptance recovers the exact payload; a pinned digest whose payload is no longer retained fails boot closed rather than silently re-reading the head.
+
+Repository identity in the public contract is the private `profileKey`; the adapter concept does not exist in contract v2 or in persisted 0.2.0 state. Migration 10 rewrites 0.1.0 state to the new names in place.
+
 Stable identity must not depend only on directory basename or branch name:
 
 - repository identity derives from the Git common directory and remote;
@@ -110,7 +120,7 @@ Stable identity must not depend only on directory basename or branch name:
 
 ## Local API
 
-Use a small versioned JSON contract. Unix-domain socket versus authenticated loopback HTTP remains an implementation decision; the contract must not depend on transport.
+Use a small versioned JSON contract (`contracts/v2`, `schemaVersion: 2`). Unix-domain socket versus authenticated loopback HTTP remains an implementation decision; the contract must not depend on transport.
 
 V1 uses authenticated loopback HTTP on an ephemeral port described by a mode-`0600` runtime file. A separate mode-`0600` bearer token authenticates all clients. Required qualities:
 
@@ -157,7 +167,7 @@ Cap attention at three entries and URLs at eight. The UI owns proactive notifica
 ## Service lifecycle
 
 1. Resolve or create the environment.
-2. Ask the adapter for a service plan.
+2. Compile the service plan from the accepted repository profile pinned by the operation's `ProfileDigest`.
 3. Acquire stable leases after checking both daemon state and the operating system.
 4. Materialize the environment projection.
 5. Ensure infrastructure with explicit sharing scope.
@@ -169,7 +179,7 @@ Cap attention at three entries and URLs at eight. The UI owns proactive notifica
 
 Every mutation is first persisted as an asynchronous operation. Operations are serialized per environment so unrelated environments progress concurrently. Reconciliation resumes or safely fails incomplete operations after a daemon restart.
 
-Immediately before a start is accepted, the adapter reads the exact worktree HEAD and tracked/untracked dirty state. That source snapshot and the newly allocated run ID are persisted with the operation and projected into every service run. A terminal operation is not evidence that an older healthy run was replaced unless the published environment carries the same run ID.
+Immediately before a start is accepted, the daemon reads the exact worktree HEAD and tracked/untracked dirty state. That source snapshot and the newly allocated run ID are persisted with the operation and projected into every service run. A terminal operation is not evidence that an older healthy run was replaced unless the published environment carries the same run ID.
 
 Retries use bounded exponential backoff. Crash loops become an alert rather than an infinite silent restart.
 

@@ -23,7 +23,7 @@ Use Switchyard as the sole lifecycle owner for local worktree services. Prefer i
 4. Call `switchyard_start` with unique non-secret request and idempotency IDs, the resolved worktree ID, selected target and services, and the current revision when replacing an environment.
 5. Treat the receipt as acceptance. Poll the exact environment until the operation is terminal and selected services are healthy.
 
-The first start verifies the repository fingerprint, provisions an adapter toolchain when needed, hydrates dependencies, and records workspace readiness before services build. Do not install those prerequisites separately.
+The first start verifies the repository fingerprint, provisions a profile-declared toolchain when needed, hydrates dependencies, and records workspace readiness before services build. Do not install those prerequisites separately.
 
 ## Stop an environment
 

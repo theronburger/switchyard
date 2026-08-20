@@ -310,9 +310,9 @@ Direct Codex app-server integration is not required for this release. It is a se
 
 ## Bounded state
 
-The current database retains every full status snapshot. That is unbounded and must be replaced before release.
+The 0.1.0 database retained every full status snapshot. That was unbounded and has been replaced.
 
-The next schema stores the current atomic snapshot in one row with a monotonic revision. Durable operations, ownership, configuration revisions, and bounded event history remain separate. Retention is enforced transactionally, and unchanged observations do not create durable history merely to update a timestamp.
+The current schema stores the atomic snapshot in one row with a monotonic revision. Durable operations, ownership, configuration revisions, and event history remain separate and are bounded transactionally: 10,000 events, 500 terminal operations (current environment and workspace results and incomplete operations are always retained), and 16 unreferenced accepted configuration revisions (the head and every revision pinned by a durable environment resource are always retained). Unchanged observations do not create durable history merely to update a timestamp.
 
 Migration does not compact or rewrite the live database. It leaves `state.sqlite` byte-for-byte intact for rollback, creates `state-v2.sqlite`, and imports only supported durable repository/worktree identity and managed-worktree ownership. Filesystem ownership records moving from the legacy runtime root are imported only after Git identity is re-proven. Transient runs, historical snapshots, live environment state, and repository projections are not imported.
 
@@ -347,7 +347,7 @@ Rollback stops only the new owned LaunchAgent, removes only paths proven by the 
 4. Add the strict private configuration loader, crash-consistent immutable revision store, CAS API, approval store, and fail-closed desired/accepted behavior.
 5. Add bounded snapshot storage and migration planning before adding more observers.
 6. Move generic Git discovery, source snapshots, diff accounting, command execution, preparation, and readiness out of repository-specific packages.
-7. Replace adapter fields with repository key plus configuration payload/digest in the core, contract v2, SQLite records, API, CLI, MCP, and Swift models. Persist concrete recovery behavior for start, readiness, rollback, stop, and cleanup.
+7. Replace adapter fields with repository key plus configuration payload/digest in the core, contract v2, SQLite records, API, CLI, MCP, and Swift models. Persist concrete recovery behavior for start, readiness, rollback, stop, and cleanup. Done: contract v2 publishes `profileKey`, pinned intent and results carry `ProfileDigest`, migration 10 rewrites 0.1.0 state, and pinned payloads recover from retained revisions across restarts.
 8. Add the two-phase toolchain provision lifecycle and declarative workspace compiler while preserving the resilient `prepare --wait` behavior from the candidate branch.
 9. Add staged service launch/readiness barriers and compile declarative targets, services, ports, infrastructure, initialization, probes, and immutable private artifacts.
 10. Add the generic action operation/compiler/runner and the cleanup plan/apply domain across journal, contract, API, CLI, MCP, and Swift clients.

@@ -65,7 +65,7 @@ Standard installs use `~/.codex` and `~/.claude.json`; Switchyard does not redir
 ```text
 Codex / Claude ── MCP ──┐
 Human shell ──── CLI ───┼── authenticated local API ── Go daemon
-SwiftUI app ────────────┘                              ├── repository adapters
+SwiftUI app ────────────┘                              ├── accepted repository profiles
                                                        ├── leases and supervisor
                                                        ├── health and reconciliation
                                                        └── SQLite and event history

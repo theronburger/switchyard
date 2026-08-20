@@ -41,6 +41,8 @@ struct SwitchyardPresentationTests {
         #expect(prompt.contains("`future-service`"))
         #expect(prompt.contains(worktree.path))
         #expect(prompt.contains("exact argv"))
+        #expect(prompt.contains("private Switchyard repository profile"))
+        #expect(!prompt.lowercased().contains("adapter"))
         #expect(prompt.contains("Do not mark the service available"))
     }
 

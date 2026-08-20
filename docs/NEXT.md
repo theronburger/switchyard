@@ -14,6 +14,7 @@
 - Profile-configured service catalogs are startable. Shared services within one environment use the same environment-owned local infrastructure, while every worktree retains distinct ports and mutable resources.
 - Worktree inventory reports committed and uncommitted line counts per direct service root, keeps shared-package changes explicit, opens exact worktrees in Zed, and drives configurable menu-bar indicators from the atomic daemon snapshot.
 - Jira ticket keys and links are visible from branch names. Worktree detail loads bounded summary/status/assignee/priority/update metadata on demand through the app-owned `jira-claude-relay` client; failures stay local to that card and never affect daemon readiness.
+- Contract v2 (`schemaVersion: 2`) names repositories by private `profileKey`; pinned environment intent and results carry the accepted profile digest, 0.1.0 state migrates in place, pinned payloads recover across restarts and later acceptances, and snapshot, event, operation, and configuration-revision retention are bounded.
 - Repository/worktree Git state is reconciled every 30 seconds with explicit per-repository freshness. Every environment start persists its exact source revision and dirty state, and operation receipts identify the run that must appear before replacement is complete.
 
 ## Next build sequence
@@ -30,7 +31,7 @@
 ## Completed milestone evidence
 
 - [Fable environment integration review](reviews/FABLE_ENVIRONMENT_INTEGRATION_REVIEW.md)
-- `make check` covers Go vet/tests, Swift build, Swift Testing suites, and 58 dependency-free Swift contract checks.
+- `make check` covers Go vet/tests, Swift build, Swift Testing suites, and 59 dependency-free Swift contract checks.
 - `make race` passes across all Go packages.
 - GitHub Actions is green for the accepted implementation commit.
 

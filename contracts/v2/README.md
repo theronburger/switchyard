@@ -1,10 +1,21 @@
-# Contract v1
+# Contract v2
 
-Contract v1 is the local JSON boundary shared by the Go daemon, CLI, MCP clients, and Swift app.
+Contract v2 is the local JSON boundary shared by the Go daemon, CLI, MCP clients, and Swift app. It is the Switchyard 0.2.0 contract and replaces contract v1, which shipped with 0.1.0.
 
-Rules:
+## Changes from v1
 
-- `schemaVersion` is the integer `1`.
+Contract v2 changes only what the product contract actually changed when built-in adapters were replaced by private repository profiles:
+
+- `schemaVersion` is the integer `2` on every status, request, receipt, descriptor, and handshake payload. The handshake advertises `supportedSchemaVersions: [2]` only; a v1 client receives the existing stable upgrade-required error and the app replaces its bundled daemon before reconnecting.
+- `repositories[].profileKey` replaces `repositories[].adapter`. It is the stable private repository key from the accepted configuration, not a display name. The CLI and MCP status projections use the same field name.
+- The repository observation failure code `PROFILE_OBSERVATION_INVALID` replaces `ADAPTER_OBSERVATION_INVALID`.
+- Every other v1 shape is carried forward unchanged, including mutation requests, receipts, operations, cleanup, configuration, and profile-action payloads. Additive fields remain allowed.
+
+No client-facing payload carries an adapter concept any more. Internally, pinned environment intent identifies the accepted repository-profile digest (`ProfileDigest`) rather than an adapter name, and workspace plans and results carry the `ProfileKey`. Those private records are not part of this contract, but the daemon migrates 0.1.0 state to the new names in place on first start (state migration 10) and refuses to guess when a legacy payload is malformed. Running environments pinned to an older accepted revision keep their exact payload across restarts and later acceptances; the daemon never substitutes the current head for a pinned run.
+
+## Rules
+
+- `schemaVersion` is the integer `2`.
 - IDs are opaque strings. Ticket, branch, and path data are display fields.
 - timestamps are RFC 3339 strings;
 - collection fields are always JSON arrays or objects, never `null`;

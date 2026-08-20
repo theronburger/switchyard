@@ -451,7 +451,7 @@ struct ServiceIsolationPrompt {
         - Branch: \(branch)
         - Current target context: \(targetID)
 
-        Work in the Switchyard source project, not by adding tracked setup files to the application repository. Inspect the existing adapter and service definitions first. Implement a complete direct launch plan with exact argv, per-worktree ports and routing, owned process/container resources, readiness and health checks, rollback/reconciliation behavior, runtime-catalog availability, and tests. Preserve local-only `.switchyard.yaml`, never modify `scripts/start-changed.sh`, never bypass Switchyard with direct persistent service or broad Docker/process commands, and preserve warn-on-start confirmation for protected targets. Do not mark the service available until the isolated lifecycle is verified end to end.
+        Work in the private Switchyard repository profile under Application Support, never by adding tracked setup files to the repository. Inspect the accepted profile's existing service, target, port, infrastructure, and artifact definitions first. Declare a complete service entry with an exact executable and exact argv, leased per-worktree ports and published routes, owned process or container resources, readiness and health probes, dependencies, and any private artifacts, then validate and accept the new configuration revision. Never bypass Switchyard with direct persistent service or broad Docker/process commands, and preserve warn-on-start confirmation for protected targets. Do not mark the service available until the isolated lifecycle is verified end to end.
         """
     }
 }
