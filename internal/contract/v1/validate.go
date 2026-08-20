@@ -613,6 +613,69 @@ func (request PrepareWorktreeRequest) Validate() error {
 	return nil
 }
 
+func (request ConfigurationValidationRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion || request.ExpectedRevision < 0 {
+		return fmt.Errorf("configuration validation request is invalid")
+	}
+	return nil
+}
+
+func (request ConfigurationAcceptanceRequest) Validate() error {
+	if request.SchemaVersion != SchemaVersion || request.ExpectedRevision < 0 ||
+		!validDigest(request.Digest) {
+		return fmt.Errorf("configuration acceptance request is invalid")
+	}
+	return nil
+}
+
+func (candidate ConfigurationCandidate) Validate() error {
+	if candidate.SchemaVersion != SchemaVersion || !validDigest(candidate.Digest) ||
+		!validDigest(candidate.SourceDigest) || candidate.CompilerVersion == "" ||
+		candidate.RepositoryDigests == nil || candidate.StagedAt.IsZero() {
+		return fmt.Errorf("configuration candidate is invalid")
+	}
+	for key, digest := range candidate.RepositoryDigests {
+		if !validOpaqueValue(key, maximumOpaqueIDBytes) || !validDigest(digest) {
+			return fmt.Errorf("configuration repository digest is invalid")
+		}
+	}
+	return nil
+}
+
+func (status ConfigurationStatus) Validate() error {
+	if status.SchemaVersion != SchemaVersion || status.AcceptedRevision < 0 {
+		return fmt.Errorf("configuration status is invalid")
+	}
+	switch status.State {
+	case "missing", "accepted", "pending":
+	default:
+		return fmt.Errorf("configuration status state is invalid")
+	}
+	if status.AcceptedRevision == 0 && status.AcceptedDigest != "" ||
+		status.AcceptedRevision > 0 && !validDigest(status.AcceptedDigest) {
+		return fmt.Errorf("accepted configuration identity is invalid")
+	}
+	if status.Candidate != nil && status.Candidate.Validate() != nil {
+		return fmt.Errorf("configuration status candidate is invalid")
+	}
+	if status.State == "pending" && status.Candidate == nil {
+		return fmt.Errorf("pending configuration candidate is required")
+	}
+	return nil
+}
+
+func validDigest(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, character := range value[len("sha256:"):] {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return false
+		}
+	}
+	return true
+}
+
 func (receipt MutationReceipt) Validate() error {
 	if receipt.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema version: got %d, want %d", receipt.SchemaVersion, SchemaVersion)

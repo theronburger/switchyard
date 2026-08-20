@@ -40,6 +40,12 @@ type WorkspaceBackend interface {
 	PrepareWorktree(context.Context, contractv1.PrepareWorktreeRequest) (contractv1.MutationReceipt, error)
 }
 
+type ConfigurationBackend interface {
+	Configuration(context.Context) (contractv1.ConfigurationStatus, error)
+	ValidateConfiguration(context.Context, contractv1.ConfigurationValidationRequest) (contractv1.ConfigurationStatus, error)
+	AcceptConfiguration(context.Context, contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error)
+}
+
 type LiveBackend struct {
 	Connector apiclient.Connector
 	Now       func() time.Time
@@ -94,6 +100,18 @@ func (b LiveBackend) PrepareWorktree(
 	request contractv1.PrepareWorktreeRequest,
 ) (contractv1.MutationReceipt, error) {
 	return b.Connector.PrepareWorktree(ctx, request)
+}
+
+func (b LiveBackend) Configuration(ctx context.Context) (contractv1.ConfigurationStatus, error) {
+	return b.Connector.Configuration(ctx)
+}
+
+func (b LiveBackend) ValidateConfiguration(ctx context.Context, request contractv1.ConfigurationValidationRequest) (contractv1.ConfigurationStatus, error) {
+	return b.Connector.ValidateConfiguration(ctx, request)
+}
+
+func (b LiveBackend) AcceptConfiguration(ctx context.Context, request contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error) {
+	return b.Connector.AcceptConfiguration(ctx, request)
 }
 
 type Application struct {
@@ -166,6 +184,40 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		return ExitUsage
 	}
 	switch command.Name {
+	case "configuration", "validate-configuration", "accept-configuration":
+		backend, available := a.Backend.(ConfigurationBackend)
+		if !available {
+			return writeFailure(stdout, stderr, command.JSON, errors.New("configuration actions are unavailable"))
+		}
+		status, err := backend.Configuration(ctx)
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		if command.Name == "validate-configuration" {
+			expected := status.AcceptedRevision
+			if command.ExpectedRevision != nil {
+				expected = *command.ExpectedRevision
+			}
+			status, err = backend.ValidateConfiguration(ctx, contractv1.ConfigurationValidationRequest{
+				SchemaVersion: contractv1.SchemaVersion, ExpectedRevision: expected,
+			})
+		} else if command.Name == "accept-configuration" {
+			expected := status.AcceptedRevision
+			if command.ExpectedRevision != nil {
+				expected = *command.ExpectedRevision
+			}
+			status, err = backend.AcceptConfiguration(ctx, contractv1.ConfigurationAcceptanceRequest{
+				SchemaVersion: contractv1.SchemaVersion, ExpectedRevision: expected, Digest: command.Positionals[0],
+			})
+		}
+		if err != nil {
+			return writeFailure(stdout, stderr, command.JSON, err)
+		}
+		if command.JSON {
+			return encodeJSON(stdout, status)
+		}
+		writeConfigurationStatus(stdout, status)
+		return ExitSuccess
 	case "status":
 		snapshot, err := a.Backend.Status(ctx)
 		if err != nil {
@@ -580,6 +632,7 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 	}
 	command := parsedCommand{Name: arguments[0]}
 	if command.Name != "status" && command.Name != "doctor" &&
+		command.Name != "configuration" && command.Name != "validate-configuration" && command.Name != "accept-configuration" &&
 		command.Name != "start" && command.Name != "stop" && command.Name != "prepare" &&
 		command.Name != "create-worktree" && command.Name != "adopt-worktree" &&
 		command.Name != "archive-worktree" {
@@ -659,6 +712,21 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 		}
 	}
 	switch command.Name {
+	case "configuration":
+		if len(command.Positionals) != 0 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
+	case "validate-configuration":
+		if len(command.Positionals) != 0 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.IdempotencyKey != "" || command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
+	case "accept-configuration":
+		if len(command.Positionals) != 1 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.IdempotencyKey != "" || command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
 	case "status":
 		if len(command.Positionals) > 1 || (command.All && len(command.Positionals) != 0) ||
 			command.TargetID != "" || command.ConfirmedTargetID != "" ||
@@ -763,12 +831,27 @@ func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "usage:")
 	_, _ = fmt.Fprintln(writer, "  switchyard status [worktree-id|branch|path] [--all] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard doctor [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard configuration [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard validate-configuration [--expected-revision N] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard accept-configuration <digest> [--expected-revision N] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard start <worktree-id|.> <service-id>... [--target TARGET] [--confirm-target TARGET] [--expected-revision N] [--idempotency-key KEY] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard stop <environment-id|.> [--expected-revision N] [--idempotency-key KEY] [--if-running] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard prepare <worktree-id|.> [--idempotency-key KEY] [--wait] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard create-worktree <repository-id> <branch> [--base REF] [--idempotency-key KEY] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard adopt-worktree <worktree-id> [--idempotency-key KEY] [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard archive-worktree <worktree-id> [--idempotency-key KEY] [--json]")
+}
+
+func writeConfigurationStatus(writer io.Writer, status contractv1.ConfigurationStatus) {
+	_, _ = fmt.Fprintf(writer, "Configuration: %s (accepted revision %d).\n", status.State, status.AcceptedRevision)
+	if status.AcceptedDigest != "" {
+		_, _ = fmt.Fprintf(writer, "Accepted digest: %s\n", status.AcceptedDigest)
+	}
+	if status.Candidate != nil {
+		_, _ = fmt.Fprintf(writer, "Candidate digest: %s\n", status.Candidate.Digest)
+		_, _ = fmt.Fprintf(writer, "Compiler: %s\n", status.Candidate.CompilerVersion)
+		_, _ = fmt.Fprintf(writer, "Repositories: %d\n", len(status.Candidate.RepositoryDigests))
+	}
 }
 
 func writeFailure(stdout, stderr io.Writer, jsonOutput bool, err error) int {

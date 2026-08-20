@@ -226,6 +226,9 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		EnvironmentActions:   runtime.actions,
 		WorkspaceActions:     runtime.workspaceActions,
 		OperationDiagnostics: operationDiagnostics,
+		Configuration: &daemon.ConfigurationService{
+			Store: store, Path: paths.configuration, CompilerVersion: version, Restart: restartDaemon,
+		},
 	})
 	if err != nil {
 		return err

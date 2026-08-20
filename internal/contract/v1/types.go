@@ -318,6 +318,34 @@ type PrepareWorktreeRequest struct {
 	WorktreeID string `json:"worktreeId"`
 }
 
+type ConfigurationValidationRequest struct {
+	SchemaVersion    int   `json:"schemaVersion"`
+	ExpectedRevision int64 `json:"expectedRevision"`
+}
+
+type ConfigurationAcceptanceRequest struct {
+	SchemaVersion    int    `json:"schemaVersion"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	Digest           string `json:"digest"`
+}
+
+type ConfigurationCandidate struct {
+	SchemaVersion     int               `json:"schemaVersion"`
+	Digest            string            `json:"digest"`
+	SourceDigest      string            `json:"sourceDigest"`
+	CompilerVersion   string            `json:"compilerVersion"`
+	RepositoryDigests map[string]string `json:"repositoryDigests"`
+	StagedAt          time.Time         `json:"stagedAt"`
+}
+
+type ConfigurationStatus struct {
+	SchemaVersion    int                     `json:"schemaVersion"`
+	State            string                  `json:"state"`
+	AcceptedRevision int64                   `json:"acceptedRevision"`
+	AcceptedDigest   string                  `json:"acceptedDigest,omitempty"`
+	Candidate        *ConfigurationCandidate `json:"candidate,omitempty"`
+}
+
 type MutationReceipt struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	RequestID     string    `json:"requestId"`

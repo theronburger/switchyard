@@ -39,6 +39,12 @@ type OperationDiagnosticsSource interface {
 	ReadOperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error)
 }
 
+type ConfigurationActions interface {
+	Status(context.Context) (contractv1.ConfigurationStatus, error)
+	Validate(context.Context, contractv1.ConfigurationValidationRequest) (contractv1.ConfigurationStatus, error)
+	Accept(context.Context, contractv1.ConfigurationAcceptanceRequest) (contractv1.ConfigurationStatus, error)
+}
+
 type HandlerConfig struct {
 	Token                string
 	DaemonInstanceID     string
@@ -49,6 +55,7 @@ type HandlerConfig struct {
 	EnvironmentActions   EnvironmentActions
 	WorkspaceActions     WorkspaceActions
 	OperationDiagnostics OperationDiagnosticsSource
+	Configuration        ConfigurationActions
 }
 
 type errorResponse struct {
@@ -123,6 +130,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		}
 		handler.events(response, request)
 	default:
+		if handler.configuration(response, request) {
+			return
+		}
 		if handler.operationDiagnostics(response, request) {
 			return
 		}
