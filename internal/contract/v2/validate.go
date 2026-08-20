@@ -827,13 +827,15 @@ func (plan CleanupPlan) Validate() error {
 
 func (result CleanupResult) Validate() error {
 	if result.SchemaVersion != SchemaVersion || !validOpaqueValue(result.PlanID, maximumOpaqueIDBytes) ||
-		result.PlanRevision < 1 || result.Removals == nil || len(result.Removals) > 1024 || result.CompletedAt.IsZero() {
+		result.PlanRevision < 1 || result.Removals == nil || len(result.Removals) > 1024 || result.CompletedAt.IsZero() ||
+		result.ClaimedAt.IsZero() || result.Attempts < 1 || result.CompletedAt.Before(result.ClaimedAt) {
 		return fmt.Errorf("cleanup result is invalid")
 	}
 	seen := make(map[string]struct{}, len(result.Removals))
 	for _, removal := range result.Removals {
 		if !validOpaqueValue(removal.CandidateID, maximumOpaqueIDBytes) ||
-			(removal.Removed && removal.Reason != "") || (!removal.Removed && removal.Reason != "not-in-plan" && removal.Reason != "changed-or-protected") {
+			(removal.Removed && removal.Reason != "") ||
+			(!removal.Removed && removal.Reason != "not-in-plan" && removal.Reason != "changed-or-protected" && removal.Reason != "interrupted") {
 			return fmt.Errorf("cleanup removal is invalid")
 		}
 		if _, duplicate := seen[removal.CandidateID]; duplicate {

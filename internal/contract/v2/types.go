@@ -436,11 +436,17 @@ type CleanupRemoval struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
+// CleanupResult is the outcome of one claimed apply. ClaimedAt is when
+// authorization for this exact plan revision and candidate list was recorded,
+// before any owned resource was touched; Attempts counts the apply requests
+// that held that claim, so a retried or resumed apply is visible as such.
 type CleanupResult struct {
 	SchemaVersion int              `json:"schemaVersion"`
 	PlanID        string           `json:"planId"`
 	PlanRevision  int64            `json:"planRevision"`
 	Removals      []CleanupRemoval `json:"removals"`
+	ClaimedAt     time.Time        `json:"claimedAt"`
+	Attempts      int              `json:"attempts"`
 	CompletedAt   time.Time        `json:"completedAt"`
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -66,6 +67,12 @@ func (handler *apiHandler) cleanup(response http.ResponseWriter, request *http.R
 		writeError(response, http.StatusConflict, "CLEANUP_PLAN_EXPIRED", "Cleanup plan expired; review a new plan", true)
 	case errors.Is(err, state.ErrCleanupPlanConsumed):
 		writeError(response, http.StatusConflict, "CLEANUP_PLAN_CONSUMED", "Cleanup plan was already applied", false)
+	case errors.Is(err, ErrCleanupApplyInProgress):
+		writeError(response, http.StatusConflict, "CLEANUP_APPLY_IN_PROGRESS", "Cleanup plan is being applied by another request", true)
+	case errors.Is(err, state.ErrCleanupApplyMismatch):
+		writeError(response, http.StatusConflict, "CLEANUP_APPLY_MISMATCH", "Cleanup plan was already claimed for a different candidate set", false)
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		writeError(response, http.StatusServiceUnavailable, "CLEANUP_INTERRUPTED", "Cleanup apply was interrupted; retry the same request to resume it", true)
 	case err != nil:
 		writeError(response, http.StatusServiceUnavailable, "CLEANUP_UNAVAILABLE", "Cleanup could not be applied", true)
 	case result.Validate() != nil:
