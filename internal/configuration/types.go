@@ -94,6 +94,7 @@ type Service struct {
 	Ports             map[string]Port     `yaml:"ports" json:"ports"`
 	Environment       map[string]ValueRef `yaml:"environment" json:"environment"`
 	Prepare           []Command           `yaml:"prepare" json:"prepare"`
+	Initialize        []Command           `yaml:"initialize" json:"initialize"`
 	Command           Command             `yaml:"command" json:"command"`
 	Readiness         []Probe             `yaml:"readiness" json:"readiness"`
 	Health            []Probe             `yaml:"health" json:"health"`
@@ -106,13 +107,14 @@ func (service Service) IsAvailable() bool {
 }
 
 type Port struct {
-	Preferred []int         `yaml:"preferred" json:"preferred"`
-	Publish   *PublishedURL `yaml:"publish" json:"publish,omitempty"`
+	Preferred []int          `yaml:"preferred" json:"preferred"`
+	Publish   []PublishedURL `yaml:"publish" json:"publish"`
 }
 
 type PublishedURL struct {
 	Name   string `yaml:"name" json:"name"`
 	Scheme string `yaml:"scheme" json:"scheme"`
+	Host   string `yaml:"host" json:"host"`
 	Path   string `yaml:"path" json:"path"`
 }
 
@@ -128,6 +130,7 @@ type ValueRef struct {
 	Literal      *string        `yaml:"literal" json:"literal,omitempty"`
 	Target       string         `yaml:"target" json:"target,omitempty"`
 	Port         *PortReference `yaml:"port" json:"port,omitempty"`
+	URL          *URLReference  `yaml:"url" json:"url,omitempty"`
 	WorktreePath *string        `yaml:"worktreePath" json:"worktreePath,omitempty"`
 	RuntimePath  *string        `yaml:"runtimePath" json:"runtimePath,omitempty"`
 	Artifact     string         `yaml:"artifact" json:"artifact,omitempty"`
@@ -138,6 +141,14 @@ type ValueRef struct {
 type PortReference struct {
 	Service string `yaml:"service" json:"service"`
 	Purpose string `yaml:"purpose" json:"purpose"`
+}
+
+type URLReference struct {
+	Service string `yaml:"service" json:"service"`
+	Purpose string `yaml:"purpose" json:"purpose"`
+	Scheme  string `yaml:"scheme" json:"scheme"`
+	Host    string `yaml:"host" json:"host"`
+	Path    string `yaml:"path" json:"path"`
 }
 
 type Probe struct {
@@ -166,8 +177,10 @@ type ContainerPort struct {
 }
 
 type Artifact struct {
-	Content    string `yaml:"content" json:"content"`
-	Executable bool   `yaml:"executable" json:"executable"`
+	Content    string     `yaml:"content" json:"content"`
+	Segments   []ValueRef `yaml:"segments" json:"segments"`
+	Filename   string     `yaml:"filename" json:"filename"`
+	Executable bool       `yaml:"executable" json:"executable"`
 }
 
 type Action struct {

@@ -135,6 +135,9 @@ func fingerprintExecutables(document Document) (map[string]string, map[string]ma
 			for _, command := range service.Prepare {
 				paths[command.Executable] = struct{}{}
 			}
+			for _, command := range service.Initialize {
+				paths[command.Executable] = struct{}{}
+			}
 		}
 		for _, action := range repository.Actions {
 			if action.Command != nil {
@@ -373,8 +376,15 @@ func validateRepositoryRuntime(repositoryKey string, repository Repository) erro
 		}
 	}
 	for id, artifact := range repository.Artifacts {
-		if !identifierPattern.MatchString(id) || len(artifact.Content) > 256*1024 || strings.ContainsRune(artifact.Content, 0) {
+		if !identifierPattern.MatchString(id) || len(artifact.Content) > 256*1024 || strings.ContainsRune(artifact.Content, 0) ||
+			((artifact.Content == "") == (artifact.Segments == nil)) || len(artifact.Segments) > 4096 ||
+			(artifact.Filename != "" && (!safeRelativePath(artifact.Filename) || filepath.Base(artifact.Filename) != artifact.Filename)) {
 			return fmt.Errorf("repository %q artifact %q is invalid", repositoryKey, id)
+		}
+		for _, segment := range artifact.Segments {
+			if validateValueRef(segment, repository) != nil {
+				return fmt.Errorf("repository %q artifact %q segment is invalid", repositoryKey, id)
+			}
 		}
 	}
 	for id, infrastructure := range repository.Infrastructure {
@@ -458,15 +468,28 @@ func validateService(repositoryKey, id string, service Service, repository Repos
 			}
 			seenPorts[preferred] = struct{}{}
 		}
-		if port.Publish != nil && (strings.TrimSpace(port.Publish.Name) == "" ||
-			(port.Publish.Scheme != "http" && port.Publish.Scheme != "https") ||
-			(port.Publish.Path != "" && !strings.HasPrefix(port.Publish.Path, "/"))) {
-			return fmt.Errorf("repository %q service %q published URL is invalid", repositoryKey, id)
+		seenPublished := make(map[string]struct{}, len(port.Publish))
+		for _, published := range port.Publish {
+			if strings.TrimSpace(published.Name) == "" ||
+				(published.Scheme != "http" && published.Scheme != "https") ||
+				(published.Host != "loopback" && published.Host != "localhost") ||
+				(published.Path != "" && !strings.HasPrefix(published.Path, "/")) {
+				return fmt.Errorf("repository %q service %q published URL is invalid", repositoryKey, id)
+			}
+			if _, duplicate := seenPublished[published.Name]; duplicate {
+				return fmt.Errorf("repository %q service %q published URL is duplicated", repositoryKey, id)
+			}
+			seenPublished[published.Name] = struct{}{}
 		}
 	}
 	for _, command := range service.Prepare {
 		if validateCommand(command, repository, "preparation") != nil {
 			return fmt.Errorf("repository %q service %q preparation is invalid", repositoryKey, id)
+		}
+	}
+	for _, command := range service.Initialize {
+		if validateCommand(command, repository, "initialization") != nil {
+			return fmt.Errorf("repository %q service %q initialization is invalid", repositoryKey, id)
 		}
 	}
 	for _, probe := range append(append([]Probe{}, service.Readiness...), service.Health...) {
@@ -545,6 +568,16 @@ func validateValueRef(value ValueRef, repository Repository) error {
 		if !identifierPattern.MatchString(value.Port.Purpose) ||
 			(value.Port.Service != "" && !identifierPattern.MatchString(value.Port.Service)) {
 			return errors.New("port reference is invalid")
+		}
+	}
+	if value.URL != nil {
+		count++
+		if !identifierPattern.MatchString(value.URL.Purpose) ||
+			(value.URL.Service != "" && !identifierPattern.MatchString(value.URL.Service)) ||
+			(value.URL.Scheme != "http" && value.URL.Scheme != "https") ||
+			(value.URL.Host != "loopback" && value.URL.Host != "localhost") ||
+			(value.URL.Path != "" && !strings.HasPrefix(value.URL.Path, "/")) {
+			return errors.New("URL reference is invalid")
 		}
 	}
 	for _, path := range []*string{value.WorktreePath, value.RuntimePath} {

@@ -161,6 +161,9 @@ type ExecutionPlan struct {
 	Infrastructure  []containerhost.Goal
 	Initializations []PreparationSpec
 	Services        []ServiceLaunch
+	// ServiceStages is the dependency-ordered form used by compiled profiles.
+	// Services remains the compatibility form for already-persisted v1 plans.
+	ServiceStages [][]ServiceLaunch
 }
 
 type ServiceResult struct {

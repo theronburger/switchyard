@@ -161,12 +161,19 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	if err := restoreEnvironmentLeases(ctx, journal, ports); err != nil {
 		return nil, err
 	}
-	docker, err := configuredDockerExecutable()
-	if err != nil {
-		return nil, err
+	var infrastructure environmentcontrol.InfrastructureHost
+	if configuredProfilesUseInfrastructure(discovered) {
+		docker, err := configuredDockerExecutable()
+		if err != nil {
+			return nil, err
+		}
+		dockerRunner := containerhost.OSRunner{}
+		dockerInventory := containerhost.DockerInventory{Runner: dockerRunner, DockerBinary: docker}
+		infrastructure = environmentcontrol.ContainerInfrastructureHost{
+			Resources: dockerInventory, Planner: containerhost.Planner{DockerBinary: docker},
+			Applier: containerhost.Reconciler{Runner: dockerRunner, Resources: dockerInventory, DockerBinary: docker},
+		}
 	}
-	dockerRunner := containerhost.OSRunner{}
-	dockerInventory := containerhost.DockerInventory{Runner: dockerRunner, DockerBinary: docker}
 	prober, err := health.NewProber(health.ProberConfig{})
 	if err != nil {
 		return nil, err
@@ -178,11 +185,8 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	coordinator, err := environmentcontrol.NewCoordinator(environmentcontrol.Config{
 		Journal: journal, Ports: ports, Planner: profilecontrol.NewPlanBuilder(registry),
 		Preparations: profilecontrol.FiniteRunner{}, Projections: profilecontrol.NewArtifactMaterializer(registry),
-		Infrastructure: environmentcontrol.ContainerInfrastructureHost{
-			Resources: dockerInventory, Planner: containerhost.Planner{DockerBinary: docker},
-			Applier: containerhost.Reconciler{Runner: dockerRunner, Resources: dockerInventory, DockerBinary: docker},
-		},
-		Processes: processhost.New(processhost.Config{}), Readiness: readiness, RollbackTimeout: 45 * time.Second,
+		Infrastructure: infrastructure,
+		Processes:      processhost.New(processhost.Config{}), Readiness: readiness, RollbackTimeout: 45 * time.Second,
 	})
 	if err != nil {
 		return nil, err
@@ -229,6 +233,15 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	observerDone := make(chan error, 1)
 	go func() { observerDone <- observer.Run(ctx) }()
 	return &environmentRuntime{actions: actions, workspaceActions: workspaceActions, observerDone: observerDone}, nil
+}
+
+func configuredProfilesUseInfrastructure(discovered repositoryInventory) bool {
+	for _, profile := range discovered.Profiles {
+		if profile.Enabled && len(profile.Infrastructure) != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func newConfiguredActionResolver(environments []configuredEnvironment, configurationPath, acceptedDigest string) configuredActionResolver {
@@ -377,8 +390,12 @@ func configuredEnvironmentProjector(environments []configuredEnvironment) state.
 				Host: lease.Host, Port: lease.Port, State: "leased", AcquiredAt: acquiredAt,
 			})
 			leasesByService[lease.Key.ServiceID] = append(leasesByService[lease.Key.ServiceID], leaseID)
-			if published := metadata.Profile.Services[lease.Key.ServiceID].Ports[lease.Key.Purpose].Publish; published != nil {
-				projected.URLs[published.Name] = published.Scheme + "://" + lease.Host + ":" + strconv.Itoa(lease.Port) + published.Path
+			for _, published := range metadata.Profile.Services[lease.Key.ServiceID].Ports[lease.Key.Purpose].Publish {
+				host := lease.Host
+				if published.Host == "localhost" {
+					host = "localhost"
+				}
+				projected.URLs[published.Name] = published.Scheme + "://" + host + ":" + strconv.Itoa(lease.Port) + published.Path
 			}
 		}
 		results := make(map[string]environmentcontrol.ServiceResult, len(result.Services))

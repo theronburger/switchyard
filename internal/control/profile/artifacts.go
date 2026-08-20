@@ -34,6 +34,7 @@ type artifactFile struct {
 	ID         string `json:"id"`
 	Path       string `json:"path"`
 	Digest     string `json:"digest"`
+	SpecDigest string `json:"specDigest"`
 	Content    string `json:"content"`
 	Executable bool   `json:"executable"`
 }
@@ -42,7 +43,7 @@ func NewArtifactMaterializer(registry Registry) ArtifactMaterializer {
 	return ArtifactMaterializer{registry: registry}
 }
 
-func (materializer ArtifactMaterializer) Plan(ctx context.Context, environmentID, runID string, request environmentcontrol.ProjectionRequest, _ []portlease.Lease) (environmentcontrol.ProjectionChange, error) {
+func (materializer ArtifactMaterializer) Plan(ctx context.Context, environmentID, runID string, request environmentcontrol.ProjectionRequest, leases []portlease.Lease) (environmentcontrol.ProjectionChange, error) {
 	if err := ctx.Err(); err != nil {
 		return environmentcontrol.ProjectionChange{}, err
 	}
@@ -63,10 +64,28 @@ func (materializer ArtifactMaterializer) Plan(ctx context.Context, environmentID
 			return environmentcontrol.ProjectionChange{}, ErrProfileInvalid
 		}
 		seen[id] = struct{}{}
-		sum := sha256.Sum256([]byte(artifact.Content))
+		filename := artifact.Filename
+		if filename == "" {
+			filename = id
+		}
+		content := artifact.Content
+		if artifact.Segments != nil {
+			resolved, err := resolveValues(registration, runRoot, "", artifact.Segments, nil, leaseMap(leases))
+			if err != nil {
+				return environmentcontrol.ProjectionChange{}, err
+			}
+			content = strings.Join(resolved, "")
+		}
+		sum := sha256.Sum256([]byte(content))
+		specPayload, err := json.Marshal(artifact)
+		if err != nil {
+			return environmentcontrol.ProjectionChange{}, err
+		}
+		specSum := sha256.Sum256(specPayload)
 		token.Files = append(token.Files, artifactFile{
-			ID: id, Path: filepath.Join(runRoot, "artifacts", id),
-			Digest: hex.EncodeToString(sum[:]), Content: artifact.Content, Executable: artifact.Executable,
+			ID: id, Path: filepath.Join(runRoot, "artifacts", filename),
+			Digest: hex.EncodeToString(sum[:]), SpecDigest: hex.EncodeToString(specSum[:]),
+			Content: content, Executable: artifact.Executable,
 		})
 	}
 	payload, err := json.Marshal(token)
@@ -168,9 +187,16 @@ func (materializer ArtifactMaterializer) validate(change environmentcontrol.Proj
 	seen := make(map[string]struct{}, len(token.Files))
 	for _, file := range token.Files {
 		artifact, found := registration.Profile.Artifacts[file.ID]
+		filename := artifact.Filename
+		if filename == "" {
+			filename = file.ID
+		}
 		sum := sha256.Sum256([]byte(file.Content))
-		if !found || artifact.Content != file.Content || artifact.Executable != file.Executable ||
-			file.Digest != hex.EncodeToString(sum[:]) || filepath.Dir(file.Path) != runRoot || filepath.Base(file.Path) != file.ID {
+		specPayload, marshalErr := json.Marshal(artifact)
+		specSum := sha256.Sum256(specPayload)
+		if !found || marshalErr != nil || (artifact.Segments == nil && artifact.Content != file.Content) || artifact.Executable != file.Executable ||
+			file.SpecDigest != hex.EncodeToString(specSum[:]) ||
+			file.Digest != hex.EncodeToString(sum[:]) || filepath.Dir(file.Path) != runRoot || filepath.Base(file.Path) != filename {
 			return artifactToken{}, Registration{}, ErrProfileInvalid
 		}
 		if _, duplicate := seen[file.ID]; duplicate {
@@ -179,6 +205,14 @@ func (materializer ArtifactMaterializer) validate(change environmentcontrol.Proj
 		seen[file.ID] = struct{}{}
 	}
 	return token, registration, nil
+}
+
+func leaseMap(leases []portlease.Lease) map[portlease.Key]portlease.Lease {
+	result := make(map[portlease.Key]portlease.Lease, len(leases))
+	for _, lease := range leases {
+		result[lease.Key] = lease
+	}
+	return result
 }
 
 func existingArtifactMatches(file artifactFile) bool {

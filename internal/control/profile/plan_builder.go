@@ -51,9 +51,22 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	plan := environmentcontrol.ExecutionPlan{}
 	artifactSet := make(map[string]struct{})
 	infrastructureSet := make(map[string]struct{})
+	routeEnvironment := make(map[string]configuration.ValueRef)
+	for _, routeServiceID := range serviceIDs {
+		for purpose, port := range profile.Services[routeServiceID].Ports {
+			for _, published := range port.Publish {
+				if _, duplicate := routeEnvironment[published.Name]; duplicate {
+					return environmentcontrol.ExecutionPlan{}, ErrProfileInvalid
+				}
+				routeEnvironment[published.Name] = configuration.ValueRef{URL: &configuration.URLReference{
+					Service: routeServiceID, Purpose: purpose, Scheme: published.Scheme, Host: published.Host, Path: published.Path,
+				}}
+			}
+		}
+	}
 	for _, serviceID := range serviceIDs {
 		service := profile.Services[serviceID]
-		resolvedEnvironment, err := resolveEnvironment(registration, runRoot, serviceID, target.Environment, leases, target.Environment, service.Environment)
+		resolvedEnvironment, err := resolveEnvironment(registration, runRoot, serviceID, target.Environment, leases, routeEnvironment, target.Environment, service.Environment)
 		if err != nil {
 			return environmentcontrol.ExecutionPlan{}, err
 		}
@@ -63,6 +76,13 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 				return environmentcontrol.ExecutionPlan{}, err
 			}
 			plan.Preparations = append(plan.Preparations, spec)
+		}
+		for index, command := range service.Initialize {
+			spec, err := finiteCommand(registration, runRoot, request.RunID, serviceID, "initialize-"+strconv.Itoa(index), command, target.Environment, resolvedEnvironment, leases)
+			if err != nil {
+				return environmentcontrol.ExecutionPlan{}, err
+			}
+			plan.Initializations = append(plan.Initializations, spec)
 		}
 		arguments, err := resolveValues(registration, runRoot, serviceID, service.Command.Arguments, target.Environment, leases)
 		if err != nil {
@@ -128,7 +148,61 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 		}
 		plan.Infrastructure = append(plan.Infrastructure, goal)
 	}
+	stages, err := stagedServices(profile, plan.Services)
+	if err != nil {
+		return environmentcontrol.ExecutionPlan{}, err
+	}
+	plan.ServiceStages = stages
+	plan.Services = nil
 	return plan, nil
+}
+
+func stagedServices(profile configuration.Repository, launches []environmentcontrol.ServiceLaunch) ([][]environmentcontrol.ServiceLaunch, error) {
+	selected := make(map[string]environmentcontrol.ServiceLaunch, len(launches))
+	for _, launch := range launches {
+		selected[launch.ID] = launch
+	}
+	depths := make(map[string]int, len(launches))
+	var depth func(string) (int, error)
+	depth = func(id string) (int, error) {
+		if existing, found := depths[id]; found {
+			return existing, nil
+		}
+		service, found := profile.Services[id]
+		if !found {
+			return 0, ErrProfileInvalid
+		}
+		result := 0
+		for _, dependency := range service.Dependencies {
+			if _, included := selected[dependency]; !included {
+				return 0, ErrProfileInvalid
+			}
+			dependencyDepth, err := depth(dependency)
+			if err != nil {
+				return 0, err
+			}
+			if dependencyDepth+1 > result {
+				result = dependencyDepth + 1
+			}
+		}
+		depths[id] = result
+		return result, nil
+	}
+	stages := make([][]environmentcontrol.ServiceLaunch, 0)
+	for _, launch := range launches {
+		stage, err := depth(launch.ID)
+		if err != nil {
+			return nil, err
+		}
+		for len(stages) <= stage {
+			stages = append(stages, nil)
+		}
+		stages[stage] = append(stages[stage], launch)
+	}
+	for _, stage := range stages {
+		sort.Slice(stage, func(left, right int) bool { return stage[left].ID < stage[right].ID })
+	}
+	return stages, nil
 }
 
 func orderedServices(profile configuration.Repository, selected []string) ([]string, error) {
@@ -262,12 +336,34 @@ func resolveValue(registration Registration, runRoot, serviceID string, value co
 			return "", ErrProfileInvalid
 		}
 		return strconv.Itoa(lease.Port), nil
+	case value.URL != nil:
+		portService := value.URL.Service
+		if portService == "" {
+			portService = serviceID
+		}
+		lease, found := leases[portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: portService, Purpose: value.URL.Purpose}]
+		if !found {
+			return "", ErrProfileInvalid
+		}
+		host := lease.Host
+		if value.URL.Host == "localhost" {
+			host = "localhost"
+		}
+		return value.URL.Scheme + "://" + host + ":" + strconv.Itoa(lease.Port) + value.URL.Path, nil
 	case value.WorktreePath != nil:
 		return filepath.Join(registration.WorktreeRoot, *value.WorktreePath), nil
 	case value.RuntimePath != nil:
 		return filepath.Join(runRoot, *value.RuntimePath), nil
 	case value.Artifact != "":
-		return filepath.Join(runRoot, "artifacts", value.Artifact), nil
+		artifact, found := registration.Profile.Artifacts[value.Artifact]
+		if !found {
+			return "", ErrProfileInvalid
+		}
+		filename := artifact.Filename
+		if filename == "" {
+			filename = value.Artifact
+		}
+		return filepath.Join(runRoot, "artifacts", filename), nil
 	case value.Cache != "":
 		cache := registration.Profile.Caches[value.Cache]
 		directory := cache.Directory

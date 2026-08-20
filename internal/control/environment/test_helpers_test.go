@@ -532,6 +532,15 @@ func cloneExecutionPlan(plan ExecutionPlan) ExecutionPlan {
 			[]string(nil), plan.Services[index].Process.Environment...,
 		)
 	}
+	copy.ServiceStages = make([][]ServiceLaunch, len(plan.ServiceStages))
+	for stageIndex, stage := range plan.ServiceStages {
+		copy.ServiceStages[stageIndex] = append([]ServiceLaunch(nil), stage...)
+		for serviceIndex := range copy.ServiceStages[stageIndex] {
+			copy.ServiceStages[stageIndex][serviceIndex].PortKeys = append([]portlease.Key(nil), stage[serviceIndex].PortKeys...)
+			copy.ServiceStages[stageIndex][serviceIndex].Process.Arguments = append([]string(nil), stage[serviceIndex].Process.Arguments...)
+			copy.ServiceStages[stageIndex][serviceIndex].Process.Environment = append([]string(nil), stage[serviceIndex].Process.Environment...)
+		}
+	}
 	return copy
 }
 

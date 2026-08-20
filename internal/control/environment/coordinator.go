@@ -236,55 +236,63 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 		}
 	}
 
-	for _, service := range plan.Services {
-		if err := coordinator.checkPortsBeforeLaunch(ctx, service.PortKeys); err != nil {
-			return coordinator.failStart(operation, result, err)
-		}
-		serviceResult := ServiceResult{
-			ID: service.ID, EnvironmentID: request.EnvironmentID, RunID: request.RunID,
-			OwnershipPath: filepath.Join(service.Process.RunDirectory, processhost.OwnershipFileName), Owned: true,
-			Readiness: service.Readiness,
-		}
-		entry := RollbackEntry{Kind: RollbackProcess, Armed: true, Process: cloneService(&serviceResult)}
-		entryIndex, err := coordinator.arm(ctx, &operation, PhaseLaunchingServices, entry)
-		if err != nil {
-			return coordinator.failStart(operation, result, err)
-		}
-		ownership, err := coordinator.processes.Start(ctx, service.Process)
-		if err != nil {
-			return coordinator.failStart(operation, result, err)
-		}
-		if ownership.EnvironmentID != request.EnvironmentID || ownership.ServiceID != service.ID ||
-			ownership.RunID != request.RunID {
-			operation.Rollback[entryIndex].Armed = false
-			_ = coordinator.journal.Update(ctx, operation)
-			return coordinator.failStart(operation, result, ErrForeignOwnership)
-		}
-		serviceResult.Process = ownership
-		serviceResult.Observation = ServiceObservation{
-			State: "running", ProcessCount: len(ownership.Members), ObservedAt: coordinator.now().UTC(),
-		}
-		result.Services = append(result.Services, serviceResult)
-		operation.Rollback[entryIndex].Process = cloneService(&serviceResult)
-		if err := coordinator.applied(ctx, &operation, entryIndex); err != nil {
-			return coordinator.failStart(operation, result, err)
-		}
+	serviceStages := plan.ServiceStages
+	if len(serviceStages) == 0 && len(plan.Services) != 0 {
+		serviceStages = [][]ServiceLaunch{plan.Services}
 	}
-
-	if len(plan.Services) != 0 {
+	for _, stage := range serviceStages {
+		stageStart := len(result.Services)
+		for _, service := range stage {
+			if err := coordinator.checkPortsBeforeLaunch(ctx, service.PortKeys); err != nil {
+				return coordinator.failStart(operation, result, err)
+			}
+			serviceResult := ServiceResult{
+				ID: service.ID, EnvironmentID: request.EnvironmentID, RunID: request.RunID,
+				OwnershipPath: filepath.Join(service.Process.RunDirectory, processhost.OwnershipFileName), Owned: true,
+				Readiness: service.Readiness,
+			}
+			entry := RollbackEntry{Kind: RollbackProcess, Armed: true, Process: cloneService(&serviceResult)}
+			entryIndex, err := coordinator.arm(ctx, &operation, PhaseLaunchingServices, entry)
+			if err != nil {
+				return coordinator.failStart(operation, result, err)
+			}
+			ownership, err := coordinator.processes.Start(ctx, service.Process)
+			if err != nil {
+				return coordinator.failStart(operation, result, err)
+			}
+			if ownership.EnvironmentID != request.EnvironmentID || ownership.ServiceID != service.ID ||
+				ownership.RunID != request.RunID {
+				operation.Rollback[entryIndex].Armed = false
+				_ = coordinator.journal.Update(ctx, operation)
+				return coordinator.failStart(operation, result, ErrForeignOwnership)
+			}
+			serviceResult.Process = ownership
+			serviceResult.Observation = ServiceObservation{
+				State: "running", ProcessCount: len(ownership.Members), ObservedAt: coordinator.now().UTC(),
+			}
+			result.Services = append(result.Services, serviceResult)
+			operation.Rollback[entryIndex].Process = cloneService(&serviceResult)
+			if err := coordinator.applied(ctx, &operation, entryIndex); err != nil {
+				return coordinator.failStart(operation, result, err)
+			}
+		}
 		if err := coordinator.checkpoint(ctx, &operation, PhaseWaitingReadiness); err != nil {
 			return coordinator.failStart(operation, result, err)
 		}
-		for index, service := range plan.Services {
+		for index, service := range stage {
 			err := coordinator.readiness.WaitReady(ctx, ReadinessTarget{
 				EnvironmentID: request.EnvironmentID, RunID: request.RunID,
-				Service: result.Services[index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,
+				Service: result.Services[stageStart+index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,
 			})
 			if err != nil {
 				return coordinator.failStart(operation, result, err)
 			}
 		}
-		for index, service := range plan.Services {
+	}
+
+	services := flattenedServiceStages(plan)
+	if len(services) != 0 {
+		for index, service := range services {
 			health, err := coordinator.readiness.CheckHealth(ctx, ReadinessTarget{
 				EnvironmentID: request.EnvironmentID, RunID: request.RunID,
 				Service: result.Services[index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,

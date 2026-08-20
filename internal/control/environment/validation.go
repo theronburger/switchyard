@@ -111,12 +111,16 @@ func validateExecutionPlan(
 	if len(plan.Initializations) != 0 && len(plan.Infrastructure) == 0 {
 		return ErrInvalidRequest
 	}
-	seenServices := make(map[string]struct{}, len(plan.Services))
+	services := flattenedServiceStages(plan)
+	if len(plan.Services) != 0 && len(plan.ServiceStages) != 0 {
+		return ErrInvalidRequest
+	}
+	seenServices := make(map[string]struct{}, len(services))
 	leaseKeys := make(map[portlease.Key]struct{}, len(leases))
 	for _, lease := range leases {
 		leaseKeys[lease.Key] = struct{}{}
 	}
-	for _, service := range plan.Services {
+	for _, service := range services {
 		if service.ID == "" || service.Process.EnvironmentID != environmentID ||
 			service.Process.ServiceID != service.ID || service.Process.RunID != runID ||
 			!filepath.IsAbs(service.Process.RunDirectory) {
@@ -145,7 +149,27 @@ func validateExecutionPlan(
 			seenServicePorts[key] = struct{}{}
 		}
 	}
+	for _, stage := range plan.ServiceStages {
+		if len(stage) == 0 {
+			return ErrInvalidRequest
+		}
+	}
 	return nil
+}
+
+func flattenedServiceStages(plan ExecutionPlan) []ServiceLaunch {
+	if len(plan.ServiceStages) == 0 {
+		return plan.Services
+	}
+	count := 0
+	for _, stage := range plan.ServiceStages {
+		count += len(stage)
+	}
+	services := make([]ServiceLaunch, 0, count)
+	for _, stage := range plan.ServiceStages {
+		services = append(services, stage...)
+	}
+	return services
 }
 
 func pathsOverlap(left, right string) bool {
