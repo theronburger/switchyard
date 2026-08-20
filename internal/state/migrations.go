@@ -148,6 +148,37 @@ DROP TABLE snapshot_head;
 DROP TABLE snapshot_revisions;
 `,
 	},
+	{
+		version: 7,
+		sql: `
+CREATE TABLE configuration_candidates (
+    digest TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    source_digest TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    payload_json BLOB NOT NULL,
+    repository_digests_json BLOB NOT NULL,
+    staged_at TEXT NOT NULL
+);
+
+CREATE TABLE configuration_revisions (
+    revision INTEGER PRIMARY KEY,
+    digest TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    source_digest TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    payload_json BLOB NOT NULL,
+    repository_digests_json BLOB NOT NULL,
+    accepted_at TEXT NOT NULL,
+    UNIQUE(digest)
+);
+
+CREATE TABLE configuration_head (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL REFERENCES configuration_revisions(revision)
+);
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {
