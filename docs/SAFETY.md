@@ -48,6 +48,15 @@ All material cleanup is two-phase:
 
 Plans expire when relevant state changes. The UI must make destructive scope legible.
 
+Apply is a claimed transaction with a fixed order:
+
+1. read-only revalidation inputs are gathered;
+2. authorization for exactly this plan revision and candidate list is claimed atomically in durable state, before any owned resource is touched — a request that loses the claim mutates nothing;
+3. each candidate is revalidated and removed in request order, and every outcome is journaled before the next candidate starts; the candidate currently being removed is recorded as in flight;
+4. completion records the result and consumes the plan in one transaction.
+
+A second apply of the same plan — concurrent, from another daemon process, or with a different candidate list — is refused (`CLEANUP_APPLY_IN_PROGRESS`, `CLEANUP_APPLY_MISMATCH`). Repeating the identical request after an interruption resumes the same claim: already-final outcomes are replayed from the journal, the in-flight candidate is attempted again, and the attempt count is reported. An in-flight candidate that no longer matches its plan identity, or whose removal failed part-way, is reported as `interrupted`, never as removed; its remaining files are still positively owned and re-plannable because removal deletes logs before the ownership marker. Repeating an identical request after completion replays the recorded result. An incomplete claim pins its plan against pruning even after the plan expires.
+
 ## Configuration and hooks
 
 - Personal configuration may contain absolute paths but no secrets.
