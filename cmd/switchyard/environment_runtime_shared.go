@@ -27,6 +27,19 @@ type environmentRuntime struct {
 	workspaceActions *daemon.WorkspaceActionService
 	profileActions   *daemon.ProfileActionService
 	observerDone     <-chan error
+	// runRoots maps each configured environment to the run directory its
+	// plans launch beneath, so operation diagnostics resolve log references
+	// against exactly the tree the runners wrote.
+	runRoots daemon.EnvironmentRunRootMap
+}
+
+// EnvironmentRunRoots is the resolver operation diagnostics use for
+// environment-scoped log references.
+func (runtime *environmentRuntime) EnvironmentRunRoots() daemon.EnvironmentRunRoots {
+	if runtime.runRoots == nil {
+		return daemon.EnvironmentRunRootMap{}
+	}
+	return runtime.runRoots
 }
 
 func (runtime *environmentRuntime) CloseAndWait(ctx context.Context) error {

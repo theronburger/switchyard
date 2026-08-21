@@ -185,7 +185,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 			return coordinator.failStart(operation, result, err)
 		}
 		if err := coordinator.preparations.Run(ctx, clonePreparation(preparation)); err != nil {
-			return coordinator.failStart(operation, result, err)
+			return coordinator.failStart(operation, result, preparationFailure(ctx, preparation, err))
 		}
 	}
 
@@ -234,7 +234,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 			return coordinator.failStart(operation, result, err)
 		}
 		if err := coordinator.preparations.Run(ctx, clonePreparation(initialization)); err != nil {
-			return coordinator.failStart(operation, result, err)
+			return coordinator.failStart(operation, result, preparationFailure(ctx, initialization, err))
 		}
 	}
 
@@ -287,7 +287,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 				Service: result.Services[stageStart+index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,
 			})
 			if err != nil {
-				return coordinator.failStart(operation, result, err)
+				return coordinator.failStart(operation, result, readinessFailure(ctx, request.RunID, service, err))
 			}
 		}
 	}
@@ -300,7 +300,7 @@ func (coordinator *Coordinator) Start(ctx context.Context, request StartRequest)
 				Service: result.Services[index], Ports: cloneLeases(result.Ports), Spec: service.Readiness,
 			})
 			if err != nil {
-				return coordinator.failStart(operation, result, err)
+				return coordinator.failStart(operation, result, healthFailure(ctx, request.RunID, service, err))
 			}
 			result.Services[index].Health = health
 		}
@@ -340,7 +340,7 @@ func (coordinator *Coordinator) verifyStartedProcesses(
 			return ErrForeignOwnership
 		}
 		if observation.State != "running" || observation.MemberCount <= 0 {
-			return ErrProcessNotRunning
+			return exitedFailure(ctx, result.Services[index])
 		}
 		result.Services[index].Observation = serviceObservation(observation, nil, coordinator.now().UTC())
 	}

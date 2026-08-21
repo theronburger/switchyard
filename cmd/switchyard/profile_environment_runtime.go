@@ -107,6 +107,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	}
 	environments := make([]configuredEnvironment, 0)
 	registrations := make([]profilecontrol.Registration, 0)
+	runRoots := make(daemon.EnvironmentRunRootMap)
 	workspaceRegistrations := make([]workspacecontrol.ProfileRegistration, 0)
 	for _, repository := range discovered.Repositories {
 		profile, found := discovered.Profiles[repository.ID]
@@ -121,6 +122,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 			}
 			environmentID := stableConfiguredEnvironmentID(profileKey, worktree.ID)
 			worktreeRoot := filepath.Join(runtimeRoot, "repositories", profileKey, worktree.ID)
+			runRoots[environmentID] = profilecontrol.EnvironmentRunRoot(runtimeRoot, profileKey, worktree.ID, environmentID)
 			homeDirectory := filepath.Join(worktreeRoot, "home")
 			temporaryDirectory := filepath.Join(worktreeRoot, "tmp")
 			for _, directory := range []string{worktreeRoot, homeDirectory, temporaryDirectory} {
@@ -304,6 +306,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	go func() { observerDone <- observer.Run(ctx) }()
 	return &environmentRuntime{
 		actions: actions, workspaceActions: workspaceActions, profileActions: profileActions, observerDone: observerDone,
+		runRoots: runRoots,
 	}, nil
 }
 

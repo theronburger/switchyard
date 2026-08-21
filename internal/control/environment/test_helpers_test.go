@@ -447,9 +447,10 @@ func (host *fakeProcesses) Reconcile(context.Context, string) (processhost.Obser
 }
 
 type fakeReadiness struct {
-	err     error
-	entered chan<- struct{}
-	block   <-chan struct{}
+	err       error
+	healthErr error
+	entered   chan<- struct{}
+	block     <-chan struct{}
 }
 
 type staticPlanner struct {
@@ -561,7 +562,10 @@ func (readiness *fakeReadiness) WaitReady(ctx context.Context, _ ReadinessTarget
 	return nil
 }
 
-func (*fakeReadiness) CheckHealth(context.Context, ReadinessTarget) (HealthReport, error) {
+func (readiness *fakeReadiness) CheckHealth(context.Context, ReadinessTarget) (HealthReport, error) {
+	if readiness.healthErr != nil {
+		return HealthReport{}, readiness.healthErr
+	}
 	return HealthReport{Readiness: "ready", Health: "healthy"}, nil
 }
 

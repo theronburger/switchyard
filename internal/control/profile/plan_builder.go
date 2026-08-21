@@ -51,8 +51,8 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	for _, lease := range request.AssignedPorts {
 		leases[lease.Key] = lease
 	}
-	runRoot := filepath.Join(registration.RuntimeRoot, "repositories", registration.ProfileKey, registration.WorktreeID,
-		"environments", registration.EnvironmentID, "runs", request.RunID)
+	runRoot := filepath.Join(EnvironmentRunRoot(registration.RuntimeRoot, registration.ProfileKey, registration.WorktreeID,
+		registration.EnvironmentID), request.RunID)
 	plan := environmentcontrol.ExecutionPlan{}
 	artifactSet := make(map[string]struct{})
 	infrastructureSet := make(map[string]struct{})
@@ -319,6 +319,13 @@ func finiteCommand(registration Registration, runRoot, runID, serviceID, id stri
 		Directory:    directory,
 		RunDirectory: filepath.Join(runRoot, "preparations", serviceID, id), Timeout: duration,
 	}, nil
+}
+
+// EnvironmentRunRoot is the one directory beneath which every run of a
+// configured environment is launched and from which operation diagnostics
+// resolve environment-scoped log references. Writers and readers share it.
+func EnvironmentRunRoot(runtimeRoot, profileKey, worktreeID, environmentID string) string {
+	return filepath.Join(runtimeRoot, "repositories", profileKey, worktreeID, "environments", environmentID, "runs")
 }
 
 func resolveEnvironment(registration Registration, runRoot, serviceID string, targets map[string]configuration.ValueRef, leases map[portlease.Key]portlease.Lease, layers ...map[string]configuration.ValueRef) ([]string, error) {

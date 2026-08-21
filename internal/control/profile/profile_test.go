@@ -155,8 +155,16 @@ func TestConfiguredReadinessTimeoutOverridesTheDefault(t *testing.T) {
 		Spec:    environmentcontrol.ReadinessSpec{ID: readinessID("web")},
 	}
 	err = checker.WaitReady(context.Background(), target)
-	if err == nil || errors.Is(err, context.DeadlineExceeded) || err.Error() != "service readiness timed out" {
+	if !errors.Is(err, environmentcontrol.ErrReadinessTimedOut) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("readiness error: %v", err)
+	}
+	// A caller cancellation is reported as cancellation, never as the
+	// service's readiness timeout.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = checker.WaitReady(cancelled, target)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, environmentcontrol.ErrReadinessTimedOut) {
+		t.Fatalf("cancelled readiness error: %v", err)
 	}
 }
 

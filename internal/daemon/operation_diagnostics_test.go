@@ -21,10 +21,21 @@ func (store diagnosticOperationStore) ReadOperation(context.Context, string) (co
 	return store.operation, store.err
 }
 
+// testRunRoots lays environment runs out exactly as the plan builder does:
+// beneath repositories/<profileKey>/<worktreeID>/environments/<envID>/runs.
+func testRunRoots(runtimeRoot string, environmentIDs ...string) EnvironmentRunRootMap {
+	roots := make(EnvironmentRunRootMap, len(environmentIDs))
+	for _, environmentID := range environmentIDs {
+		roots[environmentID] = filepath.Join(runtimeRoot, "repositories", "sample", "wt_01", "environments", environmentID, "runs")
+	}
+	return roots
+}
+
 func TestOperationDiagnosticsReaderReturnsBoundedRedactedOwnedLogs(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	logReference := "run_01/preparations/billing-service/command-0"
-	logDirectory := filepath.Join(runtimeRoot, "environments", "env_01", "runs", filepath.FromSlash(logReference))
+	runRoots := testRunRoots(runtimeRoot, "env_01")
+	logDirectory := filepath.Join(runRoots["env_01"], filepath.FromSlash(logReference))
 	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +55,7 @@ func TestOperationDiagnosticsReaderReturnsBoundedRedactedOwnedLogs(t *testing.T)
 	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_01", EnvironmentID: "env_01",
 		Error: &contractv2.ContractError{LogReference: logReference},
-	}}, runtimeRoot)
+	}}, runtimeRoot, runRoots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +77,8 @@ func TestOperationDiagnosticsReaderReturnsBoundedRedactedOwnedLogs(t *testing.T)
 func TestOperationDiagnosticsReaderRefusesUnownedOrInvalidPaths(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	logReference := "run_01/preparations/service/command-0"
-	logDirectory := filepath.Join(runtimeRoot, "environments", "env_01", "runs", filepath.FromSlash(logReference))
+	runRoots := testRunRoots(runtimeRoot, "env_01")
+	logDirectory := filepath.Join(runRoots["env_01"], filepath.FromSlash(logReference))
 	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +92,7 @@ func TestOperationDiagnosticsReaderRefusesUnownedOrInvalidPaths(t *testing.T) {
 	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_01", EnvironmentID: "env_01",
 		Error: &contractv2.ContractError{LogReference: logReference},
-	}}, runtimeRoot)
+	}}, runtimeRoot, runRoots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +110,7 @@ func TestOperationDiagnosticsReaderRefusesUnownedOrInvalidPaths(t *testing.T) {
 
 func TestOperationDiagnosticsReaderDistinguishesMissingOperationFromStoreFailure(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
-	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{err: state.ErrOperationNotFound}, runtimeRoot)
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{err: state.ErrOperationNotFound}, runtimeRoot, EnvironmentRunRootMap{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +139,7 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogs(t *testing.T) {
 	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_09", Kind: ProfileActionOperationKind, EnvironmentID: "env_01",
 		Error: &contractv2.ContractError{LogReference: logReference},
-	}}, runtimeRoot)
+	}}, runtimeRoot, testRunRoots(runtimeRoot, "env_01"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +152,7 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogs(t *testing.T) {
 	other, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_10", Kind: "environment.start", EnvironmentID: "env_01",
 		Error: &contractv2.ContractError{LogReference: "../../actions/" + logReference},
-	}}, runtimeRoot)
+	}}, runtimeRoot, testRunRoots(runtimeRoot, "env_01"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +175,7 @@ func TestOperationDiagnosticsReaderResolvesProfileActionLogsWithoutEnvironment(t
 	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: contractv2.Operation{
 		ID: "operation_11", Kind: ProfileActionOperationKind,
 		Error: &contractv2.ContractError{LogReference: logReference},
-	}}, runtimeRoot)
+	}}, runtimeRoot, testRunRoots(runtimeRoot, "env_01"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +244,7 @@ func TestOperationDiagnosticsReaderRefusesForeignProfileActionLogs(t *testing.T)
 	if err := os.WriteFile(filepath.Join(leakyDirectory, "stdout.log"), []byte("leaky"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{}, runtimeRoot)
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{}, runtimeRoot, EnvironmentRunRootMap{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,5 +302,86 @@ func TestRedactDiagnosticLogRemovesRealisticSecretShapes(t *testing.T) {
 	}
 	if !strings.Contains(output, "postgresql://[redacted]@h:5432/d") {
 		t.Fatalf("URI userinfo was not redacted whole:\n%s", output)
+	}
+}
+
+// A readiness timeout on an environment start references the failed
+// service's own run directory. The reader must resolve that reference
+// beneath the run root the plan builder launched under, and must refuse
+// it for an environment it does not configure or a run root that leaves the
+// runtime tree.
+func TestOperationDiagnosticsReaderResolvesServiceReadinessLogsBeneathEnvironmentRunRoot(t *testing.T) {
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runRoots := testRunRoots(runtimeRoot, "env_01")
+	logReference := "run_01/services/web"
+	logDirectory := filepath.Join(runRoots["env_01"], filepath.FromSlash(logReference))
+	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stderr := "listen tcp 127.0.0.1:43121: bind: address already in use\nDATABASE_URL=postgres://user:secret@localhost/db\n"
+	if err := os.WriteFile(filepath.Join(logDirectory, "stderr.log"), []byte(stderr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	operation := contractv2.Operation{
+		ID: "operation_30", Kind: "environment.start", EnvironmentID: "env_01",
+		Error: &contractv2.ContractError{
+			Code: "ENVIRONMENT_SERVICE_READINESS_TIMED_OUT", LogReference: logReference,
+			NextAction: "inspect_operation_diagnostics",
+		},
+	}
+	reader, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: operation}, runtimeRoot, runRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := reader.ReadOperationDiagnostics(context.Background(), "operation_30", 0)
+	if err != nil || len(diagnostics.Excerpts) != 1 || diagnostics.Excerpts[0].Stream != "stderr" ||
+		diagnostics.LogReference != logReference || diagnostics.EnvironmentID != "env_01" {
+		t.Fatalf("service diagnostics: %+v err=%v", diagnostics, err)
+	}
+	content := diagnostics.Excerpts[0].Content
+	if !strings.Contains(content, "address already in use") || strings.Contains(content, "secret") || !diagnostics.Excerpts[0].Redacted {
+		t.Fatalf("service excerpt not bounded and redacted: %q", content)
+	}
+
+	// The old flat layout is not consulted: the same reference with no
+	// configured run root is unavailable rather than guessed.
+	unconfigured, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: operation}, runtimeRoot, EnvironmentRunRootMap{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unconfigured.ReadOperationDiagnostics(context.Background(), "operation_30", 0); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+		t.Fatalf("unconfigured environment was served: %v", err)
+	}
+
+	// A run root outside the runtime tree is refused even when configured.
+	foreignDirectory := filepath.Join(t.TempDir(), "runs", "run_01", "services", "web")
+	if err := os.MkdirAll(foreignDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreignDirectory, "stderr.log"), []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escaped, err := NewOperationDiagnosticsReader(diagnosticOperationStore{operation: operation}, runtimeRoot,
+		EnvironmentRunRootMap{"env_01": filepath.Dir(filepath.Dir(filepath.Dir(foreignDirectory)))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := escaped.ReadOperationDiagnostics(context.Background(), "operation_30", 0); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+		t.Fatalf("run root outside the runtime tree was served: %v", err)
+	}
+
+	// A reference that climbs out of the run root toward another environment is refused.
+	reader.store = diagnosticOperationStore{operation: contractv2.Operation{
+		ID: "operation_31", Kind: "environment.start", EnvironmentID: "env_01",
+		Error: &contractv2.ContractError{LogReference: "../../env_02/runs/run_01/services/web"},
+	}}
+	if _, err := reader.ReadOperationDiagnostics(context.Background(), "operation_31", 0); !errors.Is(err, ErrOperationDiagnosticsUnavailable) {
+		t.Fatalf("traversal out of the environment run root was served: %v", err)
+	}
+}
+
+func TestNewOperationDiagnosticsReaderRequiresRunRoots(t *testing.T) {
+	if _, err := NewOperationDiagnosticsReader(diagnosticOperationStore{}, filepath.Join(t.TempDir(), "runtime"), nil); !errors.Is(err, ErrOperationDiagnosticsInvalid) {
+		t.Fatalf("nil run roots accepted: %v", err)
 	}
 }

@@ -80,7 +80,7 @@ func TestRuntimeRootIsSharedByWritersReadersAndPlanners(t *testing.T) {
 	if got := newCleanupService(store, journal, paths).RuntimeRoot; got != runtimeRoot {
 		t.Fatalf("cleanup planner root %q, want %q", got, runtimeRoot)
 	}
-	diagnostics, err := newOperationDiagnosticsReader(store, paths)
+	diagnostics, err := newOperationDiagnosticsReader(store, paths, runtime.EnvironmentRunRoots())
 	if err != nil {
 		t.Fatal(err)
 	}

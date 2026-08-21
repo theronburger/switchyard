@@ -119,8 +119,8 @@ func (paths applicationPaths) cacheRoot() string {
 	return filepath.Join(paths.root, "caches")
 }
 
-func newOperationDiagnosticsReader(store *state.Store, paths applicationPaths) (*daemon.OperationDiagnosticsReader, error) {
-	return daemon.NewOperationDiagnosticsReader(store, paths.runtimeRoot())
+func newOperationDiagnosticsReader(store *state.Store, paths applicationPaths, runRoots daemon.EnvironmentRunRoots) (*daemon.OperationDiagnosticsReader, error) {
+	return daemon.NewOperationDiagnosticsReader(store, paths.runtimeRoot(), runRoots)
 }
 
 func newCleanupService(store *state.Store, journal *state.WorkspaceJournal, paths applicationPaths) *daemon.CleanupService {
@@ -237,7 +237,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	operationDiagnostics, err := newOperationDiagnosticsReader(store, paths)
+	operationDiagnostics, err := newOperationDiagnosticsReader(store, paths, runtime.EnvironmentRunRoots())
 	if err != nil {
 		return err
 	}

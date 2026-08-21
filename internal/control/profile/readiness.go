@@ -53,8 +53,11 @@ func (checker ReadinessChecker) WaitReady(ctx context.Context, target environmen
 	for {
 		ready, err := checker.run(waitContext, probes)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if errors.Is(waitContext.Err(), context.DeadlineExceeded) {
-				return errors.New("service readiness timed out")
+				return environmentcontrol.ErrReadinessTimedOut
 			}
 			return err
 		}
@@ -65,7 +68,10 @@ func (checker ReadinessChecker) WaitReady(ctx context.Context, target environmen
 		select {
 		case <-waitContext.Done():
 			timer.Stop()
-			return errors.New("service readiness timed out")
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return environmentcontrol.ErrReadinessTimedOut
 		case <-timer.C:
 		}
 	}

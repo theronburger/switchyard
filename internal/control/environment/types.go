@@ -16,6 +16,10 @@ var (
 	ErrForeignOwnership  = errors.New("environment contains a foreign or unverifiable resource")
 	ErrProtectedInfra    = errors.New("container infrastructure is protected from mutation")
 	ErrProcessNotRunning = errors.New("environment process is not running after readiness")
+	// ErrReadinessTimedOut is returned by a ReadinessChecker when a service's
+	// own readiness timeout elapses. It is deliberately not
+	// context.DeadlineExceeded: the operation failed, it was not cancelled.
+	ErrReadinessTimedOut = errors.New("service readiness timed out")
 )
 
 type OperationKind string

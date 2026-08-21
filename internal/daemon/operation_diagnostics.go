@@ -43,16 +43,33 @@ type OperationDiagnosticsStore interface {
 	ReadOperation(context.Context, string) (contractv2.Operation, error)
 }
 
+// EnvironmentRunRoots resolves the owned directory beneath the runtime root
+// that holds one configured environment's run trees. Environment-scoped log
+// references are relative to that directory; an environment the daemon does
+// not currently configure has no resolvable logs.
+type EnvironmentRunRoots interface {
+	EnvironmentRunRoot(environmentID string) (string, bool)
+}
+
+// EnvironmentRunRootMap is a fixed environment-to-run-root resolver.
+type EnvironmentRunRootMap map[string]string
+
+func (roots EnvironmentRunRootMap) EnvironmentRunRoot(environmentID string) (string, bool) {
+	root, found := roots[environmentID]
+	return root, found
+}
+
 type OperationDiagnosticsReader struct {
 	store       OperationDiagnosticsStore
 	runtimeRoot string
+	runRoots    EnvironmentRunRoots
 }
 
-func NewOperationDiagnosticsReader(store OperationDiagnosticsStore, runtimeRoot string) (*OperationDiagnosticsReader, error) {
-	if store == nil || !cleanAbsolutePath(runtimeRoot) {
+func NewOperationDiagnosticsReader(store OperationDiagnosticsStore, runtimeRoot string, runRoots EnvironmentRunRoots) (*OperationDiagnosticsReader, error) {
+	if store == nil || runRoots == nil || !cleanAbsolutePath(runtimeRoot) {
 		return nil, ErrOperationDiagnosticsInvalid
 	}
-	return &OperationDiagnosticsReader{store: store, runtimeRoot: runtimeRoot}, nil
+	return &OperationDiagnosticsReader{store: store, runtimeRoot: runtimeRoot, runRoots: runRoots}, nil
 }
 
 // RuntimeRoot is the tree the reader resolves log references beneath.
@@ -127,7 +144,13 @@ func (reader *OperationDiagnosticsReader) logDirectory(kind, environmentID, refe
 		if environmentID == "" || strings.ContainsAny(environmentID, "/\\\x00") || environmentID == "." || environmentID == ".." {
 			return "", false
 		}
-		directory = filepath.Join(reader.runtimeRoot, "environments", environmentID, "runs", cleanReference)
+		// The run root is the same directory the plan builder launched the
+		// run beneath; the reader never derives it from the reference.
+		runRoot, found := reader.runRoots.EnvironmentRunRoot(environmentID)
+		if !found || !cleanAbsolutePath(runRoot) || !pathContainedBy(reader.runtimeRoot, runRoot) {
+			return "", false
+		}
+		directory = filepath.Join(runRoot, cleanReference)
 	}
 	return directory, pathContainedBy(reader.runtimeRoot, directory)
 }
