@@ -72,10 +72,18 @@ type Cache struct {
 	Directory string `yaml:"directory" json:"directory"`
 }
 
+// EnvironmentSource declares one bounded repository-owned dotenv file whose
+// allowlisted entries are compiled into child process environments. The file
+// is parsed as data, never sourced as shell, and only the names in Allow may
+// cross into a child. Targets restricts the source to exact target IDs; an
+// empty list applies it to every target. Optional permits a missing file.
 type EnvironmentSource struct {
-	Kind string `yaml:"kind" json:"kind"`
-	Root string `yaml:"root" json:"root"`
-	Path string `yaml:"path" json:"path"`
+	Kind     string   `yaml:"kind" json:"kind"`
+	Root     string   `yaml:"root" json:"root"`
+	Path     string   `yaml:"path" json:"path"`
+	Optional bool     `yaml:"optional" json:"optional"`
+	Targets  []string `yaml:"targets" json:"targets"`
+	Allow    []string `yaml:"allow" json:"allow"`
 }
 
 type Target struct {

@@ -3,6 +3,7 @@ package configuration
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -221,5 +222,74 @@ func TestParseValidatesProfileActions(t *testing.T) {
 		if _, err := Parse([]byte(withActions(actions))); err == nil {
 			t.Fatalf("invalid action accepted:\n%s", actions)
 		}
+	}
+}
+
+func TestParseValidatesEnvironmentSources(t *testing.T) {
+	withSources := func(sources string) string {
+		return strings.Replace(strings.Replace(validConfiguration, "environmentSources: {}", "environmentSources:\n"+sources, 1),
+			"local: {}", "local: {}\n      staging: {}", 1)
+	}
+	valid := withSources(`      base:
+        kind: dotenv
+        root: worktree
+        path: .env
+        optional: true
+        allow: [APP_NAME, LOG_LEVEL]
+      staging:
+        kind: dotenv
+        root: repository
+        path: config/staging.env
+        targets: [staging]
+        allow: [LOG_FORMAT]`)
+	loaded, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := loaded.Document.Repositories["sample-one"].EnvironmentSources["base"]
+	if !source.Optional || len(source.Allow) != 2 || len(source.Targets) != 0 {
+		t.Fatalf("parsed source: %+v", source)
+	}
+	rejected := map[string]string{
+		"shell kind":     `      base: {kind: shell, root: worktree, path: .env, allow: [APP_NAME]}`,
+		"bad root":       `      base: {kind: dotenv, root: runtime, path: .env, allow: [APP_NAME]}`,
+		"absolute":       `      base: {kind: dotenv, root: worktree, path: /etc/environment, allow: [APP_NAME]}`,
+		"escape":         `      base: {kind: dotenv, root: worktree, path: ../other/.env, allow: [APP_NAME]}`,
+		"dot path":       `      base: {kind: dotenv, root: worktree, path: ., allow: [APP_NAME]}`,
+		"empty allow":    `      base: {kind: dotenv, root: worktree, path: .env, allow: []}`,
+		"bad ID":         `      Base: {kind: dotenv, root: worktree, path: .env, allow: [APP_NAME]}`,
+		"PATH":           `      base: {kind: dotenv, root: worktree, path: .env, allow: [PATH]}`,
+		"HOME":           `      base: {kind: dotenv, root: worktree, path: .env, allow: [HOME]}`,
+		"TMPDIR":         `      base: {kind: dotenv, root: worktree, path: .env, allow: [TMPDIR]}`,
+		"DYLD":           `      base: {kind: dotenv, root: worktree, path: .env, allow: [DYLD_INSERT_LIBRARIES]}`,
+		"LD":             `      base: {kind: dotenv, root: worktree, path: .env, allow: [LD_PRELOAD]}`,
+		"BASH_ENV":       `      base: {kind: dotenv, root: worktree, path: .env, allow: [BASH_ENV]}`,
+		"SWITCHYARD_":    `      base: {kind: dotenv, root: worktree, path: .env, allow: [SWITCHYARD_TOKEN]}`,
+		"bad name":       `      base: {kind: dotenv, root: worktree, path: .env, allow: [APP-NAME]}`,
+		"dup name":       `      base: {kind: dotenv, root: worktree, path: .env, allow: [APP_NAME, APP_NAME]}`,
+		"unknown target": `      base: {kind: dotenv, root: worktree, path: .env, targets: [production], allow: [APP_NAME]}`,
+		"dup target":     `      base: {kind: dotenv, root: worktree, path: .env, targets: [local, local], allow: [APP_NAME]}`,
+		"ambiguous everywhere": `      a: {kind: dotenv, root: worktree, path: a.env, allow: [APP_NAME]}
+      b: {kind: dotenv, root: worktree, path: b.env, allow: [APP_NAME]}`,
+		"ambiguous on one target": `      a: {kind: dotenv, root: worktree, path: a.env, allow: [APP_NAME]}
+      b: {kind: dotenv, root: worktree, path: b.env, targets: [staging], allow: [APP_NAME]}`,
+		"unknown field": `      base: {kind: dotenv, root: worktree, path: .env, allow: [APP_NAME], key: APP_NAME}`,
+	}
+	for name, sources := range rejected {
+		if _, err := Parse([]byte(withSources(sources))); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+	disjoint := withSources(`      a: {kind: dotenv, root: worktree, path: a.env, targets: [local], allow: [APP_NAME]}
+      b: {kind: dotenv, root: worktree, path: b.env, targets: [staging], allow: [APP_NAME]}`)
+	if _, err := Parse([]byte(disjoint)); err != nil {
+		t.Fatalf("disjoint targets were rejected: %v", err)
+	}
+	var many strings.Builder
+	for index := 0; index <= 32; index++ {
+		many.WriteString("      s" + strconv.Itoa(index) + ": {kind: dotenv, root: worktree, path: .env, allow: [N" + strconv.Itoa(index) + "]}\n")
+	}
+	if _, err := Parse([]byte(withSources(many.String()))); err == nil {
+		t.Fatal("source count bound was not enforced")
 	}
 }

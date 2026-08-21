@@ -77,7 +77,7 @@ func CompileAction(request ActionCompileRequest) (actioncontrol.ExactCommand, er
 	if err != nil {
 		return actioncontrol.ExactCommand{}, err
 	}
-	environment, err := resolveEnvironment(registration, runRoot, request.ServiceID, nil, leases, command.Environment)
+	environment, err := resolveEnvironment(registration, runRoot, request.ServiceID, nil, leases, nil, command.Environment)
 	if err != nil {
 		return actioncontrol.ExactCommand{}, err
 	}

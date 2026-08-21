@@ -249,6 +249,24 @@ Targets are deterministic single-parent inheritance graphs. Environment preceden
 
 Maps override explicitly. Lists replace unless the schema defines set semantics. Remote-write targets require confirmation on every start.
 
+An environment source is a bounded repository-owned dotenv file parsed as data, never sourced as shell. Only the explicitly allowlisted names reach a child, loader and trusted-base names (`PATH`, `HOME`, `TMPDIR`, `DYLD_*`, `LD_*`, `BASH_ENV`, `SWITCHYARD_*`, ...) are never accepted, and two sources that apply to the same target may not allow the same name, so no runtime ordering between sources exists. Values are read at plan compilation, held in memory for the launch, and never persisted or logged.
+
+```yaml
+environmentSources:
+  defaults:
+    kind: dotenv
+    root: worktree
+    path: .env
+    optional: true
+    allow: [APP_NAME, LOG_LEVEL]
+  staging:
+    kind: dotenv
+    root: repository
+    path: config/staging.env
+    targets: [staging]
+    allow: [LOG_FORMAT]
+```
+
 Services declare exact commands, dependencies, ports, published URLs, readiness, health, infrastructure, initialization, and private artifacts. Dependency and target graphs must be acyclic. The flat v1 `ExecutionPlan` must become ordered stages: each stage launches its independent services and passes a readiness barrier before dependants in the next stage may launch. Rollback and stop traverse the accepted concrete stages in reverse. Dependencies are not merely presentation or sort hints.
 
 Mutable infrastructure remains environment-scoped in v1. Only immutable content-addressed caches may be shared until namespacing and reference-counted teardown have independent runtime proofs.

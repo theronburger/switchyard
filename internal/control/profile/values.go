@@ -19,6 +19,14 @@ import (
 
 const maximumValueSourceBytes = 1024 * 1024
 
+var (
+	errValueSourceUnavailable = errors.New("value source is unavailable")
+	// errValueSourceMissing reports that a path segment does not exist. It is
+	// distinguishable so an optional environment source can tolerate an absent
+	// file without tolerating a symlink, a permission failure, or a missing root.
+	errValueSourceMissing = fmt.Errorf("%w: path does not exist", errValueSourceUnavailable)
+)
+
 // ReadValues resolves bounded repository-owned inputs without placing their
 // contents in configuration history, durable state, or diagnostics.
 func ReadValues(profile configuration.Repository, repositoryRoot, worktreeRoot string) (map[string]string, error) {
@@ -60,7 +68,7 @@ func readBoundedValueFile(root, relative string) ([]byte, error) {
 	}
 	rootDescriptor, err := unix.Open(root, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, errors.New("value source is unavailable")
+		return nil, errValueSourceUnavailable
 	}
 	defer func() { _ = unix.Close(rootDescriptor) }()
 	descriptor := rootDescriptor
@@ -75,7 +83,10 @@ func readBoundedValueFile(root, relative string) ([]byte, error) {
 			_ = unix.Close(descriptor)
 		}
 		if openErr != nil {
-			return nil, errors.New("value source is unavailable")
+			if errors.Is(openErr, unix.ENOENT) || errors.Is(openErr, unix.ENOTDIR) {
+				return nil, errValueSourceMissing
+			}
+			return nil, errValueSourceUnavailable
 		}
 		descriptor = next
 	}
