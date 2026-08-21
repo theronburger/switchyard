@@ -28,7 +28,7 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
@@ -198,7 +198,7 @@ jobs:
             shasum -a 256 "$archive" "$sbom" appcast.xml > checksums.txt
           )
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4.2.2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/switchyard_${{ steps.release_version.outputs.version }}_macos_universal.zip
