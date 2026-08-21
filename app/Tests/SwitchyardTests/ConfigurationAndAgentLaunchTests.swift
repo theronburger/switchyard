@@ -374,64 +374,6 @@ private func contractError(_ code: String, _ message: String) -> ContractError {
     )
 }
 
-private struct StubLifecycleController: DaemonLifecycleControlling {
-    let result: DaemonLifecycleResult
-    func refresh() async -> DaemonLifecycleResult { result }
-    func repair() async -> DaemonLifecycleResult { result }
-}
-
-private actor RecordingWorkspaceActions: WorkspaceActionSubmitting {
-    let receipt: MutationReceipt
-    private(set) var prepares: [PrepareWorktreeRequest] = []
-    init(receipt: MutationReceipt) { self.receipt = receipt }
-    func createWorktree(_ request: CreateWorktreeRequest) async throws -> MutationReceipt { receipt }
-    func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt { receipt }
-    func archiveWorktree(_ request: ArchiveWorktreeRequest) async throws -> MutationReceipt { receipt }
-    func prepareWorktree(_ request: PrepareWorktreeRequest) async throws -> MutationReceipt {
-        prepares.append(request)
-        return receipt
-    }
-}
-
-private actor RecordingOccupancyActions: OccupancyActionSubmitting {
-    enum Mode { case succeed, refuse, refuseRelease }
-    let mode: Mode
-    private(set) var acquires: [AcquireOccupancyRequest] = []
-    private(set) var releases: [ReleaseOccupancyRequest] = []
-    /// Every call in arrival order, so tests can assert ordering against launches.
-    private(set) var calls: [String] = []
-    init(mode: Mode = .succeed) { self.mode = mode }
-    func note(_ call: String) { calls.append(call) }
-
-    func acquireOccupancy(_ request: AcquireOccupancyRequest) async throws -> OccupancyLease {
-        acquires.append(request)
-        calls.append("acquire")
-        if mode == .refuse {
-            throw DaemonClientError.contract(try ContractDecoder().decode(ContractError.self, from: Data("""
-            {"code":"OCCUPANCY_LIMIT","message":"This worktree already holds the maximum number of handoff leases.","retryable":false}
-            """.utf8)))
-        }
-        return try ContractDecoder().decode(OccupancyLease.self, from: Data("""
-        {"id":"occupancy_test","worktreeId":"\(request.worktreeId)","holderKind":"\(request.holderKind)",
-         "holderLabel":"\(request.holderLabel)","state":"held","acquiredAt":"2026-08-21T09:05:00Z"}
-        """.utf8))
-    }
-
-    func releaseOccupancy(_ request: ReleaseOccupancyRequest) async throws -> OccupancyLease {
-        releases.append(request)
-        calls.append("release")
-        if mode == .refuseRelease {
-            throw DaemonClientError.contract(try ContractDecoder().decode(ContractError.self, from: Data("""
-            {"code":"DAEMON_UNAVAILABLE","message":"The helper stopped responding.","retryable":true}
-            """.utf8)))
-        }
-        return try ContractDecoder().decode(OccupancyLease.self, from: Data("""
-        {"id":"\(request.leaseId)","worktreeId":"\(request.worktreeId)","holderKind":"agent-task",
-         "holderLabel":"Codex task","state":"released","acquiredAt":"2026-08-21T09:05:00Z","releasedAt":"2026-08-21T09:45:00Z"}
-        """.utf8))
-    }
-}
-
 @MainActor
 struct ConfigurationAppModelTests {
     private static var fixtureURL: URL {
@@ -439,6 +381,14 @@ struct ConfigurationAppModelTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "contracts/v2/fixtures/status.json")
+    }
+
+    @Test
+    func `a worktree deep link received before status loads is applied after refresh`() async {
+        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL)
+        #expect(!model.selectWorktree(withId: "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX"))
+        await model.refresh()
+        #expect(model.selection == .environment("env_01J5EZ5VXM3B4RYQ6WP8QH8T4A"))
     }
 
     @Test
@@ -616,360 +566,60 @@ struct ConfigurationAppModelTests {
         #expect(removed.desired?.repositories.isEmpty == true)
     }
 
-    @Test
-    func `agent handoff prepares an unprepared worktree through the daemon and waits for the operation`() async throws {
-        var root = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: Self.fixtureURL)) as? [String: Any])
-        var repositories = try #require(root["repositories"] as? [[String: Any]])
-        var worktrees = try #require(repositories[0]["worktrees"] as? [[String: Any]])
-        worktrees[0]["workspace"] = nil
-        repositories[0]["worktrees"] = worktrees
-        root["repositories"] = repositories
-        var operations = try #require(root["operations"] as? [[String: Any]])
-        operations.append([
-            "id": "operation_prepare_1", "kind": "prepareWorktree", "state": "succeeded",
-            "createdAt": "2026-08-14T09:56:00Z", "updatedAt": "2026-08-14T09:56:30Z",
-        ])
-        root["operations"] = operations
-        let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: JSONSerialization.data(withJSONObject: root))
-        let session = DaemonSession(
-            instanceId: snapshot.daemon.instanceId, daemonVersion: snapshot.daemon.version,
-            endpoint: EndpointDescriptor(
-                schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 49402,
-                daemonVersion: snapshot.daemon.version, instanceId: snapshot.daemon.instanceId,
-                pid: 4242, createdAt: snapshot.daemon.startedAt
-            )
-        )
-        let report = DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .passed("healthy"))])
-        let receipt = try ContractDecoder().decode(MutationReceipt.self, from: Data("""
-        {"schemaVersion":2,"requestId":"app_x","operationId":"operation_prepare_1","acceptedAt":"2026-08-14T09:56:00Z"}
-        """.utf8))
-        let workspaceActions = RecordingWorkspaceActions(receipt: receipt)
-        let model = AppModel(
-            liveController: StubLifecycleController(result: DaemonLifecycleResult(state: .ready(session), snapshot: snapshot, doctorReport: report)),
-            workspaceActions: workspaceActions,
-            configurationActions: nil,
-            agentConnections: nil,
-            pollingInterval: .seconds(60)
-        )
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-        #expect(!model.worktreeIsPrepared(worktree))
-        #expect(model.canPrepareWorktree)
-
-        let ready = await model.prepareWorktreeForHandoff(worktree)
-        #expect(ready)
-        #expect(model.agentHandoffState == .idle)
-        let prepares = await workspaceActions.prepares
-        #expect(prepares.map(\.worktreeId) == [worktree.id])
-        #expect(prepares.first?.expectedEnvironmentRevision == nil)
-    }
 }
 
-@MainActor
-struct OccupancyAppModelTests {
-    private static var fixtureURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appending(path: "contracts/v2/fixtures/status.json")
-    }
+// MARK: - Codex task integration
 
-    private static func liveModel(occupancy: RecordingOccupancyActions) throws -> AppModel {
-        let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: Data(contentsOf: fixtureURL))
-        let session = DaemonSession(
-            instanceId: snapshot.daemon.instanceId, daemonVersion: snapshot.daemon.version,
-            endpoint: EndpointDescriptor(
-                schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 49402,
-                daemonVersion: snapshot.daemon.version, instanceId: snapshot.daemon.instanceId,
-                pid: 4242, createdAt: snapshot.daemon.startedAt
-            )
-        )
-        let report = DoctorReport(checks: [DoctorCheck(id: "live", title: "Live", outcome: .passed("healthy"))])
-        return AppModel(
-            liveController: StubLifecycleController(result: DaemonLifecycleResult(state: .ready(session), snapshot: snapshot, doctorReport: report)),
-            occupancyActions: occupancy,
-            configurationActions: nil,
-            agentConnections: nil,
-            pollingInterval: .seconds(60)
-        )
+struct CodexTaskIntegrationTests {
+    @Test("Switchyard deep links accept one opaque worktree identifier")
+    func switchyardDeepLink() {
+        #expect(SwitchyardDeepLink(url: URL(string: "switchyard://worktrees/worktree%2Fone")!) == .worktree("worktree/one"))
+        #expect(SwitchyardDeepLink(url: URL(string: "switchyard://worktrees/one/two")!) == nil)
+        #expect(SwitchyardDeepLink(url: URL(string: "switchyard://other/worktree")!) == nil)
+        #expect(SwitchyardDeepLink(url: URL(string: "switchyard://worktrees/worktree?target=other")!) == nil)
     }
 
     @Test
-    func `a launched handoff records one explicit generic lease and the owner can release it`() async throws {
-        let occupancy = RecordingOccupancyActions()
-        let model = try Self.liveModel(occupancy: occupancy)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-        #expect(worktree.heldOccupancy.isEmpty)
-        #expect(model.canRecordOccupancy)
-
-        let lease = try #require(await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task"))
-        #expect(lease.state == .held)
-        #expect(model.occupancyActionState == .idle)
-        let acquires = await occupancy.acquires
-        #expect(acquires.count == 1)
-        #expect(acquires.first?.worktreeId == worktree.id)
-        #expect(acquires.first?.holderKind == AppModel.agentTaskHolderKind)
-        #expect(acquires.first?.holderKind == "agent-task")
-        #expect(acquires.first?.holderLabel == "Codex task")
-
-        let released = await model.releaseOccupancy(lease)
-        #expect(released)
-        let releases = await occupancy.releases
-        #expect(releases.map(\.leaseId) == [lease.id])
-        #expect(releases.first?.worktreeId == worktree.id)
-    }
-
-    @Test
-    func `a refused lease is published and never blocks later handoffs`() async throws {
-        let occupancy = RecordingOccupancyActions(mode: .refuse)
-        let model = try Self.liveModel(occupancy: occupancy)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-
-        let lease = await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task")
-        #expect(lease == nil)
-        guard case .failed(let worktreeId, let message) = model.occupancyActionState else {
-            Issue.record("expected a published occupancy failure, got \(model.occupancyActionState)")
-            return
-        }
-        #expect(worktreeId == worktree.id)
-        #expect(message.contains("OCCUPANCY_LIMIT"))
-        #expect(model.canRecordOccupancy, "a failed lease must not wedge the app")
-        model.dismissOccupancyFailure()
-        #expect(model.occupancyActionState == .idle)
-    }
-
-    @Test
-    func `a handoff acquires the lease before launching and keeps it when the launch succeeds`() async throws {
-        let occupancy = RecordingOccupancyActions()
-        let model = try Self.liveModel(occupancy: occupancy)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-
-        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
-            await occupancy.note("launch")
-        }
-        guard case .launched(let lease) = outcome else {
-            Issue.record("expected a launched outcome, got \(outcome)")
-            return
-        }
-        #expect(lease.state == .held)
-        #expect(lease.holderKind == AppModel.agentTaskHolderKind)
-        #expect(outcome.failureMessage == nil)
-        #expect(await occupancy.calls == ["acquire", "launch"])
-        #expect(await occupancy.releases.isEmpty)
-        #expect(model.occupancyActionState == .idle)
-        // The owner's explicit release still ends the lease.
-        #expect(await model.releaseOccupancy(lease))
-        #expect(await occupancy.calls == ["acquire", "launch", "release"])
-    }
-
-    @Test
-    func `a refused lease never launches the task`() async throws {
-        let occupancy = RecordingOccupancyActions(mode: .refuse)
-        let model = try Self.liveModel(occupancy: occupancy)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-
-        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
-            await occupancy.note("launch")
-        }
-        guard case .leaseRefused(let message) = outcome else {
-            Issue.record("expected a refused lease, got \(outcome)")
-            return
-        }
-        #expect(message.contains("was not started"))
-        #expect(message.contains("OCCUPANCY_LIMIT"))
-        #expect(await occupancy.calls == ["acquire"], "a refused lease must not be followed by a launch")
-        #expect(model.occupancyActionState == .idle, "the refusal is reported through the outcome, not left wedged")
-        #expect(model.canRecordOccupancy)
-    }
-
-    @Test
-    func `an unavailable helper refuses the handoff before launching`() async throws {
-        let occupancy = RecordingOccupancyActions()
-        let model = AppModel(
-            liveController: StubLifecycleController(result: DaemonLifecycleResult(state: .unreachable(reason: "helper is down"), snapshot: nil, doctorReport: DoctorReport(checks: []))),
-            occupancyActions: occupancy,
-            configurationActions: nil,
-            agentConnections: nil,
-            pollingInterval: .seconds(60)
-        )
-        await model.refresh()
-        #expect(!model.canRecordOccupancy)
-        let snapshot = try ContractDecoder().decode(StatusSnapshot.self, from: Data(contentsOf: Self.fixtureURL))
-        let worktree = try #require(snapshot.repositories.first?.worktrees.first)
-
-        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
-            await occupancy.note("launch")
-        }
-        guard case .leaseRefused(let message) = outcome else {
-            Issue.record("expected a refused lease, got \(outcome)")
-            return
-        }
-        #expect(message.contains("not connected"))
-        #expect(await occupancy.calls.isEmpty)
-    }
-
-    @Test
-    func `a failed launch releases the lease it acquired`() async throws {
-        let occupancy = RecordingOccupancyActions()
-        let model = try Self.liveModel(occupancy: occupancy)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-
-        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
-            await occupancy.note("launch")
-            throw LaunchStubError.failed
-        }
-        guard case .launchFailed(let message) = outcome else {
-            Issue.record("expected a rolled-back launch, got \(outcome)")
-            return
-        }
-        #expect(message == LaunchStubError.failed.errorDescription)
-        #expect(await occupancy.calls == ["acquire", "launch", "release"])
-        let acquired = try #require(await occupancy.acquires.first)
-        let released = try #require(await occupancy.releases.first)
-        #expect(released.worktreeId == acquired.worktreeId)
-        #expect(released.leaseId == "occupancy_test")
-        #expect(model.occupancyActionState == .idle)
-        #expect(model.canRecordOccupancy, "a rolled-back handoff must not wedge later handoffs")
-    }
-
-    @Test
-    func `a failed launch whose rollback also fails keeps the protective lease and says so`() async throws {
-        let occupancy = RecordingOccupancyActions(mode: .refuseRelease)
-        let model = try Self.liveModel(occupancy: occupancy)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-
-        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") {
-            throw LaunchStubError.failed
-        }
-        guard case .launchFailedLeaseHeld(let message, let lease) = outcome else {
-            Issue.record("expected a held lease after a failed rollback, got \(outcome)")
-            return
-        }
-        #expect(lease.id == "occupancy_test")
-        #expect(lease.state == .held)
-        #expect(message.contains(LaunchStubError.failed.errorDescription ?? "?"))
-        #expect(message.contains("could not be released"))
-        #expect(message.contains("DAEMON_UNAVAILABLE"))
-        #expect(message.contains("still protects"))
-        #expect(message.contains("Handed off"))
-        #expect(await occupancy.calls == ["acquire", "release"])
-        // The release failure stays visible beside the owner's Release control.
-        guard case .failed(let worktreeId, let releaseMessage) = model.occupancyActionState else {
-            Issue.record("expected a published release failure, got \(model.occupancyActionState)")
-            return
-        }
-        #expect(worktreeId == worktree.id)
-        #expect(releaseMessage.contains("DAEMON_UNAVAILABLE"))
-        #expect(model.canRecordOccupancy, "the owner can still retry the release")
-    }
-
-    @Test
-    func `fixture mode launches without a lease`() async throws {
-        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-        let launched = Counter()
-        let outcome = await model.handOffWorktree(worktree, holderLabel: "Codex task") { await launched.increment() }
-        #expect(outcome == .launchedWithoutLease)
-        #expect(await launched.value == 1)
-        let failed = await model.handOffWorktree(worktree, holderLabel: "Codex task") { throw LaunchStubError.failed }
-        #expect(failed == .launchFailed(LaunchStubError.failed.errorDescription ?? ""))
-        #expect(model.occupancyActionState == .idle)
-    }
-
-    @Test
-    func `fixture mode never records occupancy`() async throws {
-        let model = AppModel(scenario: .canonical, canonicalFixtureURL: Self.fixtureURL)
-        await model.refresh()
-        let worktree = try #require(model.snapshot?.repositories.first?.worktrees.first)
-        #expect(!model.canRecordOccupancy)
-        #expect(await model.recordAgentHandoff(for: worktree, holderLabel: "Codex task") == nil)
-        #expect(model.occupancyActionState == .idle)
-    }
-}
-
-private enum LaunchStubError: LocalizedError {
-    case failed
-    var errorDescription: String? { "The stub host could not open a task." }
-}
-
-private actor Counter {
-    private(set) var value = 0
-    func increment() { value += 1 }
-}
-
-// MARK: - Codex launch
-
-struct CodexTaskLauncherTests {
-    @Test
-    func `launch plan mirrors the Codex CLI deep link for the exact worktree`() throws {
-        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let worktree = root.appending(path: "work tree+a&b=c", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+    func `open plan addresses one existing Codex task`() throws {
         let application = URL(fileURLWithPath: "/Applications/Example.app", isDirectory: true)
-
-        let plan = try CodexLaunchPlan.make(applicationURL: application, worktreePath: worktree.path)
+        let plan = try CodexTaskOpenPlan.make(applicationURL: application, taskID: "01a01f7f-2f75-75d0-9ee7-ceb9412ec14f")
         #expect(plan.applicationURL == application)
         #expect(plan.url.scheme == "codex")
         #expect(plan.url.host == "threads")
-        #expect(plan.url.path == "/new")
-        let expectedQuery = "path=" + worktree.path
-            .replacingOccurrences(of: "/", with: "%2F")
-            .replacingOccurrences(of: " ", with: "+")
-            .replacingOccurrences(of: "+a&b=c", with: "%2Ba%26b%3Dc")
-        #expect(plan.url.query == expectedQuery)
-        // form-urlencoded round trip: `+` is a space, everything else is percent-decoded.
-        let decoded = expectedQuery.dropFirst("path=".count)
-            .replacingOccurrences(of: "+", with: " ")
-            .removingPercentEncoding
-        #expect(decoded == worktree.path)
-        #expect(CodexLaunchPlan.bundleIdentifier == "com.openai.codex")
-        #expect(CodexLaunchPlan.signingRequirement.contains("2DC432GLL2"))
-
-        #expect(throws: CodexTaskError.invalidWorktree) {
-            _ = try CodexLaunchPlan.make(applicationURL: application, worktreePath: "relative/path")
-        }
-        #expect(throws: CodexTaskError.invalidWorktree) {
-            _ = try CodexLaunchPlan.make(applicationURL: application, worktreePath: root.appending(path: "missing").path)
+        #expect(plan.url.path == "/01a01f7f-2f75-75d0-9ee7-ceb9412ec14f")
+        #expect(plan.url.query == nil)
+        #expect(CodexTaskOpenPlan.bundleIdentifier == "com.openai.codex")
+        #expect(CodexTaskOpenPlan.signingRequirement.contains("2DC432GLL2"))
+        #expect(throws: CodexTaskIntegrationError.invalidTask) {
+            _ = try CodexTaskOpenPlan.make(applicationURL: application, taskID: "../other")
         }
     }
 
     @Test
     func `launcher refuses missing or untrusted apps and hands the verified plan to open`() async throws {
-        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
         let application = URL(fileURLWithPath: "/Applications/Example.app", isDirectory: true)
 
-        let missing = CodexTaskLauncher(applicationURL: { nil }, verify: { _ in }, launch: { _ in })
-        #expect(!missing.isInstalled)
-        await #expect(throws: CodexTaskError.notInstalled) { try await missing.open(worktreePath: root.path) }
+        let missing = CodexTaskOpener(applicationURL: { nil }, verify: { _ in }, launch: { _ in })
+        await #expect(throws: CodexTaskIntegrationError.notInstalled) { try await missing.open(taskID: "task_01") }
 
-        let untrusted = CodexTaskLauncher(
+        let untrusted = CodexTaskOpener(
             applicationURL: { application },
-            verify: { _ in throw CodexTaskError.bundleNotTrusted },
+            verify: { _ in throw CodexTaskIntegrationError.bundleNotTrusted },
             launch: { _ in Issue.record("launched an untrusted bundle") }
         )
-        await #expect(throws: CodexTaskError.bundleNotTrusted) { try await untrusted.open(worktreePath: root.path) }
+        await #expect(throws: CodexTaskIntegrationError.bundleNotTrusted) { try await untrusted.open(taskID: "task_01") }
 
         let launched = LaunchRecorder()
-        let trusted = CodexTaskLauncher(
+        let trusted = CodexTaskOpener(
             applicationURL: { application },
             verify: { url in #expect(url == application) },
             launch: { plan in await launched.record(plan) }
         )
-        try await trusted.open(worktreePath: root.path)
+        try await trusted.open(taskID: "task_01")
         let plans = await launched.plans
         #expect(plans.count == 1)
         #expect(plans.first?.applicationURL == application)
-        #expect(plans.first?.url.absoluteString.hasPrefix("codex://threads/new?path=") == true)
+        #expect(plans.first?.url.absoluteString == "codex://threads/task_01")
     }
 
     @Test
@@ -987,15 +637,39 @@ struct CodexTaskLauncherTests {
         </dict></plist>
         """.write(to: contents.appending(path: "Info.plist"), atomically: true, encoding: .utf8)
         try FileManager.default.copyItem(atPath: "/usr/bin/true", toPath: contents.appending(path: "MacOS/Codex").path)
-        #expect(throws: CodexTaskError.bundleNotTrusted) {
-            try CodexLaunchPlan.verifyBundle(at: application)
+        #expect(throws: CodexTaskIntegrationError.bundleNotTrusted) {
+            try CodexTaskOpenPlan.verifyBundle(at: application)
         }
+    }
+
+    @Test
+    func `app server lookup returns only exact-cwd tasks`() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let worktree = root.appending(path: "task-worktree", directoryHint: .isDirectory)
+        let executable = root.appending(path: "fake-codex")
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let escapedPath = worktree.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        try """
+        #!/bin/sh
+        IFS= read -r initialize
+        printf '%s\\n' '{"id":1,"result":{}}'
+        IFS= read -r initialized
+        IFS= read -r list
+        printf '%s\\n' '{"id":2,"result":{"data":[{"id":"task_exact","cwd":"\(escapedPath)","name":"Exact task","preview":"ignored","updatedAt":10,"recencyAt":20},{"id":"task_foreign","cwd":"/foreign","name":null,"preview":"Foreign","updatedAt":30,"recencyAt":30}]}}'
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+
+        let tasks = try await CodexAppServerTaskQuery().tasks(executableURL: executable, worktreePath: worktree.path)
+        #expect(tasks.map(\.id) == ["task_exact"])
+        #expect(tasks.first?.title == "Exact task")
+        #expect(tasks.first?.updatedAt == Date(timeIntervalSince1970: 20))
     }
 }
 
 private actor LaunchRecorder {
-    private(set) var plans: [CodexLaunchPlan] = []
-    func record(_ plan: CodexLaunchPlan) { plans.append(plan) }
+    private(set) var plans: [CodexTaskOpenPlan] = []
+    func record(_ plan: CodexTaskOpenPlan) { plans.append(plan) }
 }
 
 // MARK: - Sparkle availability by channel

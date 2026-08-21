@@ -93,7 +93,8 @@ struct EnvironmentDetailView: View {
                 }
                 Spacer()
                 if let worktree = snapshot.worktree(for: environment) {
-                    StartCodexTaskButton(model: model, worktree: worktree)
+                OpenCodexTaskButton(worktree: worktree)
+                    .id(worktree.id)
                     OpenInZedButton(worktree: worktree)
                 }
                 environmentButtons

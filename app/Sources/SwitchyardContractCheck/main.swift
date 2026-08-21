@@ -214,6 +214,13 @@ struct StubLifecycleController: DaemonLifecycleControlling {
     func repair() async -> DaemonLifecycleResult { repairResult }
 }
 
+struct StubStatusProvider: StatusProviding {
+    let snapshot: StatusSnapshot
+    let sourceDescription = "contract-check stub"
+
+    func loadStatus() async throws -> StatusSnapshot { snapshot }
+}
+
 actor StubEnvironmentActions: EnvironmentActionSubmitting {
     let receipt: MutationReceipt
     private(set) var starts: [StartEnvironmentRequest] = []
@@ -2619,6 +2626,7 @@ await runner.checkAsync("live app model rejects an old healthy run as start comp
     let model = AppModel(
         liveController: StubLifecycleController(refreshResult: result, repairResult: result),
         environmentActions: actions,
+        operationStatus: StubStatusProvider(snapshot: snapshot),
         pollingInterval: .seconds(60)
     )
     await model.refresh()

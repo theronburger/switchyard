@@ -120,58 +120,6 @@ public enum ConfigurationActionState: Sendable, Equatable {
     }
 }
 
-public enum AgentHandoffState: Sendable, Equatable {
-    case idle
-    case preparing(worktreeId: String, receipt: MutationReceipt?)
-    case failed(worktreeId: String, String)
-
-    public var isActive: Bool {
-        if case .preparing = self { return true }
-        return false
-    }
-}
-
-/// Outcome of a transactional agent handoff: the lease is acquired before the
-/// task is opened, so a worktree is never handed to a task unprotected, and a
-/// failed launch releases the lease it no longer needs.
-public enum AgentHandoffOutcome: Sendable, Equatable {
-    /// The lease is held and the task was opened.
-    case launched(OccupancyLease)
-    /// Fixture builds have no daemon to protect; the task was opened with no lease.
-    case launchedWithoutLease
-    /// The daemon refused or could not record the lease. Nothing was launched.
-    case leaseRefused(String)
-    /// The launch failed and the lease it would have protected was released.
-    case launchFailed(String)
-    /// The launch failed and the lease could not be released. It still holds
-    /// and protects the worktree until the owner releases it.
-    case launchFailedLeaseHeld(String, OccupancyLease)
-
-    public var failureMessage: String? {
-        switch self {
-        case .launched, .launchedWithoutLease: nil
-        case .leaseRefused(let message), .launchFailed(let message), .launchFailedLeaseHeld(let message, _): message
-        }
-    }
-}
-
-/// Progress of recording or releasing an explicit handoff lease. A recording
-/// failure stops the handoff before any launch; a release failure is reported
-/// so the owner can retry it from the worktree's handoff section.
-public enum OccupancyActionState: Sendable, Equatable {
-    case idle
-    case recording(worktreeId: String)
-    case releasing(worktreeId: String, leaseId: String)
-    case failed(worktreeId: String, String)
-
-    public var isActive: Bool {
-        switch self {
-        case .recording, .releasing: return true
-        case .idle, .failed: return false
-        }
-    }
-}
-
 @MainActor
 @Observable
 public final class AppModel {
@@ -194,8 +142,6 @@ public final class AppModel {
     public private(set) var workspaceActionState: WorkspaceActionState = .idle
     public private(set) var cleanupActionState: CleanupActionState = .idle
     public private(set) var configurationState: ConfigurationActionState = .idle
-    public private(set) var agentHandoffState: AgentHandoffState = .idle
-    public private(set) var occupancyActionState: OccupancyActionState = .idle
     public private(set) var scenario: FixtureScenario
     public let isFixtureMode: Bool
     public var selection: SidebarSelection?
@@ -203,7 +149,6 @@ public final class AppModel {
     @ObservationIgnored private let liveController: (any DaemonLifecycleControlling)?
     @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
     @ObservationIgnored private let workspaceActions: (any WorkspaceActionSubmitting)?
-    @ObservationIgnored private let occupancyActions: (any OccupancyActionSubmitting)?
     @ObservationIgnored private let cleanupActions: (any CleanupActionSubmitting)?
     @ObservationIgnored private let configurationActions: (any ConfigurationActionSubmitting)?
     @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
@@ -217,6 +162,7 @@ public final class AppModel {
     @ObservationIgnored private var workspaceActionMonitor: Task<Void, Never>?
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var routedInitialConnectionSetup = false
+    @ObservationIgnored private var pendingWorktreeSelectionID: String?
 
     public var dataSourceDescription: String {
         fixtureProvider?.sourceDescription ?? "live daemon"
@@ -278,7 +224,6 @@ public final class AppModel {
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         workspaceActions: any WorkspaceActionSubmitting = LiveWorkspaceActionClient(),
-        occupancyActions: (any OccupancyActionSubmitting)? = LiveOccupancyActionClient(),
         cleanupActions: any CleanupActionSubmitting = LiveCleanupActionClient(),
         configurationActions: (any ConfigurationActionSubmitting)? = LiveConfigurationActionClient(),
         agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
@@ -291,7 +236,6 @@ public final class AppModel {
         self.liveController = liveController
         self.environmentActions = environmentActions
         self.workspaceActions = workspaceActions
-        self.occupancyActions = occupancyActions
         self.cleanupActions = cleanupActions
         self.configurationActions = configurationActions
         self.agentConnections = agentConnections
@@ -311,7 +255,6 @@ public final class AppModel {
         self.liveController = nil
         self.environmentActions = nil
         self.workspaceActions = nil
-        self.occupancyActions = nil
         self.cleanupActions = nil
         self.configurationActions = configurationActions ?? FixtureConfigurationActionClient(scenario: scenario)
         self.agentConnections = nil
@@ -349,7 +292,6 @@ public final class AppModel {
                 liveController: lifecycle,
                 environmentActions: LiveEnvironmentActionClient(connectionFactory: connectionFactory),
                 workspaceActions: LiveWorkspaceActionClient(connectionFactory: connectionFactory),
-                occupancyActions: LiveOccupancyActionClient(connectionFactory: connectionFactory),
                 cleanupActions: LiveCleanupActionClient(connectionFactory: connectionFactory),
                 configurationActions: LiveConfigurationActionClient(connectionFactory: connectionFactory),
                 agentConnections: agentConnections,
@@ -414,7 +356,16 @@ public final class AppModel {
                 selection = .connectionDoctor
             }
         }
+        applyPendingWorktreeSelection()
         clearMissingSelection()
+    }
+
+    /// Selects the exact worktree named by an external deep link. A cold app
+    /// keeps the request until the first status snapshot makes it resolvable.
+    @discardableResult
+    public func selectWorktree(withId id: String) -> Bool {
+        pendingWorktreeSelectionID = id
+        return applyPendingWorktreeSelection()
     }
 
     public func repairAll() async {
@@ -842,173 +793,6 @@ public final class AppModel {
         configurationState = last.map(ConfigurationActionState.loaded) ?? .idle
     }
 
-    // MARK: - Agent handoff
-
-    /// Whether a worktree is ready for an agent handoff without preparation.
-    public func worktreeIsPrepared(_ worktree: Worktree) -> Bool {
-        worktree.workspace?.state == .ready
-    }
-
-    public var canPrepareWorktree: Bool {
-        !isFixtureMode && lifecycleState.isOperational && !agentHandoffState.isActive && !workspaceActionState.isActive
-    }
-
-    /// Prepares the exact worktree through the daemon and waits for the
-    /// operation to finish. Returns `true` when the worktree is ready for a
-    /// handoff; fixture builds and already-prepared worktrees skip the daemon.
-    @discardableResult
-    public func prepareWorktreeForHandoff(_ worktree: Worktree) async -> Bool {
-        if worktreeIsPrepared(worktree) || isFixtureMode {
-            agentHandoffState = .idle
-            return true
-        }
-        guard canPrepareWorktree, let workspaceActions else { return false }
-        agentHandoffState = .preparing(worktreeId: worktree.id, receipt: nil)
-        do {
-            let receipt = try await workspaceActions.prepareWorktree(PrepareWorktreeRequest(
-                requestId: "app_\(UUID().uuidString.lowercased())",
-                idempotencyKey: "workspace_prepare_\(UUID().uuidString.lowercased())",
-                worktreeId: worktree.id
-            ))
-            agentHandoffState = .preparing(worktreeId: worktree.id, receipt: receipt)
-            try await waitForOperation(receipt)
-            agentHandoffState = .idle
-            return true
-        } catch {
-            agentHandoffState = .failed(worktreeId: worktree.id, Self.actionFailureMessage(error))
-            return false
-        }
-    }
-
-    public func reportAgentHandoffFailure(worktreeId: String, message: String) {
-        agentHandoffState = .failed(worktreeId: worktreeId, message)
-    }
-
-    // MARK: - Occupancy leases
-
-    /// Generic holder kind for tasks the app launches into a worktree. It
-    /// names the category of holder, never the host product or a person.
-    public static let agentTaskHolderKind = "agent-task"
-
-    public var canRecordOccupancy: Bool {
-        !isFixtureMode && lifecycleState.isOperational && occupancyActions != nil && !occupancyActionState.isActive
-    }
-
-    /// Records an explicit, conservative handoff lease for a task the app is
-    /// about to launch into `worktree`. `handOffWorktree` is the transactional
-    /// entry point: it acquires through this method before launching and
-    /// releases again if the launch fails. The lease is a statement about
-    /// something the app does, not a guess about what an agent host is doing.
-    /// Returns the lease, or `nil` when the daemon refused or is unavailable;
-    /// the failure is published in `occupancyActionState`.
-    @discardableResult
-    public func recordAgentHandoff(for worktree: Worktree, holderLabel: String) async -> OccupancyLease? {
-        guard canRecordOccupancy, let occupancyActions else { return nil }
-        occupancyActionState = .recording(worktreeId: worktree.id)
-        do {
-            let lease = try await occupancyActions.acquireOccupancy(AcquireOccupancyRequest(
-                requestId: "app_\(UUID().uuidString.lowercased())",
-                worktreeId: worktree.id,
-                holderKind: Self.agentTaskHolderKind,
-                holderLabel: holderLabel
-            ))
-            occupancyActionState = .idle
-            await refresh()
-            return lease
-        } catch {
-            occupancyActionState = .failed(worktreeId: worktree.id, Self.actionFailureMessage(error))
-            return nil
-        }
-    }
-
-    /// Ends a handoff lease on the owner's explicit request. Only a release
-    /// ends a lease; the app never expires one on its own.
-    @discardableResult
-    public func releaseOccupancy(_ lease: OccupancyLease) async -> Bool {
-        guard canRecordOccupancy, let occupancyActions else { return false }
-        occupancyActionState = .releasing(worktreeId: lease.worktreeId, leaseId: lease.id)
-        do {
-            _ = try await occupancyActions.releaseOccupancy(ReleaseOccupancyRequest(
-                requestId: "app_\(UUID().uuidString.lowercased())",
-                worktreeId: lease.worktreeId,
-                leaseId: lease.id
-            ))
-            occupancyActionState = .idle
-            await refresh()
-            return true
-        } catch {
-            occupancyActionState = .failed(worktreeId: lease.worktreeId, Self.actionFailureMessage(error))
-            return false
-        }
-    }
-
-    /// Hands `worktree` to a task transactionally. The conservative lease is
-    /// recorded first so the worktree is protected before anything else can
-    /// observe the task; a refused lease means no launch. When `launch` throws,
-    /// the lease is released again because it no longer describes anything the
-    /// app did. When that rollback also fails, the lease is deliberately kept:
-    /// a stray protective lease is recoverable through the owner's Release
-    /// control, whereas an unprotected handoff is not. Fixture builds have no
-    /// daemon and launch without a lease.
-    public func handOffWorktree(
-        _ worktree: Worktree,
-        holderLabel: String,
-        launch: @Sendable () async throws -> Void
-    ) async -> AgentHandoffOutcome {
-        if isFixtureMode {
-            do {
-                try await launch()
-                return .launchedWithoutLease
-            } catch {
-                return .launchFailed(Self.launchFailureMessage(error))
-            }
-        }
-        guard let lease = await recordAgentHandoff(for: worktree, holderLabel: holderLabel) else {
-            let reason: String
-            if case .failed(_, let message) = occupancyActionState {
-                reason = message
-            } else {
-                reason = "Switchyard is not connected to its helper."
-            }
-            dismissOccupancyFailure()
-            return .leaseRefused("The task was not started because its handoff lease could not be recorded. \(reason)")
-        }
-        do {
-            try await launch()
-            return .launched(lease)
-        } catch {
-            let launchMessage = Self.launchFailureMessage(error)
-            if await releaseOccupancy(lease) {
-                return .launchFailed(launchMessage)
-            }
-            let releaseMessage: String
-            if case .failed(_, let message) = occupancyActionState {
-                releaseMessage = message
-            } else {
-                releaseMessage = "The helper did not confirm the release."
-            }
-            return .launchFailedLeaseHeld(
-                "\(launchMessage) The handoff lease recorded for this worktree could not be released (\(releaseMessage)). "
-                    + "It still protects the worktree from archive; release it from the worktree's Handed off section once you confirm no task is using it.",
-                lease
-            )
-        }
-    }
-
-    private static func launchFailureMessage(_ error: Error) -> String {
-        (error as? LocalizedError)?.errorDescription ?? "The task could not be opened in this worktree."
-    }
-
-    public func dismissOccupancyFailure() {
-        guard !occupancyActionState.isActive else { return }
-        occupancyActionState = .idle
-    }
-
-    public func dismissAgentHandoff() {
-        guard !agentHandoffState.isActive else { return }
-        agentHandoffState = .idle
-    }
-
     private func monitorWorkspaceAction(_ kind: WorkspaceActionKind, receipt: MutationReceipt) {
         workspaceActionMonitor?.cancel()
         workspaceActionMonitor = Task { [weak self] in
@@ -1136,6 +920,23 @@ public final class AppModel {
         if case .repository(let id) = selection, snapshot?.repository(withId: id) == nil {
             selection = nil
         }
+    }
+
+    @discardableResult
+    private func applyPendingWorktreeSelection() -> Bool {
+        guard let id = pendingWorktreeSelectionID, let snapshot else { return false }
+        guard let repository = snapshot.repositories.first(where: { repository in
+            repository.worktrees.contains(where: { $0.id == id })
+        }), let worktree = repository.worktrees.first(where: { $0.id == id }) else {
+            return false
+        }
+        if let environment = snapshot.environment(for: worktree) {
+            selection = .environment(environment.id)
+        } else {
+            selection = .worktree(repositoryId: repository.id, worktreeId: worktree.id)
+        }
+        pendingWorktreeSelectionID = nil
+        return true
     }
 
     private static func scripted(_ events: [DaemonLifecycleEvent]) -> DaemonLifecycleMachine {

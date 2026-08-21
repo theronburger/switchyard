@@ -15,7 +15,7 @@
 - Worktree inventory reports committed and uncommitted line counts per direct service root, keeps shared-package changes explicit, opens exact worktrees in Zed, and drives configurable menu-bar indicators from the atomic daemon snapshot.
 - Jira ticket keys and links are visible from branch names. Worktree detail loads bounded summary/status/assignee/priority/update metadata on demand through the app-owned `jira-claude-relay` client; failures stay local to that card and never affect daemon readiness.
 - Contract v2 (`schemaVersion: 2`) names repositories by private `profileKey`; pinned environment intent and results carry the accepted profile digest, 0.2.0 installs a fresh database instead of migrating 0.1.x state, pinned payloads recover across restarts and later acceptances, and snapshot, event, operation, and configuration-revision retention are bounded.
-- Every versioned request declares its exact contract version and a mismatch is HTTP 426 `UPGRADE_REQUIRED` in Go and Swift; app-launched agent handoffs acquire an explicit occupancy lease before launching (and release it if the launch fails) so archive stays blocked until the owner releases; operation, configuration, occupancy, and cleanup-completion changes append transactional audit events.
+- Every versioned request declares its exact contract version and a mismatch is HTTP 426 `UPGRADE_REQUIRED` in Go and Swift; operation, configuration, occupancy, and cleanup-completion changes append transactional audit events. Agent hosts own task lifecycle, while Switchyard provides bounded exact-worktree preparation and cross-navigation.
 - Repository/worktree Git state is reconciled every 30 seconds with explicit per-repository freshness. Every environment start persists its exact source revision and dirty state, and operation receipts identify the run that must appear before replacement is complete.
 
 ## Next build sequence
@@ -25,7 +25,7 @@
 3. Extend GitHub/PR/CI provenance with union ancestry and richer failing-check diagnostics.
 4. Finish the richer menu-bar and command-center presentation: notification policy, attention routing, environment history, resource trends, and one-click URLs.
 5. Add affected-service inference and a polished **Run affected** action while retaining explicit service selection and the same durable plan contract.
-6. Extend the current app-driven Codex and Claude connection conformance suite when either host changes its CLI contract.
+6. Extend the Codex app-server task-lookup and Codex/Claude connection conformance suites when either host changes its local contract.
 7. Retry transient terminal publication before conservatively tearing down a verified-healthy environment, and derive cleanup budgets from the concrete execution plan.
 8. Exercise concurrent profiles for a second repository while preserving the same generic control contracts.
 

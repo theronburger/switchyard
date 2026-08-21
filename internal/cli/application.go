@@ -144,6 +144,7 @@ type Application struct {
 	Backend      Backend
 	Stdout       io.Writer
 	Stderr       io.Writer
+	LaunchURL    func(context.Context, string) error
 	NewRequestID func() (string, error)
 	Getwd        func() (string, error)
 	PollInterval time.Duration
@@ -214,6 +215,8 @@ func (a Application) Run(ctx context.Context, arguments []string) int {
 		return ExitUsage
 	}
 	switch command.Name {
+	case "open":
+		return a.openWorktree(ctx, command, stdout, stderr)
 	case "actions", "action":
 		backend, available := a.Backend.(ProfileActionBackend)
 		if !available {
@@ -759,7 +762,7 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 		return parsedCommand{}, false
 	}
 	command := parsedCommand{Name: arguments[0]}
-	if command.Name != "status" && command.Name != "doctor" && command.Name != "actions" && command.Name != "action" &&
+	if command.Name != "status" && command.Name != "open" && command.Name != "doctor" && command.Name != "actions" && command.Name != "action" &&
 		command.Name != "configuration" && command.Name != "validate-configuration" && command.Name != "accept-configuration" &&
 		command.Name != "cleanup-plan" && command.Name != "cleanup-apply" &&
 		command.Name != "start" && command.Name != "stop" && command.Name != "prepare" &&
@@ -876,6 +879,11 @@ func parseArguments(arguments []string) (parsedCommand, bool) {
 		return parsedCommand{}, false
 	}
 	switch command.Name {
+	case "open":
+		if len(command.Positionals) != 1 || command.JSON || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
+			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" || command.Wait || command.IfRunning {
+			return parsedCommand{}, false
+		}
 	case "actions":
 		if len(command.Positionals) != 0 || command.All || command.TargetID != "" || command.ConfirmedTargetID != "" ||
 			command.IdempotencyKey != "" || command.ExpectedRevision != nil || command.StartPoint != "" || command.Wait || command.IfRunning {
@@ -1021,6 +1029,7 @@ func writeReceipt(writer io.Writer, receipt contractv2.MutationReceipt, jsonOutp
 func writeUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "usage:")
 	_, _ = fmt.Fprintln(writer, "  switchyard status [worktree-id|branch|path] [--all] [--json]")
+	_, _ = fmt.Fprintln(writer, "  switchyard open <worktree-id|branch|path|.>")
 	_, _ = fmt.Fprintln(writer, "  switchyard doctor [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard configuration [--json]")
 	_, _ = fmt.Fprintln(writer, "  switchyard validate-configuration [--expected-revision N] [--json]")

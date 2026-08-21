@@ -28,6 +28,11 @@ struct CommandCenterView: View {
         .onReceive(NotificationCenter.default.publisher(for: .switchyardOpenCommandCenter)) { _ in
             CommandCenterWindowPresenter.presentWhenAvailable()
         }
+        .onOpenURL { url in
+            guard let deepLink = SwitchyardDeepLink(url: url) else { return }
+            deepLink.apply(to: model)
+            CommandCenterWindowPresenter.presentWhenAvailable()
+        }
         .alert(
             "Environment action failed",
             isPresented: Binding(
