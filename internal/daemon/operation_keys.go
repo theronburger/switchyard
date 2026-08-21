@@ -31,8 +31,10 @@ type OperationKeys struct {
 }
 
 type operationKeyWaiter struct {
-	keys    []string
-	granted chan struct{}
+	keys                  []string
+	granted               chan struct{}
+	ctx                   context.Context
+	cancellationSensitive bool
 }
 
 func NewOperationKeys() *OperationKeys {
@@ -52,19 +54,24 @@ func repositoryOperationKey(repositoryID string) string {
 // exactly once; it is safe to call when no keys were requested and calling it
 // again is a no-op.
 //
-// An uncontended set is taken immediately even when ctx has already ended:
-// the operation then fails inside its own action with the lifecycle error
-// rather than being refused free resources. A waiter whose ctx ends before
-// it is granted leaves the queue without ever holding a key.
+// An uncontended operation takes its keys immediately even if ctx ended while
+// it was being admitted. Once an operation has to wait, cancellation removes
+// it without ever holding a key, including when cancellation races the current
+// holder's release. A grant that linearizes before cancellation remains valid.
 func (keys *OperationKeys) Acquire(ctx context.Context, names ...string) (func(), error) {
 	ordered := uniqueSortedKeys(names)
 	if keys == nil || len(ordered) == 0 {
 		return func() {}, nil
 	}
-	waiter := &operationKeyWaiter{keys: ordered, granted: make(chan struct{})}
+	waiter := &operationKeyWaiter{keys: ordered, granted: make(chan struct{}), ctx: ctx}
 	keys.mutex.Lock()
 	keys.waiters = append(keys.waiters, waiter)
 	keys.grantInOrder()
+	select {
+	case <-waiter.granted:
+	default:
+		waiter.cancellationSensitive = true
+	}
 	keys.mutex.Unlock()
 
 	select {
@@ -107,6 +114,9 @@ func (keys *OperationKeys) grantInOrder() {
 	remaining := keys.waiters[:0]
 	reserved := make(map[string]struct{})
 	for _, waiter := range keys.waiters {
+		if waiter.cancellationSensitive && waiter.ctx.Err() != nil {
+			continue
+		}
 		if keys.grantable(waiter, reserved) {
 			for _, name := range waiter.keys {
 				keys.held[name] = struct{}{}

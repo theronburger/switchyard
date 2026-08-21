@@ -198,6 +198,9 @@ func TestOperationKeysCancelledWaiterLeavesTheQueueWithoutHoldingKeys(t *testing
 	}
 	archive.mustStayPending(t)
 	cancel()
+	// Release immediately so cancellation and grant contend at the exact
+	// boundary used by service shutdown.
+	releaseHolder()
 	select {
 	case err := <-archive.failed:
 		if !errors.Is(err, context.Canceled) {
@@ -210,7 +213,6 @@ func TestOperationKeysCancelledWaiterLeavesTheQueueWithoutHoldingKeys(t *testing
 	}
 	keys.queued(t, 0)
 	releaseCreate()
-	releaseHolder()
 	if !keys.idle() {
 		t.Fatal("a cancelled waiter left a key held or queued")
 	}
@@ -417,11 +419,14 @@ func TestOperationKeysTakeFreeKeysEvenAfterContextEnds(t *testing.T) {
 	cancel()
 	release, err := keys.Acquire(ctx, "worktree:a")
 	if err != nil {
-		t.Fatalf("free key refused: %v", err)
+		t.Fatalf("free key with ended context: %v", err)
 	}
-	defer release()
 	if _, err := keys.Acquire(ctx, "worktree:a"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("contended key with ended context: %v", err)
+	}
+	release()
+	if !keys.idle() {
+		t.Fatal("ended context left a key held or queued")
 	}
 }
 
