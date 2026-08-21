@@ -27,7 +27,7 @@ func TestRealDirectoryWithinRefusesSymlinkedComponents(t *testing.T) {
 		if ok != want {
 			t.Errorf("%q: ok=%v want %v (path %q)", relative, ok, want, path)
 		}
-		if ok && (path != filepath.Join(root, relative) && !(relative == "." && path == root)) {
+		if ok && path != filepath.Join(root, relative) && (relative != "." || path != root) {
 			t.Errorf("%q resolved to %q", relative, path)
 		}
 	}
