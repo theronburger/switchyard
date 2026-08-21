@@ -32,9 +32,9 @@
         </dict>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.1</string> <!-- x-release-please-version -->
+    <string>0.2.2</string> <!-- x-release-please-version -->
     <key>CFBundleVersion</key>
-    <string>0.2.1</string> <!-- x-release-please-version -->
+    <string>0.2.2</string> <!-- x-release-please-version -->
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>NSHighResolutionCapable</key>
