@@ -261,14 +261,14 @@ func TestOperationDiagnosticsReaderRefusesForeignProfileActionLogs(t *testing.T)
 // claim redaction while leaking.
 func TestRedactDiagnosticLogRemovesRealisticSecretShapes(t *testing.T) {
 	secrets := []string{
-		"sk-ant-api03-REALTOKENVALUE", "ghp_realvalue", "wJalrXUtnFEMI", "sk_live_51Abc", "p4ssw0rd",
+		"sk-ant-api03-REALTOKENVALUE", "ghp_realvalue", "wJalrXUtnFEMI", "sk_live_51Example", "p4ssw0rd",
 		"hunter2", "AKIAEXAMPLE", "xoxb-slackvalue", "-----BEGIN",
 	}
 	input := strings.Join([]string{
 		"> Authorization: Bearer sk-ant-api03-REALTOKENVALUE",
 		"2026-08-20 12:00:00 INFO  loaded GITHUB_TOKEN=ghp_realvalue",
 		"[worker-1] AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI",
-		"  STRIPE_KEY: 'sk_live_51Abc',",
+		"  STRIPE_KEY: 'sk_live_51Example',",
 		`psql: connection string "postgresql://u:p4ssw0rd@h:5432/d"`,
 		"passwd=hunter2 retry=3",
 		"config.awsAccessKeyId = AKIAEXAMPLE",
