@@ -65,6 +65,9 @@ func (c *Client) postCleanup(ctx context.Context, path string, value any, succes
 	if err != nil || len(payload) > maximumStatusBytes || !secureResponseHeaders(response) {
 		return newCodedError(ErrorDaemonResponseInvalid, fmt.Errorf("cleanup response is invalid"))
 	}
+	if response.StatusCode == http.StatusUpgradeRequired {
+		return upgradeRequiredFromContents(payload)
+	}
 	if response.StatusCode == success {
 		if decodeSingleJSON(payload, destination) != nil {
 			return newCodedError(ErrorDaemonResponseInvalid, fmt.Errorf("cleanup response is invalid"))

@@ -193,3 +193,65 @@ func TestDoctorNamesUpgradeRequirement(t *testing.T) {
 		t.Fatalf("discovery check: %+v", first)
 	}
 }
+
+func TestEveryRouteHelperMapsHTTP426ToUpgradeRequired(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	token := testToken()
+	snapshot := validSnapshot(now)
+	bodies := map[string]string{
+		"truncated envelope":          `{"schemaVersion":2,"error":{"code":"UPGRADE_REQ`,
+		"envelope from another build": `{"schemaVersion":3,"error":{"code":"UPGRADE_REQUIRED","message":"Upgrade.","retryable":false}}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				secureJSONHeaders(response)
+				if request.URL.Path == "/handshake" {
+					writeTestJSON(t, response, Handshake{
+						SchemaVersion: contractv2.SchemaVersion, DaemonInstanceID: snapshot.Daemon.InstanceID,
+						DaemonVersion: snapshot.Daemon.Version, SupportedSchemaVersions: []int{contractv2.SchemaVersion},
+					})
+					return
+				}
+				response.WriteHeader(http.StatusUpgradeRequired)
+				_, _ = response.Write([]byte(body))
+			}))
+			defer server.Close()
+			client := NewClient(connectionForServer(t, server.URL, token, snapshot, now), ClientOptions{})
+			ctx := context.Background()
+			calls := map[string]func() error{
+				"mutation": func() error {
+					_, err := client.StartEnvironment(ctx, contractv2.StartEnvironmentRequest{
+						MutationRequest: contractv2.MutationRequest{
+							SchemaVersion: contractv2.SchemaVersion, RequestID: "request_start", IdempotencyKey: "start:key",
+						},
+						WorktreeID: "worktree_01", ServiceIDs: []string{"storefront"},
+					})
+					return err
+				},
+				"cleanup": func() error {
+					_, err := client.PlanCleanup(ctx, contractv2.CleanupPlanRequest{
+						SchemaVersion: contractv2.SchemaVersion, Scope: contractv2.CleanupScope{Kind: "global"},
+					})
+					return err
+				},
+				"configuration": func() error {
+					_, err := client.ValidateConfiguration(ctx, contractv2.ConfigurationValidationRequest{
+						SchemaVersion: contractv2.SchemaVersion,
+					})
+					return err
+				},
+				"diagnostics": func() error {
+					_, err := client.OperationDiagnostics(ctx, "operation_01", 0)
+					return err
+				},
+			}
+			for route, call := range calls {
+				err := call()
+				if CodeOf(err) != ErrorUpgradeRequired {
+					t.Errorf("%s: got %q, want UPGRADE_REQUIRED (%v)", route, CodeOf(err), err)
+				}
+			}
+		})
+	}
+}

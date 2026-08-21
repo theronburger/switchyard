@@ -53,6 +53,9 @@ func (c *Client) OperationDiagnostics(
 			ErrorDaemonResponseInvalid, fmt.Errorf("daemon diagnostics response is invalid"),
 		)
 	}
+	if response.StatusCode == http.StatusUpgradeRequired {
+		return contractv2.OperationDiagnostics{}, upgradeRequiredFromContents(contents)
+	}
 	if response.StatusCode != http.StatusOK {
 		var failure mutationErrorResponse
 		if decodeSingleJSON(contents, &failure) != nil || failure.SchemaVersion != contractv2.SchemaVersion ||

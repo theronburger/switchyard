@@ -85,6 +85,9 @@ func (c *Client) postConfiguration(ctx context.Context, path string, value any) 
 	if err != nil || len(responseContents) > maximumMutationResponseBytes || !secureResponseHeaders(response) {
 		return contractv2.ConfigurationStatus{}, newCodedError(ErrorDaemonResponseInvalid, fmt.Errorf("configuration response is invalid"))
 	}
+	if response.StatusCode == http.StatusUpgradeRequired {
+		return contractv2.ConfigurationStatus{}, upgradeRequiredFromContents(responseContents)
+	}
 	if response.StatusCode == http.StatusOK {
 		var status contractv2.ConfigurationStatus
 		if decodeSingleJSON(responseContents, &status) != nil || status.Validate() != nil {

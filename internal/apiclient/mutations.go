@@ -146,6 +146,9 @@ func (c *Client) postMutation(
 			fmt.Errorf("daemon mutation response is invalid"),
 		)
 	}
+	if response.StatusCode == http.StatusUpgradeRequired {
+		return contractv2.MutationReceipt{}, upgradeRequiredFromContents(responseContents)
+	}
 
 	if response.StatusCode == http.StatusAccepted {
 		var receipt contractv2.MutationReceipt

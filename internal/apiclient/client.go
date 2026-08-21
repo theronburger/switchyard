@@ -191,12 +191,20 @@ func (c *Client) declareContract(request *http.Request) {
 // alone is authoritative for the version mismatch.
 func upgradeRequiredError(response *http.Response) error {
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maximumHandshakeBytes+1))
-	if err == nil && int64(len(contents)) <= maximumHandshakeBytes {
-		var failure mutationErrorResponse
-		if decodeSingleJSON(contents, &failure) == nil && failure.Error.Code == contractv2.UpgradeRequiredCode &&
-			failure.Error.Message != "" {
-			return newContractError(failure.Error, fmt.Errorf("daemon requires a different contract schema version"))
-		}
+	if err != nil || int64(len(contents)) > maximumHandshakeBytes {
+		contents = nil
+	}
+	return upgradeRequiredFromContents(contents)
+}
+
+// upgradeRequiredFromContents maps an already-read HTTP 426 body. Every route
+// helper uses it so that a mismatch is reported as ErrorUpgradeRequired
+// whether or not the daemon's envelope was readable or from this generation.
+func upgradeRequiredFromContents(contents []byte) error {
+	var failure mutationErrorResponse
+	if decodeSingleJSON(contents, &failure) == nil && failure.Error.Code == contractv2.UpgradeRequiredCode &&
+		failure.Error.Message != "" {
+		return newContractError(failure.Error, fmt.Errorf("daemon requires a different contract schema version"))
 	}
 	return newCodedError(ErrorUpgradeRequired, fmt.Errorf("daemon requires a different contract schema version"))
 }
