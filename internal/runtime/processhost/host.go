@@ -124,9 +124,10 @@ func (host *Host) Start(ctx context.Context, spec LaunchSpec) (Ownership, error)
 	stderrPath := filepath.Join(spec.RunDirectory, StderrLogFileName)
 	command := exec.Command(spec.Executable, spec.Arguments...)
 	command.Dir = spec.Directory
-	if spec.Environment != nil {
-		command.Env = append([]string(nil), spec.Environment...)
-	}
+	// The child receives exactly the compiled environment. A nil spec means an
+	// empty environment, never the daemon's own, so daemon secrets cannot leak
+	// into an owned process group by omission.
+	command.Env = append([]string{}, spec.Environment...)
 	if spec.Stdout != nil && spec.Stderr != nil {
 		command.Stdout = spec.Stdout
 		command.Stderr = spec.Stderr
@@ -539,13 +540,20 @@ func (host *Host) startedRun(ownershipPath string) *startedRun {
 	return host.runs[filepath.Clean(ownershipPath)]
 }
 
+// watchExit establishes the kqueue exit watch. Kept as a variable solely so
+// tests can force the watch-failure path.
+var watchExit = childgroup.WatchExit
+
 // registerRun starts the exit watch for a freshly forked leader. Exit is
 // observed through kqueue before Wait ever runs, and Wait runs only under the
 // run lock, so every lock holder can rely on reaped to decide whether the PID
-// still positively denotes this child.
+// still positively denotes this child. When the watch cannot be established
+// the run is recorded as unguarded: Wait then runs outside the run lock for
+// the child's whole life, and no lock holder ever treats its PID as positive
+// identity.
 func (host *Host) registerRun(ownershipPath string, leader ProcessIdentity, command *exec.Cmd, deferReap bool) *startedRun {
 	run := &startedRun{exited: make(chan struct{}), reaped: make(chan struct{}), recorded: make(chan struct{})}
-	exited, stopWatch, err := childgroup.WatchExit(command.Process.Pid)
+	exited, stopWatch, err := watchExit(command.Process.Pid)
 	if err != nil {
 		exited, stopWatch = nil, func() {}
 	}

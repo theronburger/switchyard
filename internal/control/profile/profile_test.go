@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -97,6 +98,73 @@ func TestProfilePlannerNeverReadsRepositoryDotenvFiles(t *testing.T) {
 	}
 	if !slices.Contains(environment, "DEPLOYMENT_ENVIRONMENT=development") || !slices.Contains(environment, "PORT=31001") {
 		t.Fatalf("selector or leased port missing: %v", environment)
+	}
+}
+
+func TestPublishedRoutesOverrideConfiguredEnvironmentValues(t *testing.T) {
+	registration := profileRegistration(t)
+	service := registration.Profile.Services["web"]
+	service.Ports["http"] = configuration.Port{Publish: []configuration.PublishedURL{{Name: "WEB_URL", Scheme: "http", Host: "localhost", Path: "/"}}}
+	// Every configured layer tries to shadow the Switchyard-owned route.
+	service.Environment["WEB_URL"] = configuration.ValueRef{Literal: stringPointer("service-shadow")}
+	service.Command.Environment["WEB_URL"] = configuration.ValueRef{Literal: stringPointer("command-shadow")}
+	service.Prepare = []configuration.Command{{
+		Executable: "/usr/bin/true", WorkingDirectory: ".", Timeout: "30s",
+		Environment: map[string]configuration.ValueRef{"WEB_URL": {Literal: stringPointer("prepare-shadow")}},
+	}}
+	registration.Profile.Services["web"] = service
+	target := registration.Profile.Targets["local"]
+	target.Environment["WEB_URL"] = configuration.ValueRef{Literal: stringPointer("target-shadow")}
+	registration.Profile.Targets["local"] = target
+	registry, err := NewRegistry([]Registration{registration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewPlanBuilder(registry).Build(environmentcontrol.PlanningRequest{
+		EnvironmentID: registration.EnvironmentID, RunID: "run_01",
+		Intent:        environmentcontrol.PlanIntent{ProfileDigest: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"web"}},
+		AssignedPorts: []portlease.Lease{{Key: portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: "web", Purpose: "http"}, Host: "127.0.0.1", Port: 31001}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "WEB_URL=http://localhost:31001/"
+	if environment := plan.ServiceStages[0][0].Process.Environment; !slices.Contains(environment, want) {
+		t.Fatalf("service environment lost route precedence: %v", environment)
+	}
+	if len(plan.Preparations) != 1 || !slices.Contains(plan.Preparations[0].Environment, want) {
+		t.Fatalf("preparation environment lost route precedence: %+v", plan.Preparations)
+	}
+	for _, entry := range append(append([]string{}, plan.ServiceStages[0][0].Process.Environment...), plan.Preparations[0].Environment...) {
+		if strings.HasSuffix(entry, "-shadow") {
+			t.Fatalf("configured value shadowed a published route: %s", entry)
+		}
+	}
+}
+
+func TestInheritedEnvironmentSitsBeneathEveryOtherLayer(t *testing.T) {
+	registration := profileRegistration(t)
+	registration.InheritedEnvironment = map[string]string{"LANG": "C.UTF-8", "MODE": "inherited-shadow"}
+	registry, err := NewRegistry([]Registration{registration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewPlanBuilder(registry).Build(environmentcontrol.PlanningRequest{
+		EnvironmentID: registration.EnvironmentID, RunID: "run_01",
+		Intent:        environmentcontrol.PlanIntent{ProfileDigest: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"web"}},
+		AssignedPorts: []portlease.Lease{{Key: portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: "web", Purpose: "http"}, Host: "127.0.0.1", Port: 31001}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := plan.ServiceStages[0][0].Process.Environment
+	if !slices.Contains(environment, "LANG=C.UTF-8") || !slices.Contains(environment, "MODE=test") || slices.Contains(environment, "MODE=inherited-shadow") {
+		t.Fatalf("inherited precedence: %v", environment)
+	}
+	// An inherited entry can never replace the explicit trusted base.
+	registration.InheritedEnvironment = map[string]string{"HOME": "/hostile"}
+	if _, err := NewRegistry([]Registration{registration}); !errors.Is(err, ErrProfileInvalid) {
+		t.Fatalf("trusted base override through inheritance: %v", err)
 	}
 }
 
@@ -234,6 +302,68 @@ func TestPrivateArtifactSegmentsResolveLeasedValuesOutsideWorktree(t *testing.T)
 	}
 	if strings.HasPrefix(path, registration.WorktreeRoot) {
 		t.Fatalf("artifact escaped private runtime: %s", path)
+	}
+}
+
+func TestArtifactRollbackTokenNeverCarriesResolvedContent(t *testing.T) {
+	registration := profileRegistration(t)
+	registration.Values = map[string]string{"build-tag": "sentinel-worktree-metadata"}
+	registration.Profile.Values = map[string]configuration.ValueSource{"build-tag": {Kind: "text-file", Root: "worktree", Path: "VERSION"}}
+	registration.Profile.Artifacts["launcher"] = configuration.Artifact{
+		Filename: "launcher.cjs",
+		Segments: []configuration.ValueRef{{Literal: stringPointer("tag=")}, {Value: "build-tag"}},
+	}
+	registration.Profile.Artifacts["static"] = configuration.Artifact{Content: "static-sentinel-body\n"}
+	registration.Profile.Artifacts["static-copy"] = configuration.Artifact{Content: "static-sentinel-body\n"}
+	registry, err := NewRegistry([]Registration{registration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializer := NewArtifactMaterializer(registry)
+	change, err := materializer.Plan(context.Background(), registration.EnvironmentID, "run_01", environmentcontrol.ProjectionRequest{
+		ID: artifactProjectionID, ArtifactIDs: []string{"launcher", "static", "static-copy"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(change.RollbackToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"sentinel-worktree-metadata", "tag=", "static-sentinel-body"} {
+		if strings.Contains(string(decoded), forbidden) {
+			t.Fatalf("rollback token persisted resolved content %q: %s", forbidden, decoded)
+		}
+	}
+	if err := materializer.Apply(context.Background(), change); err != nil {
+		t.Fatal(err)
+	}
+	artifactDirectory := filepath.Join(registration.RuntimeRoot, "repositories", registration.ProfileKey, registration.WorktreeID,
+		"environments", registration.EnvironmentID, "runs", "run_01", "artifacts")
+	if contents, err := os.ReadFile(filepath.Join(artifactDirectory, "launcher.cjs")); err != nil || string(contents) != "tag=sentinel-worktree-metadata" {
+		t.Fatalf("materialized segment artifact: %q %v", contents, err)
+	}
+	for _, filename := range []string{"static", "static-copy"} {
+		if contents, err := os.ReadFile(filepath.Join(artifactDirectory, filename)); err != nil || string(contents) != "static-sentinel-body\n" {
+			t.Fatalf("materialized duplicate-content artifact %s: %q %v", filename, contents, err)
+		}
+	}
+	// Re-applying the same change is idempotent from the disk alone.
+	if err := materializer.Apply(context.Background(), change); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	// Rollback works from the digest-only token, as it must after a restart.
+	restarted := NewArtifactMaterializer(registry)
+	if err := restarted.Rollback(context.Background(), change); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(artifactDirectory, "launcher.cjs")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact survived rollback: %v", err)
+	}
+	// A digest-only token cannot be applied by a materializer that never
+	// planned it: there is no content to write and nothing matching on disk.
+	if err := restarted.Apply(context.Background(), change); !errors.Is(err, ErrProfileInvalid) {
+		t.Fatalf("apply without planned content: %v", err)
 	}
 }
 

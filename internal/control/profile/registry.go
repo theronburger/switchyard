@@ -31,7 +31,13 @@ type Registration struct {
 	ExecutablePath     string
 	DaemonInstanceID   string
 	Values             map[string]string
-	Profile            configuration.Repository
+	// InheritedEnvironment holds the daemon environment entries selected by
+	// the accepted machine.execution.inheritedEnvironment allowlist. They form
+	// the lowest layer of the trusted process base beneath HOME, PATH, and
+	// TMPDIR; every configured layer and every Switchyard-owned value
+	// overrides them.
+	InheritedEnvironment map[string]string
+	Profile              configuration.Repository
 }
 
 // Registry resolves the profile registration for an environment. Every
@@ -147,5 +153,16 @@ func validRegistration(registration Registration) bool {
 			return false
 		}
 	}
+	if len(registration.InheritedEnvironment) > configuration.MaximumInheritedEnvironmentNames {
+		return false
+	}
+	for name, value := range registration.InheritedEnvironment {
+		if !inheritedNamePattern.MatchString(name) || name == "HOME" || name == "PATH" || name == "TMPDIR" ||
+			strings.ContainsRune(value, 0) {
+			return false
+		}
+	}
 	return true
 }
+
+var inheritedNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

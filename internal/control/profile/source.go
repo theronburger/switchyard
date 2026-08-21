@@ -10,6 +10,7 @@ import (
 	"time"
 
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
+	"github.com/theronburger/switchyard/internal/runtime/helperenv"
 )
 
 const maximumSourceOutputBytes = 16 * 1024 * 1024
@@ -50,6 +51,7 @@ func (reader SourceReader) Read(ctx context.Context, worktreeRoot string) (envir
 
 func (reader SourceReader) git(ctx context.Context, root string, arguments ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, reader.GitExecutable, append([]string{"-C", root}, arguments...)...)
+	command.Env = helperenv.Sanitized()
 	var stdout limitedBuffer
 	command.Stdout = &stdout
 	command.Stderr = nil

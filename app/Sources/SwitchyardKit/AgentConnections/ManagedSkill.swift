@@ -10,9 +10,19 @@ enum ManagedSkillError: Error {
     case changed
     case installFailed
     case recoveryRequired(String)
+    /// The destination holds a skill directory that Switchyard did not
+    /// install and whose contents differ from the bundled release. It is
+    /// left untouched; the owner must move it aside deliberately.
+    case foreignSkill(String)
 }
 
 enum ManagedSkill {
+    /// Ownership marker written into every installed managed skill tree.
+    /// Only a directory carrying this marker (or one byte-identical to the
+    /// bundled release) is ever replaced by a repair.
+    static let ownershipMarkerName = ".switchyard-managed-skill"
+    static let ownershipMarkerContents = Data("switchyard-managed-skill-v1\n".utf8)
+
     private static let maximumFileBytes = 2 * 1024 * 1024
     private static let maximumTreeBytes = 8 * 1024 * 1024
 
@@ -29,11 +39,20 @@ enum ManagedSkill {
         try fingerprint(root, requireCurrentUserOwner: true)
     }
 
+    /// Whether `root` carries Switchyard's ownership marker as a regular,
+    /// owner-only file with the expected contents.
+    static func isOwned(_ root: URL) -> Bool {
+        let marker = root.appending(path: ownershipMarkerName, directoryHint: .notDirectory)
+        guard let contents = try? readFile(marker, requireCurrentUserOwner: true) else { return false }
+        return contents == ownershipMarkerContents
+    }
+
     private static func fingerprint(
         _ root: URL,
         requireCurrentUserOwner: Bool
     ) throws -> Data {
         let entries = try readTree(root, requireCurrentUserOwner: requireCurrentUserOwner)
+            .filter { $0.relativePath != ownershipMarkerName }
         guard entries.contains(where: { $0.relativePath == "SKILL.md" }) else {
             throw ManagedSkillError.missingManifest
         }
@@ -85,12 +104,28 @@ enum ManagedSkill {
             )
             try write(entry.contents, to: target)
         }
-        guard try fingerprint(staged) == fingerprint(source) else {
+        try write(
+            ownershipMarkerContents,
+            to: staged.appending(path: ownershipMarkerName, directoryHint: .notDirectory)
+        )
+        let sourceFingerprint = try fingerprint(source)
+        guard try fingerprint(staged) == sourceFingerprint else {
             throw ManagedSkillError.changed
         }
 
         if exists(destination) {
-            _ = try readTree(destination, requireCurrentUserOwner: true)
+            // Replace only a tree Switchyard installed (marker present) or one
+            // byte-identical to the bundled release (a pre-marker managed
+            // install being adopted). Anything else is user-authored and a
+            // repair never moves, renames, or deletes it.
+            if isOwned(destination) {
+                _ = try readTree(destination, requireCurrentUserOwner: true)
+            } else {
+                guard let existingFingerprint = try? fingerprintOwned(destination),
+                      existingFingerprint == sourceFingerprint else {
+                    throw ManagedSkillError.foreignSkill(destination.path)
+                }
+            }
             guard exclusiveRename(destination, backup) else { throw ManagedSkillError.installFailed }
             backupExists = true
         }

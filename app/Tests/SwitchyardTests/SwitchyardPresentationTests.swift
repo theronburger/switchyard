@@ -123,28 +123,50 @@ struct SwitchyardPresentationTests {
     func `Jira relay command and summary stay exact and bounded`() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let relayRoot = root.appending(path: "jira-mcp-relay", directoryHint: .isDirectory)
-        let script = relayRoot.appending(path: "dist/src/issue-summary.js", directoryHint: .notDirectory)
-        let node = root.appending(path: "node", directoryHint: .notDirectory)
+        let relay = root.appending(path: "relay", directoryHint: .notDirectory)
+        let configuration = root.appending(path: "integrations/jira-relay.json", directoryHint: .notDirectory)
         try FileManager.default.createDirectory(
-            at: script.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+            at: configuration.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
         )
-        try Data("export {};\n".utf8).write(to: script)
-        try Data("#!/bin/sh\n".utf8).write(to: node)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node.path)
+        try Data("#!/bin/sh\n".utf8).write(to: relay)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: relay.path)
+        try Data(#"{"schemaVersion":1,"executable":"\#(relay.path)","arguments":["--summary"]}"#.utf8)
+            .write(to: configuration)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let resolver = JiraRelayCommandResolver(
-            homeDirectory: root,
-            environment: [
-                "SWITCHYARD_JIRA_RELAY_ROOT": relayRoot.path,
-                "SWITCHYARD_NODE_BINARY": node.path,
-            ]
-        )
+        let resolver = JiraRelayCommandResolver(configurationURL: configuration)
         let command = try resolver.command(issueKey: "PROJ-830")
-        #expect(command.executableURL == node)
-        #expect(command.arguments == [script.path, "PROJ-830"])
+        #expect(command.executableURL == relay)
+        #expect(command.arguments == ["--summary", "PROJ-830"])
+        #expect(throws: JiraRelayClientError.invalidResponse) {
+            try resolver.command(issueKey: "proj-830; rm")
+        }
+
+        // Without an owner-authored relay file the integration is unavailable:
+        // the product ships no relay path of its own.
+        let missing = JiraRelayCommandResolver(configurationURL: root.appending(path: "absent.json"))
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try missing.command(issueKey: "PROJ-830")
+        }
+        // A group- or world-writable configuration is refused.
+        try FileManager.default.setAttributes([.posixPermissions: 0o664], ofItemAtPath: configuration.path)
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try resolver.command(issueKey: "PROJ-830")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
+        // A relative or non-executable relay is refused.
+        try Data(#"{"schemaVersion":1,"executable":"relay"}"#.utf8).write(to: configuration)
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try resolver.command(issueKey: "PROJ-830")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: relay.path)
+        try Data(#"{"schemaVersion":1,"executable":"\#(relay.path)"}"#.utf8).write(to: configuration)
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try resolver.command(issueKey: "PROJ-830")
+        }
 
         let data = Data(#"{"schemaVersion":1,"key":"PROJ-830","summary":"Example issue using fictional data","status":"In Development","assignee":"Example User","priority":"Medium","updated":"2026-08-12T13:21:31.616Z","url":"https://example.atlassian.net/browse/PROJ-830"}"#.utf8)
         let summary = try JSONDecoder().decode(JiraIssueSummary.self, from: data)

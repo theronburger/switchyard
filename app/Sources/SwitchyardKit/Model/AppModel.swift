@@ -208,8 +208,10 @@ public final class AppModel {
     @ObservationIgnored private let configurationActions: (any ConfigurationActionSubmitting)?
     @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
     @ObservationIgnored private var fixtureProvider: (any StatusProviding)?
+    @ObservationIgnored private var operationStatus: (any StatusProviding)?
     @ObservationIgnored private let canonicalFixtureURL: URL?
     @ObservationIgnored private let pollingInterval: Duration
+    @ObservationIgnored private let operationPollingInterval: Duration
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
     @ObservationIgnored private var environmentActionMonitor: Task<Void, Never>?
     @ObservationIgnored private var workspaceActionMonitor: Task<Void, Never>?
@@ -280,7 +282,9 @@ public final class AppModel {
         cleanupActions: any CleanupActionSubmitting = LiveCleanupActionClient(),
         configurationActions: (any ConfigurationActionSubmitting)? = LiveConfigurationActionClient(),
         agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
-        pollingInterval: Duration = .seconds(5)
+        operationStatus: (any StatusProviding)? = LiveStatusReader(),
+        pollingInterval: Duration = .seconds(5),
+        operationPollingInterval: Duration = .seconds(1)
     ) {
         self.scenario = .canonical
         self.isFixtureMode = false
@@ -291,8 +295,10 @@ public final class AppModel {
         self.cleanupActions = cleanupActions
         self.configurationActions = configurationActions
         self.agentConnections = agentConnections
+        self.operationStatus = operationStatus
         self.canonicalFixtureURL = nil
         self.pollingInterval = pollingInterval
+        self.operationPollingInterval = operationPollingInterval
     }
 
     public init(
@@ -311,7 +317,10 @@ public final class AppModel {
         self.agentConnections = nil
         self.canonicalFixtureURL = canonicalFixtureURL
         self.pollingInterval = .seconds(5)
-        self.fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        self.operationPollingInterval = .seconds(1)
+        let fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        self.fixtureProvider = fixtureProvider
+        self.operationStatus = fixtureProvider
     }
 
     public convenience init(
@@ -344,6 +353,7 @@ public final class AppModel {
                 cleanupActions: LiveCleanupActionClient(connectionFactory: connectionFactory),
                 configurationActions: LiveConfigurationActionClient(connectionFactory: connectionFactory),
                 agentConnections: agentConnections,
+                operationStatus: LiveStatusReader(connectionFactory: connectionFactory),
                 pollingInterval: pollingInterval
             )
         case .fixture(let scenario):
@@ -354,7 +364,9 @@ public final class AppModel {
     public func select(scenario: FixtureScenario) async {
         guard isFixtureMode, scenario != self.scenario else { return }
         self.scenario = scenario
-        fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        let provider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        fixtureProvider = provider
+        operationStatus = provider
         configurationState = .idle
         await refresh()
     }
@@ -1033,10 +1045,21 @@ public final class AppModel {
         }
     }
 
+    /// Maximum number of status polls one accepted operation may take before
+    /// the app reports a timeout (900 × the one-second default is 15 minutes).
+    static let maximumOperationPolls = 900
+
+    /// Waits for an accepted operation by polling status only.
+    ///
+    /// This deliberately does not call `refresh()`: a full lifecycle refresh
+    /// inspects the LaunchAgent and may install, kickstart, or reload the
+    /// daemon, which must never happen while the daemon is executing an
+    /// operation the app just submitted. Lifecycle, doctor, and connection
+    /// state are left to the scheduled polling task.
     private func waitForOperation(_ receipt: MutationReceipt) async throws {
-        for _ in 0..<900 {
+        for _ in 0..<Self.maximumOperationPolls {
             try Task.checkCancellation()
-            await refresh()
+            await pollOperationStatus()
             if let operation = snapshot?.operations.first(where: { $0.id == receipt.operationId }) {
                 switch operation.state {
                 case .succeeded:
@@ -1058,9 +1081,19 @@ public final class AppModel {
                     break
                 }
             }
-            try await Task.sleep(for: .seconds(1))
+            try await Task.sleep(for: operationPollingInterval)
         }
         throw EnvironmentWorkflowError.timedOut
+    }
+
+    /// Reads one status snapshot without touching lifecycle state. A failed
+    /// read keeps the previous snapshot so a transient error during an
+    /// operation never flips the app into a repair path mid-operation.
+    private func pollOperationStatus() async {
+        guard let operationStatus else { return }
+        guard let loaded = try? await operationStatus.loadStatus() else { return }
+        snapshot = loaded
+        lastRefreshedAt = Date()
     }
 
     private func refreshFixture(using provider: any StatusProviding) async {

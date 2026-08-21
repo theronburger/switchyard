@@ -32,7 +32,7 @@ The app is the primary human experience:
 - notifications with direct actions such as Open Logs, Restart, Stop, or Review Plan.
 - per-service committed and uncommitted line attribution, with shared repository changes kept separate;
 - exact-worktree editor actions such as opening the checkout in a new Zed window;
-- branch-derived Jira references with optional app-owned reads through the raw relay contract, isolated from daemon health;
+- branch-derived Jira references with optional app-owned reads through a private, owner-declared relay command (`integrations/jira-relay.json` under Application Support; the product ships no relay and knows no relay path), isolated from daemon health;
 - daemon-owned GitHub pull-request and CI observations through the user's authenticated Keychain-backed `gh` session, isolated from environment health;
 - running state rendered directly in the menu-bar mark, with configurable compact attention and resource indicators beside it.
 

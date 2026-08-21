@@ -26,6 +26,7 @@ type repositoryInventory struct {
 	AcceptedConfigurationDigest string
 	FirstPort                   int
 	LastPort                    int
+	InheritedEnvironment        []string
 	Complete                    bool
 	AttemptedAt                 time.Time
 }

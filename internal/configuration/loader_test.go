@@ -185,6 +185,79 @@ func TestParseAllowsExplicitHostHomeReferenceOnly(t *testing.T) {
 	}
 }
 
+func TestParseRejectsManagedWorktreesRootInsideRepositoryRoot(t *testing.T) {
+	rejected := []string{"/tmp/sample-one", "/tmp/sample-one/worktrees", "/tmp/sample-one/.switchyard/nested/deep"}
+	for _, root := range rejected {
+		configured := strings.Replace(validConfiguration, "managedWorktreesRoot: /tmp/sample-one-worktrees", "managedWorktreesRoot: "+root, 1)
+		if _, err := Parse([]byte(configured)); err == nil {
+			t.Fatalf("managed worktrees root %q inside the repository was accepted", root)
+		}
+	}
+	// A sibling whose name merely shares the prefix is not nested.
+	if _, err := Parse([]byte(validConfiguration)); err != nil {
+		t.Fatalf("sibling managed root rejected: %v", err)
+	}
+}
+
+func TestParseValidatesPublishedRouteNamesAsEnvironmentNames(t *testing.T) {
+	withRoute := func(name string) string {
+		return strings.Replace(validConfiguration, "services: {}", `services:
+      web:
+        displayName: Web
+        kind: web
+        ports:
+          http:
+            publish:
+              - {name: "`+name+`", scheme: http, host: localhost, path: /}
+        command: {executable: /usr/bin/true, workingDirectory: ., timeout: 30s}`, 1)
+	}
+	if _, err := Parse([]byte(withRoute("WEB_URL"))); err != nil {
+		t.Fatalf("valid route name rejected: %v", err)
+	}
+	for _, name := range []string{"HOME", "PATH", "TMPDIR", "web url", "1URL", "WEB-URL", "A=B", " "} {
+		if _, err := Parse([]byte(withRoute(name))); err == nil {
+			t.Fatalf("published route name %q was accepted", name)
+		}
+	}
+}
+
+func TestParseValidatesInheritedEnvironmentAllowlist(t *testing.T) {
+	withInherited := func(list string) string {
+		return strings.Replace(validConfiguration, "inheritedEnvironment: []", "inheritedEnvironment: "+list, 1)
+	}
+	loaded, err := Parse([]byte(withInherited("[LANG, SSL_CERT_FILE]")))
+	if err != nil {
+		t.Fatalf("valid allowlist rejected: %v", err)
+	}
+	if got := loaded.Document.Machine.Execution.InheritedEnvironment; len(got) != 2 || got[0] != "LANG" {
+		t.Fatalf("allowlist: %v", got)
+	}
+	for _, list := range []string{"[HOME]", "[PATH]", "[TMPDIR]", "[LANG, LANG]", "[\"1BAD\"]", "[\"A=B\"]", "[\"\"]"} {
+		if _, err := Parse([]byte(withInherited(list))); err == nil {
+			t.Fatalf("inherited environment %s was accepted", list)
+		}
+	}
+	names := make([]string, MaximumInheritedEnvironmentNames+1)
+	for index := range names {
+		names[index] = "NAME_" + strings.Repeat("X", index+1)
+	}
+	if _, err := Parse([]byte(withInherited("[" + strings.Join(names, ", ") + "]"))); err == nil {
+		t.Fatal("unbounded inherited environment was accepted")
+	}
+}
+
+func TestInheritedEnvironmentCopiesOnlyListedNames(t *testing.T) {
+	daemon := map[string]string{"LANG": "C.UTF-8", "SECRET_TOKEN": "must-not-cross", "HOME": "/hostile", "NULL": "a\x00b"}
+	lookup := func(name string) (string, bool) {
+		value, found := daemon[name]
+		return value, found
+	}
+	got := InheritedEnvironment([]string{"LANG", "HOME", "MISSING", "NULL", "bad name"}, lookup)
+	if len(got) != 1 || got["LANG"] != "C.UTF-8" {
+		t.Fatalf("inherited environment: %v", got)
+	}
+}
+
 func TestParseRejectsUnknownNestedServiceField(t *testing.T) {
 	configured := strings.Replace(validConfiguration, "services: {}", `services:
       web:

@@ -19,7 +19,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
     private var fingerprintCache = BoundedFileFingerprintCache()
 
     public init(
-        binaryProvider: any DaemonBinaryProviding = BundleDaemonBinaryProvider(),
+        binaryProvider: (any DaemonBinaryProviding)? = nil,
         commandRunner: any ExactArgvRunning = FoundationExactArgvRunner(),
         paths: LaunchAgentPaths = .standard(),
         launchctlURL: URL = URL(fileURLWithPath: "/bin/launchctl"),
@@ -27,7 +27,9 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         fileManager: FileManager = .default,
         channel: SwitchyardChannel = .release
     ) {
-        self.binaryProvider = binaryProvider
+        // The provider shares the manager's channel so a release-channel manager
+        // can never be handed an environment-overridden daemon executable.
+        self.binaryProvider = binaryProvider ?? BundleDaemonBinaryProvider(channel: channel)
         self.commandRunner = commandRunner
         self.paths = paths
         self.launchctlURL = launchctlURL
@@ -218,7 +220,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
     private func packagedBinaryIfAvailable() throws -> DaemonBinary? {
         do {
             return try binaryProvider.daemonBinary()
-        } catch let error as DaemonBinarySourceError where error == .notPackaged {
+        } catch DaemonBinarySourceError.notPackaged {
             return nil
         }
     }

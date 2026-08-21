@@ -293,6 +293,16 @@ The app exposes **Cleanup…** globally and at repository, worktree, and environ
 
 Cleanup candidate kinds include stopped owned processes, labelled infrastructure, private run artifacts, private caches, and Switchyard state maintenance. Each kind has its own ownership proof and protections. Worktree archive remains a separate protected lifecycle action. Dependency cleaning or other repository maintenance may be a separately confirmed exact profile action, but arbitrary commands and declared paths never acquire trusted cleanup or deletion authority.
 
+## Private app integrations
+
+Optional app-side integrations follow the same boundary as profiles: the product ships a generic contract and no identity, path, or helper of its own. The read-only Jira ticket panel is the current example. It is available only when the owner declares a relay command in `integrations/jira-relay.json` beside `configuration.yaml`:
+
+```json
+{"schemaVersion": 1, "executable": "/absolute/path/to/relay", "arguments": ["--summary"]}
+```
+
+The app runs exactly `executable` + `arguments` + the validated issue key (no shell, no `PATH` search, no environment-variable fallbacks) and accepts only a bounded, schema-versioned JSON summary whose `url` is an `https` Atlassian Cloud browse link for that same key. The file must be a regular, owner-only file owned by the current user; the executable must be a regular, non-group/world-writable executable owned by the user or root. Without the file the panel says the integration is not configured. Nothing about the relay, its location, or its tenant exists in product code, tests, fixtures, or documentation beyond this contract.
+
 ## Agent integration
 
 The portable foundation remains the generic MCP server plus its managed skill. Tools accept exact worktree paths or stable IDs and return bounded structured context. New cleanup tools use the same plan/apply contract. MCP contains no repository or lifecycle logic.

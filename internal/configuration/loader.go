@@ -353,6 +353,9 @@ func validateDocument(document Document) error {
 	if document.Machine.Execution.ShellDefault != "deny" {
 		return errors.New("machine execution shellDefault must be deny")
 	}
+	if err := validateInheritedEnvironment(document.Machine.Execution.InheritedEnvironment); err != nil {
+		return err
+	}
 	if len(document.Repositories) == 0 {
 		return errors.New("at least one repository is required")
 	}
@@ -370,6 +373,13 @@ func validateDocument(document Document) error {
 			if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
 				return fmt.Errorf("repository %q %s must be a clean absolute path", key, field)
 			}
+		}
+		// Managed worktrees live beside a checkout, never inside it: a managed
+		// root nested anywhere under the repository root would place
+		// Switchyard-created worktrees and ownership evidence inside the
+		// consuming repository.
+		if pathContains(repository.Root, repository.Git.ManagedWorktreesRoot) {
+			return fmt.Errorf("repository %q git.managedWorktreesRoot must not be inside the repository root", key)
 		}
 		if other, exists := seenRoots[repository.Root]; exists {
 			return fmt.Errorf("repositories %q and %q use the same root", other, key)
@@ -550,7 +560,10 @@ func validateService(repositoryKey, id string, service Service, repository Repos
 		}
 		seenPublished := make(map[string]struct{}, len(port.Publish))
 		for _, published := range port.Publish {
-			if strings.TrimSpace(published.Name) == "" ||
+			// Published routes become child environment names, so they obey the
+			// same rules as every other configured environment entry and may
+			// never shadow the trusted process base.
+			if !environmentNamePattern.MatchString(published.Name) || isTrustedBaseName(published.Name) ||
 				(published.Scheme != "http" && published.Scheme != "https") ||
 				(published.Host != "loopback" && published.Host != "localhost") ||
 				(published.Path != "" && !strings.HasPrefix(published.Path, "/")) {
@@ -635,6 +648,56 @@ func validateValueEnvironment(environment map[string]ValueRef, _ string) error {
 		}
 	}
 	return nil
+}
+
+// isTrustedBaseName reports whether name belongs to the small trusted process
+// base that configured values may never replace.
+func isTrustedBaseName(name string) bool {
+	return name == "HOME" || name == "PATH" || name == "TMPDIR"
+}
+
+// MaximumInheritedEnvironmentNames bounds machine.execution.inheritedEnvironment.
+const MaximumInheritedEnvironmentNames = 64
+
+// validateInheritedEnvironment applies the environment-name rules to the
+// machine-wide allowlist of daemon environment names that may be copied into
+// every child as part of the trusted base. The trusted base names themselves
+// are always compiled explicitly and may not be listed, and the list is an
+// ordered set: duplicates are rejected rather than silently collapsed.
+func validateInheritedEnvironment(names []string) error {
+	if len(names) > MaximumInheritedEnvironmentNames {
+		return fmt.Errorf("machine execution inheritedEnvironment exceeds %d names", MaximumInheritedEnvironmentNames)
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if !environmentNamePattern.MatchString(name) || isTrustedBaseName(name) {
+			return fmt.Errorf("machine execution inheritedEnvironment name %q is invalid", name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("machine execution inheritedEnvironment name %q is duplicated", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+// InheritedEnvironment returns the daemon environment entries selected by the
+// validated machine allowlist. Names absent from the daemon environment are
+// skipped; the result is sorted and contains only NAME=value pairs for listed
+// names, so nothing outside the accepted allowlist can cross into a child.
+func InheritedEnvironment(names []string, lookup func(string) (string, bool)) map[string]string {
+	result := make(map[string]string, len(names))
+	for _, name := range names {
+		if !environmentNamePattern.MatchString(name) || isTrustedBaseName(name) {
+			continue
+		}
+		value, found := lookup(name)
+		if !found || strings.ContainsRune(value, 0) {
+			continue
+		}
+		result[name] = value
+	}
+	return result
 }
 
 func validateValueRef(value ValueRef, repository Repository) error {
@@ -744,6 +807,12 @@ func validateServiceGraph(services map[string]Service) error {
 		}
 	}
 	return nil
+}
+
+// pathContains reports whether candidate is root itself or lies lexically
+// beneath it. Both paths must already be clean and absolute.
+func pathContains(root, candidate string) bool {
+	return candidate == root || strings.HasPrefix(candidate, root+string(filepath.Separator))
 }
 
 func cleanAbsolutePath(path string) bool {

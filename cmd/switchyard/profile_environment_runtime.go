@@ -35,6 +35,28 @@ type configuredEnvironment struct {
 	ProfileKey    string
 	ProfileDigest string
 	Profile       configuration.Repository
+	// UnavailableCode, when set, names why this worktree cannot start new
+	// work (for example a configured value source that is missing or
+	// invalid). Existing runs are still observed, reconciled, and stopped; the
+	// failure is bounded to this worktree and never aborts daemon boot.
+	UnavailableCode string
+}
+
+const worktreeValueSourceUnavailableCode = "WORKTREE_VALUE_SOURCE_UNAVAILABLE"
+
+// readConfiguredValues resolves a worktree's configured value sources. A
+// missing or invalid source is a bounded worktree condition: the worktree is
+// registered with no resolved values and marked unavailable so that one
+// checkout with a deleted metadata file cannot keep every other repository's
+// daemon functions from booting. The returned values never contain file
+// contents on failure, and the failure text names only the configured value
+// id, never the bytes that were read.
+func readConfiguredValues(profile configuration.Repository, repositoryRoot, worktreeRoot string) (map[string]string, string) {
+	values, err := profilecontrol.ReadValues(profile, repositoryRoot, worktreeRoot)
+	if err != nil {
+		return map[string]string{}, worktreeValueSourceUnavailableCode
+	}
+	return values, ""
 }
 
 type configuredActionResolver struct {
@@ -109,6 +131,10 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 	registrations := make([]profilecontrol.Registration, 0)
 	runRoots := make(daemon.EnvironmentRunRootMap)
 	workspaceRegistrations := make([]workspacecontrol.ProfileRegistration, 0)
+	// The accepted machine allowlist is the only route by which a daemon
+	// environment entry reaches a child; it is resolved once at boot from the
+	// validated revision, never from a checkout.
+	inheritedEnvironment := configuration.InheritedEnvironment(discovered.InheritedEnvironment, os.LookupEnv)
 	for _, repository := range discovered.Repositories {
 		profile, found := discovered.Profiles[repository.ID]
 		if !found || !profile.Enabled {
@@ -131,13 +157,11 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 				}
 			}
 			executablePath := configuredExecutablePath(home, profile)
-			values, err := profilecontrol.ReadValues(profile, repository.RootPath, worktree.Path)
-			if err != nil {
-				return nil, err
-			}
+			values, unavailableCode := readConfiguredValues(profile, repository.RootPath, worktree.Path)
 			metadata := configuredEnvironment{
 				EnvironmentID: environmentID, RepositoryID: repository.ID, Worktree: worktree,
 				ProfileKey: profileKey, ProfileDigest: profileDigest, Profile: profile,
+				UnavailableCode: unavailableCode,
 			}
 			environments = append(environments, metadata)
 			registrations = append(registrations, profilecontrol.Registration{
@@ -146,7 +170,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 				WorktreeRoot: worktree.Path, RuntimeRoot: runtimeRoot, CacheRoot: cacheRoot,
 				HomeDirectory: homeDirectory, HostHomeDirectory: home, TemporaryDirectory: temporaryDirectory,
 				ExecutablePath: executablePath, DaemonInstanceID: instanceID,
-				Values: values, Profile: profile,
+				Values: values, InheritedEnvironment: inheritedEnvironment, Profile: profile,
 			})
 			if len(profile.Preparation.Steps) != 0 {
 				ownership := workspacecontrol.OwnershipAdopted
@@ -156,7 +180,7 @@ func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, path
 				workspaceRegistrations = append(workspaceRegistrations, workspacecontrol.ProfileRegistration{
 					WorktreeID: worktree.ID, WorktreeRoot: worktree.Path, ProfileKey: profileKey,
 					ProfileDigest: profileDigest, RuntimeRoot: runtimeRoot, Ownership: ownership,
-					Preparation: profile.Preparation,
+					Preparation: profile.Preparation, InheritedEnvironment: inheritedEnvironment,
 				})
 			}
 		}
@@ -341,6 +365,10 @@ func (resolver configuredActionResolver) ResolveStart(ctx context.Context, reque
 	registered, found := resolver.byWorktree[request.WorktreeID]
 	if !found {
 		return daemon.EnvironmentStartResolution{}, configuredActionError(404, "WORKTREE_NOT_FOUND", "The requested worktree is not available.", false)
+	}
+	if registered.UnavailableCode != "" {
+		return daemon.EnvironmentStartResolution{}, configuredActionError(409, registered.UnavailableCode,
+			"A configured value source for this worktree is missing or invalid. Restore the source file in the worktree; it becomes available when the daemon next loads its configuration.", false)
 	}
 	targetID := request.TargetID
 	if targetID == "" {
@@ -545,10 +573,11 @@ func recoverPinnedProfiles(
 		if err != nil {
 			return nil, nil, errors.New("a persisted environment is pinned to a configuration revision that is no longer retained")
 		}
-		values, err := profilecontrol.ReadValues(profile, registration.RepositoryRoot, registration.WorktreeRoot)
-		if err != nil {
-			return nil, nil, err
-		}
+		// A pinned run is live; its value sources are re-read so that a later
+		// plan sees exact inputs, but a source that vanished since the run
+		// started only marks the worktree unavailable for new work. The run
+		// itself is still recovered, observed, and stoppable.
+		values, unavailableCode := readConfiguredValues(profile, registration.RepositoryRoot, registration.WorktreeRoot)
 		pinned := registration
 		pinned.ProfileDigest = reference.ProfileDigest
 		pinned.Profile = profile
@@ -557,6 +586,9 @@ func recoverPinnedProfiles(
 		pinnedMetadata := metadata
 		pinnedMetadata.ProfileDigest = reference.ProfileDigest
 		pinnedMetadata.Profile = profile
+		if unavailableCode != "" {
+			pinnedMetadata.UnavailableCode = unavailableCode
+		}
 		pinnedEnvironments = append(pinnedEnvironments, pinnedMetadata)
 	}
 	return pinnedRegistrations, pinnedEnvironments, nil

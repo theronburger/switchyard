@@ -342,10 +342,12 @@ func workspaceFailure(err error, resourceKind, resourceID string) contractv2.Con
 		failure.Retryable = false
 		failure.NextAction = "inspect_workspace_ownership"
 	case errors.Is(err, workspacecontrol.ErrManagedRecord):
+		// Re-adoption is the repair: it re-verifies the worktree's identity and
+		// safety and rewrites the private ownership record.
 		failure.Code = "WORKSPACE_OWNERSHIP_INVALID"
-		failure.Message = "The Switchyard ownership record is invalid or no longer matches the worktree."
+		failure.Message = "The Switchyard ownership record is invalid or no longer matches the worktree. Adopt the worktree again to re-verify it and rewrite the record."
 		failure.Retryable = false
-		failure.NextAction = "repair_workspace_ownership"
+		failure.NextAction = "adopt_worktree"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		failure.Code = "WORKSPACE_ACTION_INTERRUPTED"
 		failure.Message = "The workspace action was interrupted before it completed."

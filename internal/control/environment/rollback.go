@@ -263,10 +263,16 @@ func safeFailureDetail(err error, phase OperationPhase) OperationFailure {
 		return failure
 	}
 	if errors.Is(err, processhost.ErrOwnershipMismatch) || errors.Is(err, processhost.ErrOrphanUnverified) {
+		// There is no automatic repair: Switchyard never signals a process it
+		// cannot prove it owns. The recovery that exists is to inspect the
+		// operation's diagnostics for the affected service, end those
+		// processes by hand, and retry the stop, which completes as soon as no
+		// unverified process remains in the owned group.
 		return OperationFailure{
-			Code:      "ENVIRONMENT_PROCESS_OWNERSHIP_UNVERIFIED",
-			Message:   "Switchyard could not verify ownership of one or more service processes, so it did not signal them.",
-			Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: "repair_process_ownership",
+			Code: "ENVIRONMENT_PROCESS_OWNERSHIP_UNVERIFIED",
+			Message: "Switchyard could not verify ownership of one or more service processes, so it did not signal them. " +
+				"Inspect the operation diagnostics, end those processes yourself, then retry the stop.",
+			Retryable: true, Phase: phase, ResourceKind: "environment", NextAction: nextActionInspectDiagnostics,
 		}
 	}
 	if errors.Is(err, context.Canceled) {

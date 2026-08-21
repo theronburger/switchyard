@@ -58,7 +58,8 @@ const pinnedRecoveryWorker = `      worker:
 
 func acceptRecoveryConfiguration(t *testing.T, store *state.Store, revision int64, root string, services string) configuration.Loaded {
 	t.Helper()
-	document := strings.NewReplacer("ROOT", root, "WORKTREES", filepath.Join(root, "worktrees"), "SERVICES\n", services).Replace(pinnedRecoveryDocument)
+	managedWorktreesRoot := filepath.Join(t.TempDir(), "worktrees")
+	document := strings.NewReplacer("ROOT", root, "WORKTREES", managedWorktreesRoot, "SERVICES\n", services).Replace(pinnedRecoveryDocument)
 	loaded, err := configuration.Parse([]byte(document))
 	if err != nil {
 		t.Fatal(err)

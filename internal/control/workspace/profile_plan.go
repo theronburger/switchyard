@@ -29,6 +29,10 @@ type ProfileRegistration struct {
 	RuntimeRoot   string
 	Ownership     Ownership
 	Preparation   configuration.Preparation
+	// InheritedEnvironment is the accepted machine allowlist of daemon
+	// environment entries; it sits beneath the explicit trusted base and
+	// beneath every configured step value.
+	InheritedEnvironment map[string]string
 }
 
 type ProfilePlanBuilder struct {
@@ -87,12 +91,21 @@ func (builder ProfilePlanBuilder) Build(request PlanningRequest) (Plan, error) {
 		if err != nil {
 			return Plan{}, ErrInvalidPlan
 		}
-		environment := []string{
-			"HOME=" + builder.home,
-			"PATH=" + trustedExecutablePath(configured.Executable),
-			"TMPDIR=" + builder.temporary,
+		values := make(map[string]string, len(registration.InheritedEnvironment)+len(configured.Environment)+3)
+		for name, value := range registration.InheritedEnvironment {
+			if name == "HOME" || name == "PATH" || name == "TMPDIR" || strings.ContainsRune(value, 0) {
+				return Plan{}, ErrInvalidPlan
+			}
+			values[name] = value
 		}
+		values["HOME"] = builder.home
+		values["PATH"] = trustedExecutablePath(configured.Executable)
+		values["TMPDIR"] = builder.temporary
 		for name, value := range configured.Environment {
+			values[name] = value
+		}
+		environment := make([]string, 0, len(values))
+		for name, value := range values {
 			environment = append(environment, name+"="+value)
 		}
 		sort.Strings(environment)

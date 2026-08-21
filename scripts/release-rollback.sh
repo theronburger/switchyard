@@ -41,8 +41,14 @@ Rollback plan for $repository
      gh release edit $tag --repo $repository --latest --draft=false --prerelease=false
 
 2. Verify the rolled-back pointer serves the expected signed appcast and archive.
-     curl -fsSL https://github.com/$repository/releases/latest/download/appcast.xml \\
-       | scripts/verify-appcast.sh /dev/stdin $good_version $archive
+   (Download to files first: the verifier reads the appcast several times, so a
+   pipe or /dev/stdin would be exhausted after the first check.)
+     rollback_check=\$(mktemp -d)
+     curl -fsSL -o "\$rollback_check/appcast.xml" https://github.com/$repository/releases/latest/download/appcast.xml
+     curl -fsSL -o "\$rollback_check/$archive" https://github.com/$repository/releases/latest/download/$archive
+     scripts/verify-appcast.sh "\$rollback_check/appcast.xml" $good_version $archive \\
+       --archive "\$rollback_check/$archive" \\
+       --public-key "\$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' packaging/Switchyard-Info.plist)"
 
 3. Revert the Homebrew tap to the $good_version Cask. The release workflow's
    downgrade guard refuses to do this automatically; make the downgrade explicit:
@@ -81,5 +87,24 @@ gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].name' 
 	|| { echo "refusing: $tag has no appcast.xml asset" >&2; exit 1; }
 gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].name' | grep -Fxq "$archive" \
 	|| { echo "refusing: $tag has no $archive asset" >&2; exit 1; }
-gh release edit "$tag" --repo "$repository" --latest --draft=false --prerelease=false
-echo "latest now points at $tag; complete steps 2 to 5 manually."
+
+# Prove the target release's appcast and archive are the signed pair the
+# shipped app trusts before anything is re-pointed. Assets are downloaded to
+# files, never streamed, so every verifier pass reads the same bytes.
+script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(dirname -- "$script_directory")
+rollback_check=$(mktemp -d "${TMPDIR:-/tmp}/switchyard-rollback.XXXXXX")
+trap 'rm -rf "$rollback_check"' EXIT HUP INT TERM
+gh release download "$tag" --repo "$repository" --dir "$rollback_check" \
+	--pattern appcast.xml --pattern "$archive" --pattern checksums.txt </dev/null
+(
+	cd "$rollback_check"
+	grep -E " (appcast\.xml|$archive)\$" checksums.txt > checksums.subset.txt
+	shasum -a 256 -c checksums.subset.txt
+)
+public_key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$repository_root/packaging/Switchyard-Info.plist")
+"$script_directory/verify-appcast.sh" "$rollback_check/appcast.xml" "$good_version" "$archive" \
+	--archive "$rollback_check/$archive" --public-key "$public_key"
+
+gh release edit "$tag" --repo "$repository" --latest --draft=false --prerelease=false </dev/null
+echo "latest now points at $tag; complete steps 3 to 5 manually."

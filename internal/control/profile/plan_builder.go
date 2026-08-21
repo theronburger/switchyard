@@ -71,22 +71,25 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	}
 	for _, serviceID := range serviceIDs {
 		service := profile.Services[serviceID]
+		// Documented precedence: trusted base, target values, service command
+		// values, then Switchyard-owned routes last so configured values can
+		// never shadow a published URL.
 		resolvedEnvironment, err := resolveEnvironment(
 			registration, runRoot, serviceID, target.Environment, leases,
-			routeEnvironment, target.Environment, service.Environment, service.Command.Environment,
+			target.Environment, service.Environment, service.Command.Environment, routeEnvironment,
 		)
 		if err != nil {
 			return environmentcontrol.ExecutionPlan{}, err
 		}
 		for index, command := range service.Prepare {
-			spec, err := finiteCommand(registration, runRoot, request.RunID, serviceID, "prepare-"+strconv.Itoa(index), command, target.Environment, resolvedEnvironment, leases)
+			spec, err := finiteCommand(registration, runRoot, request.RunID, serviceID, "prepare-"+strconv.Itoa(index), command, target.Environment, resolvedEnvironment, routeEnvironment, leases)
 			if err != nil {
 				return environmentcontrol.ExecutionPlan{}, err
 			}
 			plan.Preparations = append(plan.Preparations, spec)
 		}
 		for index, command := range service.Initialize {
-			spec, err := finiteCommand(registration, runRoot, request.RunID, serviceID, "initialize-"+strconv.Itoa(index), command, target.Environment, resolvedEnvironment, leases)
+			spec, err := finiteCommand(registration, runRoot, request.RunID, serviceID, "initialize-"+strconv.Itoa(index), command, target.Environment, resolvedEnvironment, routeEnvironment, leases)
 			if err != nil {
 				return environmentcontrol.ExecutionPlan{}, err
 			}
@@ -294,12 +297,14 @@ func orderedServices(profile configuration.Repository, selected []string) ([]str
 	return ordered, nil
 }
 
-func finiteCommand(registration Registration, runRoot, runID, serviceID, id string, command configuration.Command, targets map[string]configuration.ValueRef, baseEnvironment []string, leases map[portlease.Key]portlease.Lease) (environmentcontrol.PreparationSpec, error) {
+func finiteCommand(registration Registration, runRoot, runID, serviceID, id string, command configuration.Command, targets map[string]configuration.ValueRef, baseEnvironment []string, routes map[string]configuration.ValueRef, leases map[portlease.Key]portlease.Lease) (environmentcontrol.PreparationSpec, error) {
 	arguments, err := resolveValues(registration, runRoot, serviceID, command.Arguments, targets, leases)
 	if err != nil {
 		return environmentcontrol.PreparationSpec{}, err
 	}
-	environment, err := resolveEnvironment(registration, runRoot, serviceID, targets, leases, command.Environment)
+	// The command's own values layer over the service environment, and the
+	// Switchyard-owned routes are re-applied last to keep their precedence.
+	environment, err := resolveEnvironment(registration, runRoot, serviceID, targets, leases, command.Environment, routes)
 	if err != nil {
 		return environmentcontrol.PreparationSpec{}, err
 	}
@@ -329,9 +334,14 @@ func EnvironmentRunRoot(runtimeRoot, profileKey, worktreeID, environmentID strin
 }
 
 func resolveEnvironment(registration Registration, runRoot, serviceID string, targets map[string]configuration.ValueRef, leases map[portlease.Key]portlease.Lease, layers ...map[string]configuration.ValueRef) ([]string, error) {
-	values := map[string]string{
-		"HOME": registration.HomeDirectory, "PATH": registration.ExecutablePath, "TMPDIR": registration.TemporaryDirectory,
+	values := make(map[string]string, len(registration.InheritedEnvironment)+3)
+	for name, value := range registration.InheritedEnvironment {
+		values[name] = value
 	}
+	// The explicit base always wins over an inherited entry of the same name.
+	values["HOME"] = registration.HomeDirectory
+	values["PATH"] = registration.ExecutablePath
+	values["TMPDIR"] = registration.TemporaryDirectory
 	for _, layer := range layers {
 		keys := make([]string, 0, len(layer))
 		for name := range layer {

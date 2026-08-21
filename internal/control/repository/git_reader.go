@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/theronburger/switchyard/internal/control/inventory"
+	"github.com/theronburger/switchyard/internal/runtime/helperenv"
 )
 
 const maximumGitOutput = 4 * 1024 * 1024
@@ -114,6 +115,7 @@ func runGit(ctx context.Context, executable string, arguments []string) ([]byte,
 	}
 	stdout := &boundedBuffer{remaining: maximumGitOutput}
 	command := exec.CommandContext(ctx, executable, arguments...)
+	command.Env = helperenv.Sanitized()
 	command.Stdout = stdout
 	command.Stderr = io.Discard
 	if err := command.Run(); err != nil {

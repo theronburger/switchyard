@@ -63,16 +63,67 @@ enum JiraRelayClientError: Error, Equatable {
     case invalidResponse
 }
 
-struct JiraRelayCommandResolver: Sendable {
-    let homeDirectory: URL
-    let environment: [String: String]
+/// Private, owner-authored description of the read-only relay command.
+///
+/// Switchyard ships no relay of its own and knows no relay path. The owner
+/// declares one in `integrations/jira-relay.json` beside the private
+/// configuration under Application Support:
+///
+/// ```json
+/// {"schemaVersion": 1, "executable": "/absolute/relay", "arguments": ["--summary"]}
+/// ```
+///
+/// The resolved command is `executable` + `arguments` + the issue key. Without
+/// that file the integration is unavailable.
+struct JiraRelayConfiguration: Decodable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+    static let maximumArguments = 32
+    static let maximumArgumentLength = 1_024
 
-    init(
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) {
-        self.homeDirectory = homeDirectory
-        self.environment = environment
+    let schemaVersion: Int
+    let executable: String
+    let arguments: [String]
+
+    init(schemaVersion: Int = Self.currentSchemaVersion, executable: String, arguments: [String] = []) {
+        self.schemaVersion = schemaVersion
+        self.executable = executable
+        self.arguments = arguments
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, executable, arguments
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        executable = try values.decode(String.self, forKey: .executable)
+        arguments = try values.decodeIfPresent([String].self, forKey: .arguments) ?? []
+    }
+
+    static func standardLocation(channel: SwitchyardChannel = .resolve()) -> URL {
+        PrivateConfigurationLocation.standard(channel: channel).directory
+            .appending(path: "integrations/jira-relay.json", directoryHint: .notDirectory)
+    }
+
+    func validate() throws {
+        guard schemaVersion == Self.currentSchemaVersion,
+              executable.hasPrefix("/"),
+              !executable.contains("\0"),
+              arguments.count <= Self.maximumArguments,
+              arguments.allSatisfy({ $0.count <= Self.maximumArgumentLength && !$0.contains("\0") }) else {
+            throw JiraRelayClientError.unavailable
+        }
+    }
+}
+
+struct JiraRelayCommandResolver: Sendable {
+    static let maximumConfigurationBytes = 64 * 1024
+
+    let configurationURL: URL
+
+    init(configurationURL: URL = JiraRelayConfiguration.standardLocation()) {
+        self.configurationURL = configurationURL
     }
 
     func command(issueKey: String) throws -> ExactCommand {
@@ -82,31 +133,51 @@ struct JiraRelayCommandResolver: Sendable {
         ) != nil else {
             throw JiraRelayClientError.invalidResponse
         }
-        let relayRoot = environment["SWITCHYARD_JIRA_RELAY_ROOT"].map {
-            URL(fileURLWithPath: $0, isDirectory: true)
-        } ?? homeDirectory.appending(path: "Developer/jira-mcp-relay", directoryHint: .isDirectory)
-        let script = relayRoot.appending(path: "dist/src/issue-summary.js", directoryHint: .notDirectory)
-        guard regularFile(script) else { throw JiraRelayClientError.unavailable }
-
-        let configuredNode = environment["SWITCHYARD_NODE_BINARY"].map {
-            URL(fileURLWithPath: $0, isDirectory: false)
-        }
-        let candidates = [configuredNode].compactMap { $0 } + [
-            URL(fileURLWithPath: "/opt/homebrew/bin/node"),
-            URL(fileURLWithPath: "/usr/local/bin/node"),
-            homeDirectory.appending(path: ".local/bin/node", directoryHint: .notDirectory),
-        ]
-        guard let node = candidates
-            .map({ $0.resolvingSymlinksInPath() })
-            .first(where: { regularFile($0) && FileManager.default.isExecutableFile(atPath: $0.path) }) else {
-            throw JiraRelayClientError.unavailable
-        }
-        return ExactCommand(executableURL: node, arguments: [script.path, issueKey])
+        let configuration = try loadConfiguration()
+        let executable = URL(fileURLWithPath: configuration.executable, isDirectory: false)
+        guard isTrustedExecutable(executable) else { throw JiraRelayClientError.unavailable }
+        return ExactCommand(executableURL: executable, arguments: configuration.arguments + [issueKey])
     }
 
-    private func regularFile(_ url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else { return false }
-        return values.isRegularFile == true
+    /// The configuration must be a regular file owned by the current user
+    /// that no other user can write. Symlinks and foreign files are ignored.
+    func loadConfiguration() throws -> JiraRelayConfiguration {
+        let descriptor = open(configurationURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw JiraRelayClientError.unavailable }
+        defer { close(descriptor) }
+        var status = Darwin.stat()
+        guard fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == geteuid(),
+              Int(status.st_mode) & 0o022 == 0,
+              status.st_size <= Self.maximumConfigurationBytes else {
+            throw JiraRelayClientError.unavailable
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        guard let data = try? handle.readToEnd(), data.count <= Self.maximumConfigurationBytes else {
+            throw JiraRelayClientError.unavailable
+        }
+        guard let configuration = try? JSONDecoder().decode(JiraRelayConfiguration.self, from: data) else {
+            throw JiraRelayClientError.unavailable
+        }
+        try configuration.validate()
+        return configuration
+    }
+
+    /// The relay executable must be a regular file that only its owner can
+    /// write; the owner is the current user or root (system or Homebrew
+    /// toolchains). The path is used exactly as declared, never searched; a
+    /// symlink (a Homebrew opt link, say) is followed and its target checked.
+    private func isTrustedExecutable(_ url: URL) -> Bool {
+        var status = Darwin.stat()
+        guard stat(url.path, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == geteuid() || status.st_uid == 0,
+              Int(status.st_mode) & 0o022 == 0,
+              Int(status.st_mode) & 0o111 != 0 else {
+            return false
+        }
+        return true
     }
 }
 

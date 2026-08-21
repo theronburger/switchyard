@@ -44,6 +44,7 @@ func discoverAcceptedRepositoryInventory(
 	)
 	discovered.FirstPort = document.Machine.Ports.First
 	discovered.LastPort = document.Machine.Ports.Last
+	discovered.InheritedEnvironment = append([]string(nil), document.Machine.Execution.InheritedEnvironment...)
 	discovered.AcceptedConfigurationDigest = accepted.Digest
 	for repositoryID, key := range discovered.ProfileKeys {
 		discovered.ProfileDigests[repositoryID] = accepted.RepositoryDigests[key]

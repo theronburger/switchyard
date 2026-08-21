@@ -21,6 +21,29 @@ public struct DaemonStatusProvider: StatusProviding {
     }
 }
 
+/// Status-only reader used while the app waits for an accepted operation.
+///
+/// It connects to the endpoint the daemon has already published, performs the
+/// exact-version handshake, and reads status. It never inspects the
+/// LaunchAgent, installs or kickstarts the daemon, runs the doctor, or
+/// repairs anything; an unreachable daemon is reported as an error and left
+/// for the next scheduled lifecycle refresh.
+public struct LiveStatusReader: StatusProviding {
+    private let connectionFactory: any RuntimeConnectionEstablishing
+
+    public init(connectionFactory: any RuntimeConnectionEstablishing = RuntimeConnectionFactory()) {
+        self.connectionFactory = connectionFactory
+    }
+
+    public var sourceDescription: String { "daemon" }
+
+    public func loadStatus() async throws -> StatusSnapshot {
+        let connection = try connectionFactory.connect()
+        _ = try await connection.client.handshake()
+        return try await connection.client.status()
+    }
+}
+
 /// Development scenarios the fixture-driven app can render.
 public enum FixtureScenario: String, CaseIterable, Sendable, Identifiable {
     case canonical
