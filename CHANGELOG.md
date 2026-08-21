@@ -15,6 +15,10 @@ Release Please generates each version section from Conventional Commits when it 
 
 * migrate Switchyard to private repository profiles ([cb13968](https://github.com/theronburger/switchyard/commit/cb13968577dca57bd0ffd6fd5fefa999afa9a19d))
 
+### Fixed
+
+* stabilize ownership verification for short-lived processes and transitioning descendant groups
+
 
 ### Maintenance
 

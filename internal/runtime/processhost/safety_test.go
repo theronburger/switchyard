@@ -132,8 +132,69 @@ func (inspector *changingInspector) ListGroup(context.Context, int) ([]ProcessSn
 	return append([]ProcessSnapshot(nil), group...), nil
 }
 
+type zombieStartInspector struct {
+	startedAt time.Time
+}
+
+func (inspector zombieStartInspector) Inspect(_ context.Context, pid int) (ProcessSnapshot, error) {
+	return ProcessSnapshot{
+		Identity: ProcessIdentity{PID: pid, ParentPID: os.Getpid(), ProcessGroupID: pid, StartedAt: inspector.startedAt},
+		Status:   "zombie",
+	}, nil
+}
+
+func (zombieStartInspector) ListGroup(context.Context, int) ([]ProcessSnapshot, error) {
+	return nil, nil
+}
+
 type recordingSignaler struct {
 	signals []syscall.Signal
+}
+
+func TestStartPersistsAnImmediateZombieUsingTheLaunchFingerprint(t *testing.T) {
+	runDirectory := filepath.Join(t.TempDir(), "immediate")
+	host := New(Config{Inspector: zombieStartInspector{startedAt: time.Now().UTC()}})
+	spec := LaunchSpec{
+		EnvironmentID: "env_test", ServiceID: "service_test", RunID: "run_immediate",
+		Executable: "/bin/sh", Arguments: []string{"-c", "exit 4"}, Environment: []string{"PATH=/usr/bin:/bin"},
+		Directory: t.TempDir(), RunDirectory: runDirectory, DeferReap: true,
+	}
+	ownership, err := host.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint := fingerprintCommand(spec.Executable, append([]string{spec.Executable}, spec.Arguments...))
+	if ownership.Leader.CommandFingerprint != wantFingerprint {
+		t.Fatalf("leader fingerprint: got %q, want launch fingerprint %q", ownership.Leader.CommandFingerprint, wantFingerprint)
+	}
+	ownershipPath := filepath.Join(runDirectory, OwnershipFileName)
+	if err := host.WaitExited(context.Background(), ownershipPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Stop(context.Background(), ownershipPath); err != nil {
+		t.Fatal(err)
+	}
+	exit, err := host.WaitExit(context.Background(), ownershipPath)
+	if err != nil || exit.ExitCode != 4 {
+		t.Fatalf("exit=%+v err=%v", exit, err)
+	}
+}
+
+func TestStableGroupSnapshotsAllowsOwnGroupMembershipTransition(t *testing.T) {
+	startedAt := time.Now().UTC()
+	leader := snapshotFor(4100, 1, 4100, startedAt, "leader")
+	child := snapshotFor(4101, 4100, 4100, startedAt.Add(time.Millisecond), "child")
+	inspector := &changingInspector{groups: [][]ProcessSnapshot{{leader, child}, {child}}}
+	host := New(Config{Inspector: inspector})
+	ownership := Ownership{ProcessGroupID: 4100, Leader: leader.Identity, Members: []ProcessIdentity{leader.Identity, child.Identity}}
+
+	snapshots, err := host.stableGroupSnapshots(context.Background(), ownership, true)
+	if err != nil || len(snapshots) != 2 {
+		t.Fatalf("snapshots=%+v err=%v", snapshots, err)
+	}
+	if inspector.index != 1 {
+		t.Fatalf("own group was listed more than once before persistence: index=%d", inspector.index)
+	}
 }
 
 func (signaler *recordingSignaler) SignalGroup(_ int, signal syscall.Signal) error {
