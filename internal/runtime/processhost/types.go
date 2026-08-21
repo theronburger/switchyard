@@ -3,6 +3,7 @@ package processhost
 import (
 	"context"
 	"errors"
+	"io"
 	"syscall"
 	"time"
 )
@@ -25,6 +26,7 @@ var (
 	ErrUnstableGroup       = errors.New("process group membership changed during ownership verification")
 	ErrLaunchIntentInvalid = errors.New("process launch intent is invalid")
 	ErrOrphanUnverified    = errors.New("process evidence exists without verified ownership")
+	ErrExitNotObservable   = errors.New("process exit is not observable by this host")
 )
 
 type LaunchSpec struct {
@@ -36,6 +38,18 @@ type LaunchSpec struct {
 	Environment   []string
 	Directory     string
 	RunDirectory  string
+	// Stdout and Stderr, when both are set, receive the child's streams
+	// through pipes instead of the owned append-only log files. The caller
+	// then owns bounding and the files at the run directory's standard log
+	// paths; ownership still records those paths. Pipe drain after the
+	// leader exits is bounded by the host's kill wait.
+	Stdout io.Writer
+	Stderr io.Writer
+	// DeferReap keeps the exited leader unreaped until WaitExit or Forget is
+	// called. While the leader is a zombie its PID, and therefore its group
+	// ID, still positively denote this run, so a caller can first stop
+	// descendants that outlived the leader and only then collect its status.
+	DeferReap bool
 }
 
 type ProcessIdentity struct {
@@ -123,4 +137,9 @@ type Config struct {
 	GracePeriod  time.Duration
 	KillWait     time.Duration
 	PollInterval time.Duration
+	// LeaderSettleDelay is how long after a start the host re-reads its own
+	// unreaped leader once, so an executable image replaced during startup
+	// (a shell shim, an env shebang) is persisted before any restart
+	// consults the record. Zero selects the default of one second.
+	LeaderSettleDelay time.Duration
 }

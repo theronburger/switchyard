@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/theronburger/switchyard/internal/runtime/helperenv"
 )
 
 const maximumGitOutputBytes = 4 * 1024 * 1024
@@ -63,6 +65,7 @@ func (OSGitRunner) Run(ctx context.Context, invocation GitInvocation) (GitOutput
 	}
 	output := &managedBoundedOutput{remaining: maximumGitOutputBytes}
 	command := execCommandContext(ctx, invocation.Executable, invocation.Arguments...)
+	command.Env = helperenv.Sanitized()
 	command.Dir = invocation.WorkingDirectory
 	command.Stdout = output
 	command.Stderr = io.Discard
@@ -125,6 +128,11 @@ type ManagedManager struct {
 	now           func() time.Time
 }
 
+// OwnershipRoot is the directory holding managed-worktree ownership records.
+func (manager *ManagedManager) OwnershipRoot() string {
+	return manager.ownershipRoot
+}
+
 type CreateManagedRequest struct {
 	RepositoryID string
 	Branch       string
@@ -182,6 +190,7 @@ func NewManagedManager(config ManagedConfig) (*ManagedManager, error) {
 	for _, repository := range config.Repositories {
 		if !idPattern.MatchString(repository.ID) || !cleanAbsolutePath(repository.Root) ||
 			!cleanAbsolutePath(repository.ManagedRoot) || repository.ManagedRoot == repository.Root ||
+			strings.HasPrefix(repository.ManagedRoot, repository.Root+string(filepath.Separator)) ||
 			repository.DefaultBase == "" || strings.ContainsRune(repository.DefaultBase, 0) {
 			return nil, ErrManagedConfig
 		}
@@ -343,14 +352,25 @@ func (manager *ManagedManager) Adopt(
 		return ManagedResult{}, ErrManagedRequest
 	}
 	recordPath := manager.recordPath(request.WorktreePath)
+	// Adoption is also the generic repair for an ownership record that is
+	// unreadable, or that names this exact worktree but never reached ready.
+	// The record is not trusted for anything: the worktree must pass every
+	// identity and safety check below before a replacement record is written,
+	// and the replacement only ever overwrites a plain owner-only record
+	// file. A readable record that claims a different repository or path is a
+	// conflict, never something to overwrite.
+	replaceRecord := false
 	if existing, err := readManagedRecord(recordPath); err == nil {
-		if existing.State == "ready" && existing.RepositoryID == repository.ID &&
-			existing.RepositoryRoot == repository.Root && existing.WorktreePath == request.WorktreePath {
+		if existing.RepositoryID != repository.ID || existing.RepositoryRoot != repository.Root ||
+			existing.WorktreePath != request.WorktreePath {
+			return ManagedResult{}, ErrManagedExists
+		}
+		if existing.State == "ready" {
 			return managedResult(existing), nil
 		}
-		return ManagedResult{}, ErrManagedExists
+		replaceRecord = true
 	} else if _, statErr := os.Lstat(recordPath); !errors.Is(statErr, os.ErrNotExist) {
-		return ManagedResult{}, ErrManagedRecord
+		replaceRecord = true
 	}
 
 	repositoryCommonOutput, err := manager.git(
@@ -427,7 +447,7 @@ func (manager *ManagedManager) Adopt(
 		StartRevision: headRevision, AdministrativeGitDir: administrativePath,
 		HeadRevision: headRevision, State: "ready", CreatedAt: manager.now().UTC(),
 	}
-	if err := writeManagedRecord(recordPath, record, false); err != nil {
+	if err := writeManagedRecord(recordPath, record, replaceRecord); err != nil {
 		return ManagedResult{}, ErrManagedRecord
 	}
 	return managedResult(record), nil
@@ -648,8 +668,15 @@ func canonicalGitObjectID(output []byte) (string, bool) {
 	return value, true
 }
 
+// parseManagedStatus reads porcelain v2 branch headers. hasUpstream is true
+// only when Git both names an upstream and could compare against it
+// (branch.ab present): a configured upstream whose ref is gone, such as a
+// remote branch deleted after a merge and pruned locally, reports no ahead
+// count at all, and the caller must then fall back to the start-revision
+// comparison rather than treat the branch as pushed.
 func parseManagedStatus(output []byte) (dirty bool, ahead int, hasUpstream bool, valid bool) {
 	valid = true
+	upstreamNamed, comparable := false, false
 	for _, field := range bytes.Split(output, []byte{0}) {
 		if len(field) == 0 {
 			continue
@@ -660,9 +687,10 @@ func parseManagedStatus(output []byte) (dirty bool, ahead int, hasUpstream bool,
 			continue
 		}
 		if strings.HasPrefix(line, "# branch.upstream ") {
-			hasUpstream = strings.TrimSpace(strings.TrimPrefix(line, "# branch.upstream ")) != ""
+			upstreamNamed = strings.TrimSpace(strings.TrimPrefix(line, "# branch.upstream ")) != ""
 		}
 		if strings.HasPrefix(line, "# branch.ab ") {
+			comparable = true
 			parts := strings.Fields(strings.TrimPrefix(line, "# branch.ab "))
 			if len(parts) != 2 || !strings.HasPrefix(parts[0], "+") || !strings.HasPrefix(parts[1], "-") {
 				return false, 0, false, false
@@ -674,6 +702,7 @@ func parseManagedStatus(output []byte) (dirty bool, ahead int, hasUpstream bool,
 			ahead = parsed
 		}
 	}
+	hasUpstream = upstreamNamed && comparable
 	return dirty, ahead, hasUpstream, valid
 }
 

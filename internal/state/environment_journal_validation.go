@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	"github.com/theronburger/switchyard/internal/domain"
 	"github.com/theronburger/switchyard/internal/runtime/containerhost"
@@ -50,7 +50,7 @@ func validateOperationRecord(record environmentcontrol.OperationRecord) error {
 		return ErrEnvironmentRecordInvalid
 	}
 	if record.Intent != nil {
-		if record.Intent.Adapter == "" || record.Intent.ServiceIDs == nil || len(record.Intent.ServiceIDs) == 0 {
+		if record.Intent.ProfileDigest == "" || record.Intent.ServiceIDs == nil || len(record.Intent.ServiceIDs) == 0 {
 			return ErrEnvironmentRecordInvalid
 		}
 		seen := make(map[string]struct{}, len(record.Intent.ServiceIDs))
@@ -267,6 +267,7 @@ func validEnvironmentRefresh(
 	next environmentcontrol.EnvironmentResult,
 ) bool {
 	if current.EnvironmentID != next.EnvironmentID || current.RunID != next.RunID ||
+		current.TargetID != next.TargetID || current.ProfileDigest != next.ProfileDigest ||
 		current.State != domain.EnvironmentRunning || next.State != domain.EnvironmentRunning ||
 		!reflect.DeepEqual(current.Ports, next.Ports) || !reflect.DeepEqual(current.Projection, next.Projection) ||
 		!reflect.DeepEqual(current.Infrastructure, next.Infrastructure) ||
@@ -412,15 +413,15 @@ func normalizeEnvironmentResult(result environmentcontrol.EnvironmentResult) env
 	return result
 }
 
-func normalizeContractEnvironment(environment contractv1.Environment) contractv1.Environment {
+func normalizeContractEnvironment(environment contractv2.Environment) contractv2.Environment {
 	if environment.Services == nil {
-		environment.Services = make([]contractv1.Service, 0)
+		environment.Services = make([]contractv2.Service, 0)
 	}
 	if environment.PortLeases == nil {
-		environment.PortLeases = make([]contractv1.PortLease, 0)
+		environment.PortLeases = make([]contractv2.PortLease, 0)
 	}
 	if environment.InfrastructureLeases == nil {
-		environment.InfrastructureLeases = make([]contractv1.InfrastructureLease, 0)
+		environment.InfrastructureLeases = make([]contractv2.InfrastructureLease, 0)
 	}
 	if environment.URLs == nil {
 		environment.URLs = make(map[string]string)
@@ -436,17 +437,17 @@ func normalizeContractEnvironment(environment contractv1.Environment) contractv1
 	return environment
 }
 
-func cloneContractEnvironment(environment *contractv1.Environment) *contractv1.Environment {
+func cloneContractEnvironment(environment *contractv2.Environment) *contractv2.Environment {
 	if environment == nil {
 		return nil
 	}
 	copy := *environment
-	copy.Services = append([]contractv1.Service(nil), environment.Services...)
+	copy.Services = append([]contractv2.Service(nil), environment.Services...)
 	for index := range copy.Services {
 		copy.Services[index].PortLeaseIDs = append([]string(nil), environment.Services[index].PortLeaseIDs...)
 	}
-	copy.PortLeases = append([]contractv1.PortLease(nil), environment.PortLeases...)
-	copy.InfrastructureLeases = append([]contractv1.InfrastructureLease(nil), environment.InfrastructureLeases...)
+	copy.PortLeases = append([]contractv2.PortLease(nil), environment.PortLeases...)
+	copy.InfrastructureLeases = append([]contractv2.InfrastructureLease(nil), environment.InfrastructureLeases...)
 	copy.URLs = make(map[string]string, len(environment.URLs))
 	for key, value := range environment.URLs {
 		copy.URLs[key] = value

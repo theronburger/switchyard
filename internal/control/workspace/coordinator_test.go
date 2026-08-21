@@ -123,7 +123,7 @@ func TestCoordinatorReconcileFailsInterruptedWorkWithoutRerunning(t *testing.T) 
 func validWorkspacePlan(t *testing.T) Plan {
 	t.Helper()
 	return Plan{
-		WorktreeID: "worktree_01", Adapter: "example", WorktreeRoot: "/tmp/worktree",
+		WorktreeID: "worktree_01", ProfileKey: "example", WorktreeRoot: "/tmp/worktree",
 		Ownership:   OwnershipAdopted,
 		Fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Steps: []StepSpec{{

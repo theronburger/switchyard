@@ -15,22 +15,27 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
     private let launchctlURL: URL
     private let userID: uid_t
     private let fileManager: FileManager
+    private let channel: SwitchyardChannel
     private var fingerprintCache = BoundedFileFingerprintCache()
 
     public init(
-        binaryProvider: any DaemonBinaryProviding = BundleDaemonBinaryProvider(),
+        binaryProvider: (any DaemonBinaryProviding)? = nil,
         commandRunner: any ExactArgvRunning = FoundationExactArgvRunner(),
         paths: LaunchAgentPaths = .standard(),
         launchctlURL: URL = URL(fileURLWithPath: "/bin/launchctl"),
         userID: uid_t = getuid(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        channel: SwitchyardChannel = .release
     ) {
-        self.binaryProvider = binaryProvider
+        // The provider shares the manager's channel so a release-channel manager
+        // can never be handed an environment-overridden daemon executable.
+        self.binaryProvider = binaryProvider ?? BundleDaemonBinaryProvider(channel: channel)
         self.commandRunner = commandRunner
         self.paths = paths
         self.launchctlURL = launchctlURL
         self.userID = userID
         self.fileManager = fileManager
+        self.channel = channel
     }
 
     public func inspect() async throws -> DaemonRegistrationStatus {
@@ -50,7 +55,8 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
             let plan = try LaunchAgentPlanBuilder.make(
                 binary: packagedBinary,
                 paths: paths,
-                userID: userID
+                userID: userID,
+                channel: channel
             )
             guard propertyListMatches(plan.propertyList),
                   try binariesMatch(packagedBinary.sourceURL, paths.installedBinaryURL) else {
@@ -105,12 +111,13 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
         try LaunchAgentPlanBuilder.make(
             binary: binaryProvider.daemonBinary(),
             paths: paths,
-            userID: userID
+            userID: userID,
+            channel: channel
         )
     }
 
     private var serviceTarget: String {
-        "gui/\(userID)/\(LaunchAgentPlanBuilder.label)"
+        "gui/\(userID)/\(channel.launchAgentLabel)"
     }
 
     private struct MaterializedChanges {
@@ -213,7 +220,7 @@ public actor LaunchAgentServiceManager: DaemonServiceManaging {
     private func packagedBinaryIfAvailable() throws -> DaemonBinary? {
         do {
             return try binaryProvider.daemonBinary()
-        } catch let error as DaemonBinarySourceError where error == .notPackaged {
+        } catch DaemonBinarySourceError.notPackaged {
             return nil
         }
     }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/domain"
@@ -17,15 +17,16 @@ import (
 
 type fakeActionOperationStore struct {
 	mutex       sync.Mutex
-	operations  map[string]contractv1.Operation
+	operations  map[string]contractv2.Operation
 	byKey       map[string]state.NewOperation
 	createErr   error
 	transitions int
+	transition  func(context.Context, string, string, *contractv2.ContractError) (contractv2.Operation, error)
 }
 
 func newFakeActionOperationStore() *fakeActionOperationStore {
 	return &fakeActionOperationStore{
-		operations: make(map[string]contractv1.Operation),
+		operations: make(map[string]contractv2.Operation),
 		byKey:      make(map[string]state.NewOperation),
 	}
 }
@@ -33,20 +34,20 @@ func newFakeActionOperationStore() *fakeActionOperationStore {
 func (store *fakeActionOperationStore) CreateOperation(
 	_ context.Context,
 	request state.NewOperation,
-) (contractv1.Operation, bool, error) {
+) (contractv2.Operation, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	if store.createErr != nil {
-		return contractv1.Operation{}, false, store.createErr
+		return contractv2.Operation{}, false, store.createErr
 	}
 	if existing, found := store.byKey[request.IdempotencyKey]; found {
 		if existing.RequestFingerprint != request.RequestFingerprint {
-			return contractv1.Operation{}, false, state.ErrIdempotencyConflict
+			return contractv2.Operation{}, false, state.ErrIdempotencyConflict
 		}
 		return store.operations[existing.ID], false, nil
 	}
 	now := time.Date(2026, 8, 14, 16, 30, 0, 0, time.UTC)
-	operation := contractv1.Operation{
+	operation := contractv2.Operation{
 		ID: request.ID, RunID: request.RunID, Kind: request.Kind, State: string(domain.OperationPending),
 		EnvironmentID: request.EnvironmentID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -58,22 +59,25 @@ func (store *fakeActionOperationStore) CreateOperation(
 func (store *fakeActionOperationStore) ReadOperation(
 	_ context.Context,
 	operationID string,
-) (contractv1.Operation, error) {
+) (contractv2.Operation, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	operation, found := store.operations[operationID]
 	if !found {
-		return contractv1.Operation{}, state.ErrOperationNotFound
+		return contractv2.Operation{}, state.ErrOperationNotFound
 	}
 	return operation, nil
 }
 
 func (store *fakeActionOperationStore) TransitionOperation(
-	_ context.Context,
+	ctx context.Context,
 	operationID string,
 	nextState string,
-	failure *contractv1.ContractError,
-) (contractv1.Operation, error) {
+	failure *contractv2.ContractError,
+) (contractv2.Operation, error) {
+	if store.transition != nil {
+		return store.transition(ctx, operationID, nextState, failure)
+	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	operation := store.operations[operationID]
@@ -159,7 +163,7 @@ func TestEnvironmentActionServiceEnsuresWorkspaceBeforeEnvironment(t *testing.T)
 		}},
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: func(prefix string) (string, error) {
 			if prefix == "operation" {
@@ -208,7 +212,7 @@ func TestEnvironmentActionServiceDoesNotStartEnvironmentWhenWorkspaceFails(t *te
 		}},
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: func(prefix string) (string, error) {
 			if prefix == "operation" {
@@ -240,7 +244,7 @@ func TestEnvironmentActionServiceDoesNotStartEnvironmentWhenWorkspaceFails(t *te
 
 func (resolver fakeActionResolver) ResolveStart(
 	context.Context,
-	contractv1.StartEnvironmentRequest,
+	contractv2.StartEnvironmentRequest,
 ) (EnvironmentStartResolution, error) {
 	if resolver.start.Source.Revision == "" {
 		resolver.start.Source = environmentcontrol.SourceSnapshot{
@@ -254,7 +258,7 @@ func (resolver fakeActionResolver) ResolveStart(
 func (resolver fakeActionResolver) ResolveStop(
 	_ context.Context,
 	environmentID string,
-	_ contractv1.StopEnvironmentRequest,
+	_ contractv2.StopEnvironmentRequest,
 ) error {
 	if resolver.err != nil {
 		return resolver.err
@@ -422,10 +426,10 @@ func newTestActionService(
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01",
 			Ports: []portlease.Reservation{{
-				Key:            portlease.Key{EnvironmentID: "environment_01", ServiceID: "organizer", Purpose: "http"},
+				Key:            portlease.Key{EnvironmentID: "environment_01", ServiceID: "storefront", Purpose: "http"},
 				PreferredPorts: []int{7005},
 			}},
-			Intent: environmentcontrol.PlanIntent{Adapter: "marketplace", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: func(string) (string, error) {
 			identifier := identifiers[index]
@@ -439,11 +443,11 @@ func newTestActionService(
 	return service
 }
 
-func validActionStartRequest() contractv1.StartEnvironmentRequest {
-	return contractv1.StartEnvironmentRequest{
-		MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: "request_01", IdempotencyKey: "idempotency_" + "01",
+func validActionStartRequest() contractv2.StartEnvironmentRequest {
+	return contractv2.StartEnvironmentRequest{
+		MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "idempotency_" + "01",
 		},
-		WorktreeID: "worktree_01", ServiceIDs: []string{"organizer"},
+		WorktreeID: "worktree_01", ServiceIDs: []string{"storefront"},
 	}
 }

@@ -48,7 +48,7 @@ func (builder *recordingPlanBuilder) Build(
 func TestContainerInfrastructureHostDoesNotApplyProtectedForeignCollision(t *testing.T) {
 	inventory, err := containerhost.NewInventory([]containerhost.Resource{{
 		Kind: containerhost.ResourceContainer, ID: "foreign-id", Name: "switchyard-queue",
-		Labels: map[string]string{"team": "marketplace"},
+		Labels: map[string]string{"team": "sample"},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestContainerInfrastructureHostClearsRunningConfigurationForAbsentGoal(t *t
 	}
 	goal := containerhost.Goal{
 		Kind: containerhost.ResourceContainer, Name: "switchyard-queue", Image: "elasticmq:latest",
-		PortBindings: []containerhost.PortBinding{binding}, DesiredState: containerhost.DesiredRunning,
+		PortBindings: []containerhost.PortBinding{binding}, Environment: []string{"VISIBLE_PORT=19324"}, DesiredState: containerhost.DesiredRunning,
 		Identity: containerhost.Identity{
 			EnvironmentID: "env_container", ServiceID: "infra_queue",
 			RunID: "run_container", InstanceID: "queue_primary",
@@ -99,7 +99,7 @@ func TestContainerInfrastructureHostClearsRunningConfigurationForAbsentGoal(t *t
 		t.Fatal(err)
 	}
 	if len(builder.goals) != 1 || builder.goals[0].DesiredState != containerhost.DesiredAbsent ||
-		builder.goals[0].Image != "" || len(builder.goals[0].PortBindings) != 0 {
+		builder.goals[0].Image != "" || len(builder.goals[0].PortBindings) != 0 || len(builder.goals[0].Environment) != 0 {
 		t.Fatalf("absent goal retained running-only configuration: %+v", builder.goals)
 	}
 }

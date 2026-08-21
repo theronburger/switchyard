@@ -426,8 +426,18 @@ public actor AgentConnectionManager: AgentConnectionManaging {
                 return ConnectionComponent(state: .missing, detail: "The managed Switchyard skill is not installed.")
             }
             let destinationFingerprint = try ManagedSkill.fingerprintOwned(destination)
+            let owned = ManagedSkill.isOwned(destination)
             if sourceFingerprint != destinationFingerprint {
+                guard owned else {
+                    return ConnectionComponent(
+                        state: .refused,
+                        detail: "A skill directory Switchyard did not install already exists at \(destination.path). Switchyard never replaces it; move it aside to install the managed skill."
+                    )
+                }
                 return ConnectionComponent(state: .needsRepair, detail: "The managed Switchyard skill is out of date.")
+            }
+            if !owned {
+                return ConnectionComponent(state: .needsRepair, detail: "The managed Switchyard skill is current but not yet marked as Switchyard-owned.")
             }
             return ConnectionComponent(state: .connected, detail: "The managed Switchyard skill is current.")
         } catch {
@@ -445,6 +455,8 @@ public actor AgentConnectionManager: AgentConnectionManaging {
             return nil
         } catch ManagedSkillError.recoveryRequired(let path) {
             return "The prior managed skill was preserved at \(path); restore it manually after reviewing the concurrent directory."
+        } catch ManagedSkillError.foreignSkill(let path) {
+            return "A skill directory Switchyard did not install already exists at \(path). It was left untouched; move it aside to install the managed skill."
         } catch {
             return "The managed Switchyard skill could not be installed safely."
         }

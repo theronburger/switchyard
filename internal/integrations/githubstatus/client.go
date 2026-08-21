@@ -12,7 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const (
@@ -72,7 +72,7 @@ func (cli CLI) PullRequest(
 	ctx context.Context,
 	repository string,
 	branch string,
-) (*contractv1.PullRequest, bool, error) {
+) (*contractv2.PullRequest, bool, error) {
 	if !ValidRepository(repository) || !validText(branch, maximumTextBytes) {
 		return nil, false, ErrQueryFailed
 	}
@@ -141,7 +141,7 @@ func (cli CLI) view(ctx context.Context, repository string, number int) (pullReq
 	return metadata, nil
 }
 
-func (cli CLI) checks(ctx context.Context, repository string, number int) contractv1.PullRequestChecks {
+func (cli CLI) checks(ctx context.Context, repository string, number int) contractv2.PullRequestChecks {
 	result, err := cli.run(ctx,
 		"pr", "checks", strconv.Itoa(number),
 		"--repo", repository,
@@ -154,7 +154,7 @@ func (cli CLI) checks(ctx context.Context, repository string, number int) contra
 	if json.Unmarshal(result.Stdout, &records) != nil || len(records) > maximumChecks {
 		return unavailableChecks()
 	}
-	items := make([]contractv1.PullRequestCheck, 0, len(records))
+	items := make([]contractv2.PullRequestCheck, 0, len(records))
 	for _, record := range records {
 		if !validText(record.Name, maximumTextBytes) ||
 			(record.Workflow != "" && !validText(record.Workflow, maximumTextBytes)) ||
@@ -163,7 +163,7 @@ func (cli CLI) checks(ctx context.Context, repository string, number int) contra
 			(record.Link != "" && !validHTTPSURL(record.Link, "", "")) {
 			return unavailableChecks()
 		}
-		items = append(items, contractv1.PullRequestCheck{
+		items = append(items, contractv2.PullRequestCheck{
 			Name: record.Name, Workflow: record.Workflow, State: strings.ToLower(record.State),
 			Bucket: record.Bucket, URL: record.Link,
 			StartedAt: record.StartedAt, CompletedAt: record.CompletedAt,
@@ -234,10 +234,10 @@ func selectCandidate(candidates []pullRequestCandidate) pullRequestCandidate {
 
 func contractPullRequest(
 	metadata pullRequestMetadata,
-	checks contractv1.PullRequestChecks,
+	checks contractv2.PullRequestChecks,
 	host string,
 	repository string,
-) (contractv1.PullRequest, bool) {
+) (contractv2.PullRequest, bool) {
 	state := strings.ToLower(metadata.State)
 	mergeable := strings.ToLower(metadata.Mergeable)
 	mergeState := strings.ToLower(metadata.MergeState)
@@ -259,9 +259,9 @@ func contractPullRequest(
 		metadata.UpdatedAt.Before(metadata.CreatedAt) ||
 		!validHTTPSURL(metadata.URL, host, "/"+repository+"/pull/"+strconv.Itoa(metadata.Number)) ||
 		(state == "merged" && metadata.MergedAt == nil) {
-		return contractv1.PullRequest{}, false
+		return contractv2.PullRequest{}, false
 	}
-	return contractv1.PullRequest{
+	return contractv2.PullRequest{
 		Number: metadata.Number, Title: metadata.Title, URL: metadata.URL, State: state, Draft: metadata.Draft,
 		Mergeable: mergeable, MergeState: mergeState, ReviewDecision: reviewDecision,
 		BaseBranch: metadata.BaseBranch, HeadBranch: metadata.HeadBranch, HeadRevision: metadata.HeadRevision,
@@ -270,8 +270,8 @@ func contractPullRequest(
 	}, true
 }
 
-func summarizeChecks(items []contractv1.PullRequestCheck) contractv1.PullRequestChecks {
-	checks := contractv1.PullRequestChecks{Items: items, Total: len(items)}
+func summarizeChecks(items []contractv2.PullRequestCheck) contractv2.PullRequestChecks {
+	checks := contractv2.PullRequestChecks{Items: items, Total: len(items)}
 	for _, item := range items {
 		switch item.Bucket {
 		case "pass":
@@ -303,8 +303,8 @@ func summarizeChecks(items []contractv1.PullRequestCheck) contractv1.PullRequest
 	return checks
 }
 
-func unavailableChecks() contractv1.PullRequestChecks {
-	return contractv1.PullRequestChecks{State: "unavailable", Items: []contractv1.PullRequestCheck{}}
+func unavailableChecks() contractv2.PullRequestChecks {
+	return contractv2.PullRequestChecks{State: "unavailable", Items: []contractv2.PullRequestCheck{}}
 }
 
 func ValidRepository(repository string) bool {

@@ -1,6 +1,6 @@
 import Foundation
 
-public let contractSchemaVersion = 1
+public let contractSchemaVersion = 2
 
 public struct StatusSnapshot: Decodable, Sendable {
     public let schemaVersion: Int
@@ -32,7 +32,7 @@ public struct Repository: Decodable, Identifiable, Sendable {
     public let id: String
     public let displayName: String
     public let rootPath: String
-    public let adapter: String
+    public let profileKey: String
     public let remote: String
     public let worktrees: [Worktree]
     public let runtime: RepositoryRuntime?
@@ -77,6 +77,30 @@ public struct Worktree: Decodable, Identifiable, Sendable {
     public let changes: WorktreeChanges?
     public let pullRequest: PullRequestObservation?
     public let workspace: WorkspaceStatus?
+    /// Held handoff leases. Absent or empty when no owner-launched task was
+    /// explicitly handed this worktree; never inferred by the app.
+    public let occupancy: [OccupancyLease]?
+
+    public var heldOccupancy: [OccupancyLease] { occupancy ?? [] }
+}
+
+/// An explicit, conservative record that an owner-launched task was handed a
+/// worktree. Only a client acquires one and only a client releases it; a held
+/// lease protects the worktree from archive (D-009a).
+public struct OccupancyLease: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let worktreeId: String
+    public let holderKind: String
+    public let holderLabel: String
+    public let state: OccupancyLeaseState
+    public let acquiredAt: Date
+    public let releasedAt: Date?
+}
+
+public enum OccupancyLeaseState: String, ForwardCompatibleDecodable {
+    case unknown
+    case held
+    case released
 }
 
 public struct WorkspaceStatus: Decodable, Sendable {
@@ -85,6 +109,14 @@ public struct WorkspaceStatus: Decodable, Sendable {
     public let fingerprint: String
     public let preparedAt: Date
     public let toolchains: [WorkspaceToolchain]
+
+    /// The daemon publishes an unprepared workspace with Go's zero time
+    /// (`0001-01-01T00:00:00Z`) and an empty fingerprint; contract v2 requires
+    /// exactly that. Only a prepared workspace has a preparation time to show.
+    public var preparedAtIfKnown: Date? {
+        guard state != .unprepared, preparedAt.timeIntervalSince1970 > 0 else { return nil }
+        return preparedAt
+    }
 }
 
 public enum WorkspaceOwnership: String, ForwardCompatibleDecodable {
@@ -419,6 +451,198 @@ public struct ContractError: Decodable, Error, Sendable {
     public let exitCode: Int?
 }
 
+/// The daemon's error envelope: `{"schemaVersion": 2, "error": {...}}`.
+public struct ContractErrorEnvelope: Decodable, Sendable {
+    public let schemaVersion: Int?
+    public let error: ContractError
+}
+
+/// Repository-neutral public view of one accepted profile action. It never
+/// exposes an executable, argument, or environment shape.
+public struct ProfileAction: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let repositoryId: String
+    public let profileKey: String
+    public let profileDigest: String
+    public let displayName: String
+    public let scope: ProfileActionScope
+    public let risk: ProfileActionRisk
+    public let kind: ProfileActionKind
+    public let lifecycle: ProfileActionLifecycle?
+    public let requiresConfirmation: Bool
+}
+
+public enum ProfileActionScope: String, ForwardCompatibleDecodable {
+    case unknown
+    case machine
+    case repository
+    case worktree
+    case environment
+    case service
+}
+
+public enum ProfileActionRisk: String, ForwardCompatibleDecodable {
+    case unknown
+    case local
+    case remoteRead = "remote-read"
+    case remoteWrite = "remote-write"
+}
+
+public enum ProfileActionKind: String, ForwardCompatibleDecodable {
+    case unknown
+    case command
+    case lifecycle
+}
+
+public enum ProfileActionLifecycle: String, ForwardCompatibleDecodable {
+    case unknown
+    case prepare
+    case start
+    case stop
+    case cleanup
+}
+
+public struct ProfileActionList: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let acceptedDigest: String?
+    public let actions: [ProfileAction]
+}
+
+/// Runs one accepted profile action against exactly the targets its scope
+/// requires. `confirmedActionId` must equal `actionId` for remote-write
+/// actions; confirmation is never persisted.
+public struct RunProfileActionRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let repositoryId: String
+    public let actionId: String
+    public let worktreeId: String?
+    public let environmentId: String?
+    public let serviceId: String?
+    public let confirmedActionId: String?
+
+    public init(
+        requestId: String,
+        idempotencyKey: String,
+        repositoryId: String,
+        actionId: String,
+        worktreeId: String? = nil,
+        environmentId: String? = nil,
+        serviceId: String? = nil,
+        expectedEnvironmentRevision: Int64? = nil,
+        confirmedActionId: String? = nil
+    ) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = expectedEnvironmentRevision
+        self.repositoryId = repositoryId
+        self.actionId = actionId
+        self.worktreeId = worktreeId
+        self.environmentId = environmentId
+        self.serviceId = serviceId
+        self.confirmedActionId = confirmedActionId
+    }
+}
+
+/// Bounded, redacted tail excerpts of one operation's Switchyard-owned logs.
+public struct OperationDiagnostics: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let operationId: String
+    public let environmentId: String
+    public let logReference: String
+    public let excerpts: [OperationLogExcerpt]
+}
+
+public struct OperationLogExcerpt: Decodable, Sendable, Equatable {
+    public let stream: String
+    public let content: String
+    public let truncated: Bool
+    public let redacted: Bool
+}
+
+public struct CleanupScope: Codable, Sendable, Equatable {
+    public let kind: String
+    public let id: String?
+
+    public static let global = CleanupScope(kind: "global", id: nil)
+
+    public init(kind: String, id: String? = nil) {
+        self.kind = kind
+        self.id = id
+    }
+}
+
+public struct CleanupPlanRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let scope: CleanupScope
+
+    public init(scope: CleanupScope = .global) {
+        self.schemaVersion = contractSchemaVersion
+        self.scope = scope
+    }
+}
+
+public struct CleanupApplyRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let planId: String
+    public let expectedRevision: Int64
+    public let candidateIds: [String]
+
+    public init(planId: String, expectedRevision: Int64, candidateIds: [String]) {
+        self.schemaVersion = contractSchemaVersion
+        self.planId = planId
+        self.expectedRevision = expectedRevision
+        self.candidateIds = candidateIds
+    }
+}
+
+public struct CleanupCandidate: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let kind: String
+    public let profileKey: String
+    public let worktreeId: String
+    public let fingerprint: String
+    public let bytes: Int64
+    public let path: String
+}
+
+public struct CleanupProtection: Decodable, Sendable, Identifiable, Equatable {
+    public var id: String { "\(kind):\(path)" }
+    public let kind: String
+    public let path: String
+    public let reason: String
+    public let profileKey: String?
+    public let worktreeId: String?
+}
+
+public struct CleanupPlan: Decodable, Sendable, Identifiable, Equatable {
+    public let schemaVersion: Int
+    public let id: String
+    public let revision: Int64
+    public let scope: CleanupScope
+    public let candidates: [CleanupCandidate]
+    public let protected: [CleanupProtection]
+    public let createdAt: Date
+    public let expiresAt: Date
+}
+
+public struct CleanupRemoval: Decodable, Sendable, Equatable {
+    public let candidateId: String
+    public let removed: Bool
+    public let reason: String?
+}
+
+public struct CleanupResult: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let planId: String
+    public let planRevision: Int64
+    public let removals: [CleanupRemoval]
+    public let completedAt: Date
+}
+
 public struct StartEnvironmentRequest: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let requestId: String
@@ -484,6 +708,36 @@ public struct CreateWorktreeRequest: Codable, Sendable, Equatable {
         self.repositoryId = repositoryId
         self.branch = branch
         self.startPoint = startPoint
+    }
+}
+
+public struct AcquireOccupancyRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let worktreeId: String
+    public let holderKind: String
+    public let holderLabel: String
+
+    public init(requestId: String, worktreeId: String, holderKind: String, holderLabel: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.worktreeId = worktreeId
+        self.holderKind = holderKind
+        self.holderLabel = holderLabel
+    }
+}
+
+public struct ReleaseOccupancyRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let worktreeId: String
+    public let leaseId: String
+
+    public init(requestId: String, worktreeId: String, leaseId: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.worktreeId = worktreeId
+        self.leaseId = leaseId
     }
 }
 
@@ -557,5 +811,185 @@ public extension ForwardCompatibleDecodable {
     init(from decoder: Decoder) throws {
         let rawValue = try decoder.singleValueContainer().decode(String.self)
         self = Self(rawValue: rawValue) ?? Self.unknown
+    }
+}
+
+public struct PrepareWorktreeRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let requestId: String
+    public let idempotencyKey: String
+    public let expectedEnvironmentRevision: Int64?
+    public let worktreeId: String
+
+    public init(requestId: String, idempotencyKey: String, worktreeId: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.requestId = requestId
+        self.idempotencyKey = idempotencyKey
+        self.expectedEnvironmentRevision = nil
+        self.worktreeId = worktreeId
+    }
+}
+
+public enum ConfigurationState: String, ForwardCompatibleDecodable {
+    case unknown
+    case missing
+    case accepted
+    case pending
+}
+
+/// One validated-but-not-yet-accepted private configuration revision.
+public struct ConfigurationCandidate: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let digest: String
+    public let sourceDigest: String
+    public let compilerVersion: String
+    public let repositoryDigests: [String: String]
+    public let executableDigests: [String: String]
+    public let stagedAt: Date
+
+    public init(
+        schemaVersion: Int = contractSchemaVersion,
+        digest: String,
+        sourceDigest: String,
+        compilerVersion: String,
+        repositoryDigests: [String: String],
+        executableDigests: [String: String],
+        stagedAt: Date
+    ) {
+        self.schemaVersion = schemaVersion
+        self.digest = digest
+        self.sourceDigest = sourceDigest
+        self.compilerVersion = compilerVersion
+        self.repositoryDigests = repositoryDigests
+        self.executableDigests = executableDigests
+        self.stagedAt = stagedAt
+    }
+}
+
+/// Generic identity fields of one repository entry in the private desired
+/// file. Commands, services, and values never cross this boundary.
+public struct ConfigurationRepositoryEntry: Codable, Sendable, Equatable, Identifiable {
+    public let key: String
+    public let enabled: Bool
+    public let displayName: String
+    public let root: String
+    public let remote: String
+    public let defaultBase: String
+    public let managedWorktreesRoot: String
+
+    public var id: String { key }
+
+    public init(
+        key: String,
+        enabled: Bool,
+        displayName: String,
+        root: String,
+        remote: String,
+        defaultBase: String,
+        managedWorktreesRoot: String
+    ) {
+        self.key = key
+        self.enabled = enabled
+        self.displayName = displayName
+        self.root = root
+        self.remote = remote
+        self.defaultBase = defaultBase
+        self.managedWorktreesRoot = managedWorktreesRoot
+    }
+}
+
+/// Bounded daemon view of `configuration.yaml`. `sourceDigest` is the exact
+/// compare-and-swap token the next repository mutation must carry.
+public struct ConfigurationDesiredFile: Decodable, Sendable, Equatable {
+    public let present: Bool
+    public let sourceDigest: String?
+    public let problem: String?
+    public let repositories: [ConfigurationRepositoryEntry]
+
+    public init(present: Bool, sourceDigest: String?, problem: String?, repositories: [ConfigurationRepositoryEntry]) {
+        self.present = present
+        self.sourceDigest = sourceDigest
+        self.problem = problem
+        self.repositories = repositories
+    }
+}
+
+/// Daemon-published configuration acceptance state (D-025).
+public struct ConfigurationStatus: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let state: ConfigurationState
+    public let acceptedRevision: Int64
+    public let acceptedDigest: String?
+    public let candidate: ConfigurationCandidate?
+    public let desired: ConfigurationDesiredFile?
+
+    public init(
+        schemaVersion: Int = contractSchemaVersion,
+        state: ConfigurationState,
+        acceptedRevision: Int64,
+        acceptedDigest: String? = nil,
+        candidate: ConfigurationCandidate? = nil,
+        desired: ConfigurationDesiredFile? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.state = state
+        self.acceptedRevision = acceptedRevision
+        self.acceptedDigest = acceptedDigest
+        self.candidate = candidate
+        self.desired = desired
+    }
+}
+
+/// Edits one generic repository entry through the daemon. The daemon compares
+/// both the accepted revision and the desired-file digest before writing and
+/// answers with a staged candidate that still requires acceptance.
+public struct ConfigurationRepositoryMutationRequest: Encodable, Sendable, Equatable {
+    public enum Operation: String, Codable, Sendable {
+        case upsert
+        case remove
+    }
+
+    public let schemaVersion: Int
+    public let expectedRevision: Int64
+    public let expectedSourceDigest: String?
+    public let operation: Operation
+    public let key: String
+    public let entry: ConfigurationRepositoryEntry?
+
+    public init(
+        expectedRevision: Int64,
+        expectedSourceDigest: String?,
+        operation: Operation,
+        key: String,
+        entry: ConfigurationRepositoryEntry?
+    ) {
+        self.schemaVersion = contractSchemaVersion
+        self.expectedRevision = expectedRevision
+        self.expectedSourceDigest = expectedSourceDigest.flatMap { $0.isEmpty ? nil : $0 }
+        self.operation = operation
+        self.key = key
+        self.entry = entry
+    }
+}
+
+public struct ConfigurationValidationRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let expectedRevision: Int64
+
+    public init(expectedRevision: Int64) {
+        self.schemaVersion = contractSchemaVersion
+        self.expectedRevision = expectedRevision
+    }
+}
+
+public struct ConfigurationAcceptanceRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let expectedRevision: Int64
+    public let digest: String
+
+    public init(expectedRevision: Int64, digest: String) {
+        self.schemaVersion = contractSchemaVersion
+        self.expectedRevision = expectedRevision
+        self.digest = digest
     }
 }

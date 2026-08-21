@@ -7,7 +7,7 @@ type RepositoryReader interface {
 }
 
 type RepositoryObservation struct {
-	AdapterName       string
+	ProfileKey        string
 	CommonDirectory   string
 	SharedExcludePath string
 	Remote            string

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func LoadOwnership(path string) (Ownership, error) {
@@ -67,7 +68,7 @@ func validateOwnership(path string, ownership Ownership) error {
 	if ownership.ProcessGroupID <= 1 || ownership.Leader.PID <= 1 || ownership.Leader.ProcessGroupID != ownership.ProcessGroupID {
 		return fmt.Errorf("%w: process group identity is invalid", ErrOwnershipInvalid)
 	}
-	if ownership.Leader.StartedAt.IsZero() || ownership.Leader.CommandFingerprint == "" || ownership.LaunchFingerprint == "" {
+	if unknownStartTime(ownership.Leader.StartedAt) || ownership.Leader.CommandFingerprint == "" || ownership.LaunchFingerprint == "" {
 		return fmt.Errorf("%w: leader identity is incomplete", ErrOwnershipInvalid)
 	}
 	if ownership.State == "" || ownership.StartedAt.IsZero() || ownership.UpdatedAt.IsZero() {
@@ -79,7 +80,7 @@ func validateOwnership(path string, ownership Ownership) error {
 		return fmt.Errorf("%w: log paths leave the owned run directory", ErrOwnershipInvalid)
 	}
 	for _, member := range ownership.Members {
-		if member.PID <= 1 || member.ProcessGroupID != ownership.ProcessGroupID || member.StartedAt.IsZero() || member.CommandFingerprint == "" {
+		if member.PID <= 1 || member.ProcessGroupID != ownership.ProcessGroupID || unknownStartTime(member.StartedAt) || member.CommandFingerprint == "" {
 			return fmt.Errorf("%w: member identity is incomplete", ErrOwnershipInvalid)
 		}
 	}
@@ -135,4 +136,12 @@ func syncDirectory(directory string) error {
 	}
 	defer func() { _ = handle.Close() }()
 	return handle.Sync()
+}
+
+// unknownStartTime reports a start time that cannot identify a process
+// instance: Go's zero time (a missing field) or the Unix epoch, which is what
+// a zero kernel start timestamp decodes to. Two unrelated processes reporting
+// the epoch must never satisfy each other's identity check.
+func unknownStartTime(startedAt time.Time) bool {
+	return startedAt.IsZero() || startedAt.Unix() == 0
 }

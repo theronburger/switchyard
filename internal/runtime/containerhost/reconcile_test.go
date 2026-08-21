@@ -112,14 +112,47 @@ func TestReconcilerAllowsAConcurrentUnrelatedEnvironmentCreate(t *testing.T) {
 		Labels: identity.Labels(),
 	}
 	runner := &scriptedRunner{testing: t, runs: []scriptedRun{
-		{command: plan.Actions[0].Command},
+		{command: imageInspectCommand("docker", plan.Actions[0].Image)},
 		{command: plan.Actions[1].Command},
+		{command: plan.Actions[2].Command},
 	}}
 	err = (Reconciler{
 		Runner: runner, Resources: &staticResources{
 			inventory: liveInventory, inspections: []inspectionResult{{resource: created}},
 		},
 	}).Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.assertDone()
+}
+
+func TestReconcilerPullsAMissingExactImageBeforeCreate(t *testing.T) {
+	identity := testIdentity("pull-missing")
+	inventory, err := NewInventory(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (Planner{}).Build(inventory, []Goal{{
+		Kind: ResourceContainer, Name: "pull-missing", Image: "example/service@sha256:" + strings.Repeat("a", 64),
+		Identity: identity, DesiredState: DesiredRunning,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := Resource{
+		Kind: ResourceContainer, ID: "pull-missing-id", Name: "pull-missing", Image: plan.Actions[0].Image,
+		State: "created", Labels: identity.Labels(),
+	}
+	runner := &scriptedRunner{testing: t, runs: []scriptedRun{
+		{command: imageInspectCommand("docker", plan.Actions[0].Image), err: &CommandError{Executable: "docker", ExitCode: 1, Started: true}},
+		{command: plan.Actions[0].Command},
+		{command: plan.Actions[1].Command},
+		{command: plan.Actions[2].Command},
+	}}
+	err = (Reconciler{Runner: runner, Resources: &staticResources{
+		inventory: inventory, inspections: []inspectionResult{{resource: created}},
+	}}).Apply(context.Background(), plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +174,7 @@ func TestReconcilerStillRejectsACreateTargetCollision(t *testing.T) {
 	}
 	liveInventory, err := NewInventory([]Resource{{
 		Kind: ResourceContainer, ID: "foreign-id", Name: "colliding-name",
-		Image: "colleague:dev", Labels: map[string]string{"team": "marketplace"},
+		Image: "colleague:dev", Labels: map[string]string{"team": "sample"},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +205,7 @@ func TestReconcilerNeverTouchesAResourceThatTurnsForeign(t *testing.T) {
 		t.Fatal(err)
 	}
 	becameForeign := owned
-	becameForeign.Labels = map[string]string{"team": "marketplace"}
+	becameForeign.Labels = map[string]string{"team": "sample"}
 	runner := &scriptedRunner{testing: t}
 	resources := &staticResources{
 		inventory:   inventory,
@@ -204,7 +237,7 @@ func TestReconcilerVerifiesAtomicLabelsAfterCreateBeforeStart(t *testing.T) {
 		Kind: ResourceContainer, ID: "created-id", Name: "switchyard-created",
 		Labels: map[string]string{LabelManagedBy: ManagedByValue, LabelEnvironmentID: identity.EnvironmentID},
 	}
-	runner := &scriptedRunner{testing: t, runs: []scriptedRun{{command: plan.Actions[0].Command}}}
+	runner := &scriptedRunner{testing: t, runs: []scriptedRun{{command: imageInspectCommand("docker", plan.Actions[0].Image)}, {command: plan.Actions[1].Command}}}
 	resources := &staticResources{
 		inventory: inventory, inspections: []inspectionResult{{resource: partial}},
 	}
@@ -213,7 +246,7 @@ func TestReconcilerVerifiesAtomicLabelsAfterCreateBeforeStart(t *testing.T) {
 		t.Fatalf("error: got %v, want %v", err, ErrOwnershipUnverified)
 	}
 	runner.assertDone()
-	if len(runner.seen) != 1 || runner.seen[0].Arguments[1] != "create" {
+	if len(runner.seen) != 2 || runner.seen[1].Arguments[1] != "create" {
 		t.Fatalf("partial create was started: %+v", runner.seen)
 	}
 }
@@ -240,8 +273,9 @@ func TestReconcilerReinspectsCreatedImmutableConfigurationBeforeStart(t *testing
 		Labels: identity.Labels(),
 	}
 	runner := &scriptedRunner{testing: t, runs: []scriptedRun{
-		{command: plan.Actions[0].Command},
+		{command: imageInspectCommand("docker", plan.Actions[0].Image)},
 		{command: plan.Actions[1].Command},
+		{command: plan.Actions[2].Command},
 	}}
 	resources := &staticResources{
 		inventory: inventory, inspections: []inspectionResult{{resource: created}},

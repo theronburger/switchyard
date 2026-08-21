@@ -13,12 +13,25 @@ cask "switchyard" do
   app "Switchyard.app"
   binary "#{appdir}/Switchyard.app/Contents/Resources/SwitchyardDaemon", target: "sy"
 
+  # Homebrew runs uninstall directives in a fixed order that places launchctl
+  # before quit. The app owns daemon installation and would re-register the
+  # LaunchAgent if it were still running, so quit it first. The script is inline
+  # so uninstall still works when the bundle was moved or deleted by hand.
   uninstall early_script: {
               executable: "/usr/bin/osascript",
               args:       [
                 "-l",
                 "JavaScript",
-                "#{appdir}/Switchyard.app/Contents/Resources/quit-switchyard.js",
+                "-e",
+                "ObjC.import('AppKit'); function run(argv) { " \
+                "const id = argv[0]; " \
+                "const apps = () => $.NSRunningApplication.runningApplicationsWithBundleIdentifier(id); " \
+                "const found = apps(); " \
+                "for (let i = 0; i < found.count; i += 1) { found.objectAtIndex(i).terminate(); } " \
+                "for (let attempt = 0; attempt < 100; attempt += 1) { " \
+                "if (Number(apps().count) === 0) { return; } " \
+                "$.NSThread.sleepForTimeInterval(0.1); } " \
+                "throw new Error('application ' + id + ' did not terminate'); }",
                 "com.theronburger.switchyard",
               ],
             },

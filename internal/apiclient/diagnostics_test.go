@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestClientReadsExplicitOperationDiagnosticsAfterHandshake(t *testing.T) {
@@ -23,16 +23,40 @@ func TestClientReadsExplicitOperationDiagnosticsAfterHandshake(t *testing.T) {
 		if request.URL.Path != "/v1/operations/operation_01/diagnostics" || request.URL.Query().Get("maxBytes") != "2048" {
 			t.Errorf("diagnostics request: %s?%s", request.URL.Path, request.URL.RawQuery)
 		}
-		writeTestJSON(t, response, contractv1.OperationDiagnostics{
-			SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_01",
+		writeTestJSON(t, response, contractv2.OperationDiagnostics{
+			SchemaVersion: contractv2.SchemaVersion, OperationID: "operation_01",
 			EnvironmentID: "env_01", LogReference: "run_01/preparations/service/command-0",
-			Excerpts: []contractv1.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
+			Excerpts: []contractv2.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
 		})
 	}))
 	defer server.Close()
 	client := NewClient(connectionForServer(t, server.URL, token, snapshot, now), ClientOptions{})
 	diagnostics, err := client.OperationDiagnostics(context.Background(), "operation_01", 2048)
 	if err != nil || diagnostics.OperationID != "operation_01" || len(diagnostics.Excerpts) != 1 {
+		t.Fatalf("diagnostics: %+v err=%v", diagnostics, err)
+	}
+}
+
+func TestClientAcceptsProfileActionDiagnosticsWithoutEnvironment(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	token := testToken()
+	snapshot := validSnapshot(now)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		secureJSONHeaders(response)
+		if request.URL.Path == "/handshake" {
+			writeTestHandshake(t, response, snapshot)
+			return
+		}
+		writeTestJSON(t, response, contractv2.OperationDiagnostics{
+			SchemaVersion: contractv2.SchemaVersion, OperationID: "operation_11",
+			LogReference: "sample/operation_11",
+			Excerpts:     []contractv2.OperationLogExcerpt{{Stream: "stdout", Content: "tidy: 3 files changed"}},
+		})
+	}))
+	defer server.Close()
+	client := NewClient(connectionForServer(t, server.URL, token, snapshot, now), ClientOptions{})
+	diagnostics, err := client.OperationDiagnostics(context.Background(), "operation_11", 0)
+	if err != nil || diagnostics.EnvironmentID != "" || len(diagnostics.Excerpts) != 1 {
 		t.Fatalf("diagnostics: %+v err=%v", diagnostics, err)
 	}
 }
@@ -49,8 +73,8 @@ func TestClientPreservesDiagnosticsContractError(t *testing.T) {
 		}
 		response.WriteHeader(http.StatusConflict)
 		writeTestJSON(t, response, mutationErrorResponse{
-			SchemaVersion: contractv1.SchemaVersion,
-			Error:         contractv1.ContractError{Code: "DIAGNOSTICS_UNAVAILABLE", Message: "This operation has no available diagnostics", Retryable: false},
+			SchemaVersion: contractv2.SchemaVersion,
+			Error:         contractv2.ContractError{Code: "DIAGNOSTICS_UNAVAILABLE", Message: "This operation has no available diagnostics", Retryable: false},
 		})
 	}))
 	defer server.Close()

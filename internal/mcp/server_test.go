@@ -10,63 +10,63 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type stubServerBackend struct {
-	snapshot contractv1.StatusSnapshot
+	snapshot contractv2.StatusSnapshot
 	status   error
 	doctor   apiclient.DoctorReport
-	start    func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	stop     func(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
-	create   func(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	adopt    func(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	archive  func(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	start    func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error)
+	stop     func(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error)
+	create   func(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error)
+	adopt    func(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error)
+	archive  func(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error)
 }
 
 type diagnosticServerBackend struct {
 	stubServerBackend
-	diagnostics contractv1.OperationDiagnostics
+	diagnostics contractv2.OperationDiagnostics
 	err         error
 }
 
-func (backend diagnosticServerBackend) OperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error) {
+func (backend diagnosticServerBackend) OperationDiagnostics(context.Context, string, int) (contractv2.OperationDiagnostics, error) {
 	return backend.diagnostics, backend.err
 }
 
 func (b stubServerBackend) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.create == nil {
-		return contractv1.MutationReceipt{}, errors.New("create is not configured")
+		return contractv2.MutationReceipt{}, errors.New("create is not configured")
 	}
 	return b.create(ctx, request)
 }
 
 func (b stubServerBackend) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.archive == nil {
-		return contractv1.MutationReceipt{}, errors.New("archive is not configured")
+		return contractv2.MutationReceipt{}, errors.New("archive is not configured")
 	}
 	return b.archive(ctx, request)
 }
 
 func (b stubServerBackend) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.adopt == nil {
-		return contractv1.MutationReceipt{}, errors.New("adopt is not configured")
+		return contractv2.MutationReceipt{}, errors.New("adopt is not configured")
 	}
 	return b.adopt(ctx, request)
 }
 
 const modernMetadata = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test-client","version":"1.0.0"}}`
 
-func (b stubServerBackend) Status(context.Context) (contractv1.StatusSnapshot, error) {
+func (b stubServerBackend) Status(context.Context) (contractv2.StatusSnapshot, error) {
 	return b.snapshot, b.status
 }
 
@@ -76,10 +76,10 @@ func (b stubServerBackend) Doctor(context.Context) apiclient.DoctorReport {
 
 func (b stubServerBackend) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.start == nil {
-		return contractv1.MutationReceipt{}, errors.New("start is not configured")
+		return contractv2.MutationReceipt{}, errors.New("start is not configured")
 	}
 	return b.start(ctx, request)
 }
@@ -87,10 +87,10 @@ func (b stubServerBackend) StartEnvironment(
 func (b stubServerBackend) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if b.stop == nil {
-		return contractv1.MutationReceipt{}, errors.New("stop is not configured")
+		return contractv2.MutationReceipt{}, errors.New("stop is not configured")
 	}
 	return b.stop(ctx, environmentID, request)
 }
@@ -101,7 +101,7 @@ func TestServerInitializesListsToolsAndReturnsExactWorktreeContext(t *testing.T)
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/marketplace/services/nonprofit"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/sample/services/billing"}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -163,7 +163,7 @@ func TestServerSupportsStatelessModernDiscoveryListAndCall(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMetadata + `}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{` + modernMetadata + `}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/marketplace"},` + modernMetadata + `}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/sample"},` + modernMetadata + `}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -339,7 +339,7 @@ func TestServerContextRequiresAnAbsoluteKnownWorkspacePath(t *testing.T) {
 
 func TestServerReturnsDoctorAsToolErrorWhenUnhealthy(t *testing.T) {
 	report := apiclient.DoctorReport{
-		SchemaVersion: 1,
+		SchemaVersion: contractv2.SchemaVersion,
 		GeneratedAt:   time.Now(),
 		Healthy:       false,
 		Checks: []apiclient.DoctorCheck{{
@@ -367,10 +367,10 @@ func TestServerReturnsDoctorAsToolErrorWhenUnhealthy(t *testing.T) {
 }
 
 func TestServerReturnsOperationDiagnosticsOnlyOnExplicitToolCall(t *testing.T) {
-	diagnostics := contractv1.OperationDiagnostics{
-		SchemaVersion: contractv1.SchemaVersion, OperationID: "operation_01",
+	diagnostics := contractv2.OperationDiagnostics{
+		SchemaVersion: contractv2.SchemaVersion, OperationID: "operation_01",
 		EnvironmentID: "env_test", LogReference: "run_01/preparations/service/command-0",
-		Excerpts: []contractv1.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
+		Excerpts: []contractv2.OperationLogExcerpt{{Stream: "stderr", Content: "TS2304", Truncated: false, Redacted: true}},
 	}
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
@@ -410,15 +410,15 @@ func TestServerSubmitsThinStartAndReturnsStateFooter(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
 	backend := stubServerBackend{
 		snapshot: serverSnapshot(),
-		start: func(_ context.Context, request contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(_ context.Context, request contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.RequestID != "request_start" ||
 				request.IdempotencyKey != "agent:retry" || request.WorktreeID != "worktree_test" ||
 				request.TargetID != "production" || request.ConfirmedTargetID != "production" ||
 				len(request.ServiceIDs) != 2 {
 				t.Fatalf("start request: %+v", request)
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_start", AcceptedAt: acceptedAt, EnvironmentID: "env_test",
 			}, nil
 		},
@@ -426,7 +426,7 @@ func TestServerSubmitsThinStartAndReturnsStateFooter(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","targetId":"production","confirmedTargetId":"production","serviceIds":["organizer","nonprofit-service"]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","targetId":"production","confirmedTargetId":"production","serviceIds":["storefront","billing-service"]}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, backend, input)
 	var called struct {
@@ -449,13 +449,13 @@ func TestServerSubmitsStopWithoutWaiting(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 14, 16, 0, 0, 0, time.UTC)
 	backend := stubServerBackend{
 		snapshot: serverSnapshot(),
-		stop: func(_ context.Context, environmentID string, request contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		stop: func(_ context.Context, environmentID string, request contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			if environmentID != "env_test" || request.Validate() != nil ||
 				request.ExpectedEnvironmentRevision == nil || *request.ExpectedEnvironmentRevision != 17 {
 				t.Fatalf("stop environment=%q request=%+v", environmentID, request)
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_stop", AcceptedAt: acceptedAt, EnvironmentID: environmentID,
 			}, nil
 		},
@@ -475,31 +475,31 @@ func TestServerSubmitsManagedWorkspaceActions(t *testing.T) {
 	acceptedAt := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
 	backend := stubServerBackend{
 		snapshot: serverSnapshot(),
-		create: func(_ context.Context, request contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error) {
+		create: func(_ context.Context, request contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.RepositoryID != "repository_test" ||
 				request.Branch != "feature/go-service" || request.StartPoint != "origin/main" {
 				t.Fatalf("create request: %+v", request)
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_create", AcceptedAt: acceptedAt,
 			}, nil
 		},
-		adopt: func(_ context.Context, request contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error) {
+		adopt: func(_ context.Context, request contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.WorktreeID != "worktree_test" {
 				t.Fatalf("adopt request: %+v", request)
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_adopt", AcceptedAt: acceptedAt,
 			}, nil
 		},
-		archive: func(_ context.Context, request contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error) {
+		archive: func(_ context.Context, request contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error) {
 			if request.Validate() != nil || request.WorktreeID != "worktree_test" {
 				t.Fatalf("archive request: %+v", request)
 			}
-			return contractv1.MutationReceipt{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: request.RequestID,
+			return contractv2.MutationReceipt{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: request.RequestID,
 				OperationID: "operation_archive", AcceptedAt: acceptedAt,
 			}, nil
 		},
@@ -522,9 +522,9 @@ func TestServerSubmitsManagedWorkspaceActions(t *testing.T) {
 func TestServerRejectsInvalidActionArgumentsBeforeBackend(t *testing.T) {
 	calls := 0
 	backend := stubServerBackend{
-		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
+		start: func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
 			calls++
-			return contractv1.MutationReceipt{}, nil
+			return contractv2.MutationReceipt{}, nil
 		},
 	}
 	input := strings.Join([]string{
@@ -543,14 +543,14 @@ func TestServerRejectsInvalidActionArgumentsBeforeBackend(t *testing.T) {
 func TestServerRedactsActionBackendErrors(t *testing.T) {
 	secret := "/Users/person/state.sqlite bearer-secret"
 	backend := stubServerBackend{
-		start: func(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error) {
-			return contractv1.MutationReceipt{}, errors.New(secret)
+		start: func(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error) {
+			return contractv2.MutationReceipt{}, errors.New(secret)
 		},
 	}
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["storefront"]}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, backend, input)
 	if bytes.Contains(bytes.Join(responses, nil), []byte(secret)) ||
@@ -603,12 +603,12 @@ func decodeResponse(t *testing.T, contents []byte, destination any) {
 
 func TestActionToolErrorPreservesSafeContractDetails(t *testing.T) {
 	exitCode := 2
-	contractError := contractv1.ContractError{
-		Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.",
-		Retryable: false, ResourceKind: "service", ResourceID: "nonprofit-service",
-		Phase: "preparing-services", Step: "nonprofit-service.prepare.0",
+	contractError := contractv2.ContractError{
+		Code: "SERVICE_PREPARATION_FAILED", Message: "billing-service preparation failed.",
+		Retryable: false, ResourceKind: "service", ResourceID: "billing-service",
+		Phase: "preparing-services", Step: "billing-service.prepare.0",
 		Diagnostic:   "src/example.ts:4:2: TS2304: Cannot find name 'Missing'.",
-		LogReference: "run_test/preparations/nonprofit-service/command-0",
+		LogReference: "run_test/preparations/billing-service/command-0",
 		NextAction:   "fix_service_build", ExitCode: &exitCode,
 	}
 	result := actionToolError(&apiclient.CodedError{
@@ -625,7 +625,7 @@ func TestActionToolErrorPreservesSafeContractDetails(t *testing.T) {
 func TestRepositoryObservationSummaryMakesStalenessExplicit(t *testing.T) {
 	observedAt := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	attemptedAt := observedAt.Add(time.Minute)
-	summary := repositoryObservationSummary(&contractv1.RepositoryObservation{
+	summary := repositoryObservationSummary(&contractv2.RepositoryObservation{
 		ObservedAt: &observedAt, LastAttemptAt: attemptedAt, Stale: true,
 		ErrorCode: "REPOSITORY_WORKTREES_UNAVAILABLE",
 	})
@@ -639,41 +639,41 @@ func TestRepositoryObservationSummaryMakesStalenessExplicit(t *testing.T) {
 	}
 }
 
-func serverSnapshot() contractv1.StatusSnapshot {
+func serverSnapshot() contractv2.StatusSnapshot {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	return contractv1.StatusSnapshot{
-		SchemaVersion:    contractv1.SchemaVersion,
+	return contractv2.StatusSnapshot{
+		SchemaVersion:    contractv2.SchemaVersion,
 		SnapshotRevision: 42,
 		GeneratedAt:      now,
-		Daemon: contractv1.DaemonStatus{
+		Daemon: contractv2.DaemonStatus{
 			InstanceID: "daemon_test",
 			Version:    "0.1.0-dev",
 			State:      "ready",
 			StartedAt:  now.Add(-time.Hour),
 		},
-		Repositories: []contractv1.Repository{{
-			ID: "repository_test", DisplayName: "marketplace", RootPath: "/Developer/marketplace",
-			Adapter: "marketplace", Remote: "example/marketplace",
-			Worktrees: []contractv1.Worktree{
-				{ID: "worktree_test", Path: "/Developer/marketplace", Branch: "feature/test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-				{ID: "worktree_foreign", Path: "/Developer/marketplace-worktrees/foreign", Branch: "feature/foreign", HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		Repositories: []contractv2.Repository{{
+			ID: "repository_test", DisplayName: "sample", RootPath: "/Developer/sample",
+			ProfileKey: "sample", Remote: "example/sample",
+			Worktrees: []contractv2.Worktree{
+				{ID: "worktree_test", Path: "/Developer/sample", Branch: "feature/test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				{ID: "worktree_foreign", Path: "/Developer/sample-worktrees/foreign", Branch: "feature/foreign", HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 			},
 		}},
-		Environments: []contractv1.Environment{
+		Environments: []contractv2.Environment{
 			{
 				ID: "env_test", RepositoryID: "repository_test", WorktreeID: "worktree_test", Revision: 17,
 				DesiredState: "running", ObservedState: "running", Health: "degraded",
-				Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{},
-				URLs: map[string]string{"organizer": "http://127.0.0.1:7005"}, AttentionAlertIDs: []string{"alert_test"},
+				Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
+				URLs: map[string]string{"storefront": "http://127.0.0.1:7005"}, AttentionAlertIDs: []string{"alert_test"},
 			},
 			{
 				ID: "env_foreign", RepositoryID: "repository_test", WorktreeID: "worktree_foreign", Revision: 3,
 				DesiredState: "stopped", ObservedState: "stopped", Health: "unknown",
-				Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{}, InfrastructureLeases: []contractv1.InfrastructureLease{},
+				Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
 				URLs: map[string]string{}, AttentionAlertIDs: []string{"alert_foreign"},
 			},
 		},
-		Alerts: []contractv1.Alert{
+		Alerts: []contractv2.Alert{
 			{ID: "alert_test", EnvironmentID: "env_test", Severity: "error", Code: "SERVICE_EXITED", Summary: "Service exited.", Status: "active", FirstSeenAt: now, LastSeenAt: now, Occurrences: 1},
 			{ID: "alert_foreign", EnvironmentID: "env_foreign", Severity: "warning", Code: "FOREIGN", Summary: "Foreign alert.", Status: "active", FirstSeenAt: now, LastSeenAt: now, Occurrences: 1},
 		},

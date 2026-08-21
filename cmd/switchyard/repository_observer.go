@@ -7,14 +7,14 @@ import (
 	"sort"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 const repositoryObserverSweep = 30 * time.Second
 
 type repositoryObserverStore interface {
-	UpdateSnapshot(context.Context, state.SnapshotUpdater) (contractv1.StatusSnapshot, bool, error)
+	UpdateSnapshot(context.Context, state.SnapshotUpdater) (contractv2.StatusSnapshot, bool, error)
 }
 
 type repositoryObserver struct {
@@ -31,10 +31,19 @@ type repositoryObserver struct {
 func newRepositoryObserver(store *state.Store, paths applicationPaths, restart func()) *repositoryObserver {
 	return &repositoryObserver{
 		store: store, paths: paths, interval: repositoryObserverSweep, now: time.Now,
-		discover: discoverRepositoryInventory,
+		discover: func(ctx context.Context, observedAt time.Time) repositoryInventory {
+			discovered, err := discoverAcceptedRepositoryInventory(ctx, store, observedAt)
+			if err != nil {
+				return inventoryFailure(observedAt, "CONFIGURATION_UNAVAILABLE", "Accepted configuration is unavailable.")
+			}
+			return discovered
+		},
 		annotate: annotateWorkspaceInventory,
 		restore: func(ctx context.Context, inventory *repositoryInventory) error {
-			return restoreWorkspaceInventory(ctx, store, inventory)
+			if err := restoreWorkspaceInventory(ctx, store, inventory); err != nil {
+				return err
+			}
+			return restoreOccupancyInventory(ctx, store, inventory)
 		},
 		restart: restart,
 	}
@@ -78,7 +87,7 @@ func (observer *repositoryObserver) RefreshOnce(ctx context.Context) error {
 		)
 	}
 	topologyChanged := false
-	_, _, err := observer.store.UpdateSnapshot(ctx, func(snapshot *contractv1.StatusSnapshot) (bool, error) {
+	_, _, err := observer.store.UpdateSnapshot(ctx, func(snapshot *contractv2.StatusSnapshot) (bool, error) {
 		previousTopology := repositoryTopology(snapshot.Repositories)
 		canRestart := inventoryContainsEnvironmentWorktrees(discovered.Repositories, snapshot.Environments)
 		*snapshot = mergeRepositoryInventory(*snapshot, discovered)
@@ -92,11 +101,20 @@ func (observer *repositoryObserver) RefreshOnce(ctx context.Context) error {
 	return err
 }
 
+// inventoryContainsEnvironmentWorktrees reports whether every live environment
+// still maps to a discovered worktree. A restart re-registers environments from
+// the inventory, so restarting while a live environment's worktree is missing
+// would fail boot closed. Stopped environments are finished history: boot
+// tolerates them without a registration, so they never suppress the restart
+// that picks up a topology change.
 func inventoryContainsEnvironmentWorktrees(
-	repositories []contractv1.Repository,
-	environments []contractv1.Environment,
+	repositories []contractv2.Repository,
+	environments []contractv2.Environment,
 ) bool {
 	for _, environment := range environments {
+		if environment.ObservedState == "stopped" {
+			continue
+		}
 		found := false
 		for _, repository := range repositories {
 			if repository.ID == environment.RepositoryID && repositoryContainsWorktree(repository, environment.WorktreeID) {
@@ -126,7 +144,7 @@ func markInventoryRefreshFailed(
 	})
 }
 
-func repositoryTopology(repositories []contractv1.Repository) []string {
+func repositoryTopology(repositories []contractv2.Repository) []string {
 	topology := make([]string, 0)
 	for _, repository := range repositories {
 		topology = append(topology, "repository:"+repository.ID)

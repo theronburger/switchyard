@@ -14,7 +14,7 @@ Use [GitHub private vulnerability reporting](https://github.com/theronburger/swi
 
 Switchyard does not currently have an Apple Developer identity and is not notarized. Official app archives use the persistent self-signed `Theron Burger Apps Release` identity with the hardened runtime. The Swift frontend alone carries `com.apple.security.cs.disable-library-validation` because a self-signed app has no Apple Team ID for Sparkle framework library validation; the daemon and CLI never carry that entitlement.
 
-Sparkle verifies the archive and signed feed with Switchyard's dedicated Ed25519 key before extraction. Every GitHub Release also includes SHA-256 checksums, a CycloneDX SBOM for the Go runtime dependency graph, and a GitHub build-provenance attestation. Swift packages are pinned separately in `app/Package.resolved`.
+Sparkle verifies every update archive against the Ed25519 signature carried in the appcast, using Switchyard's dedicated public key embedded in the app, before extraction. The appcast itself is fetched over HTTPS from the GitHub Release; its item signatures, not the feed document, are what authenticate an update. Every GitHub Release also includes SHA-256 checksums, a CycloneDX SBOM for the Go runtime dependency graph, and a GitHub build-provenance attestation. Swift packages are pinned separately in `app/Package.resolved`.
 
 Verify a downloaded release:
 

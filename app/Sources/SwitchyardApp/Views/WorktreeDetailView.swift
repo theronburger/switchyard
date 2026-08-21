@@ -22,6 +22,9 @@ struct WorktreeDetailView: View {
                 serviceChanges
                 operations
                 workspaceReadiness
+                if !worktree.heldOccupancy.isEmpty || occupancyFailureMessage != nil {
+                    occupancySection
+                }
                 worktreeFacts
                 repositoryFacts
             }
@@ -74,6 +77,7 @@ struct WorktreeDetailView: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                StartCodexTaskButton(model: model, worktree: worktree)
                 OpenInZedButton(worktree: worktree)
                 if worktree.workspace?.ownership == .adopted && !worktree.isPrimary {
                     Button {
@@ -247,8 +251,12 @@ struct WorktreeDetailView: View {
             }
             if let workspace = worktree.workspace {
                 KeyValueRow(key: "Ownership", value: workspace.ownership.rawValue.capitalized)
-                KeyValueRow(key: "Prepared", value: Format.relative(workspace.preparedAt))
-                KeyValueRow(key: "Input fingerprint", value: workspace.fingerprint, monospaced: true, copyable: true)
+                if let preparedAt = workspace.preparedAtIfKnown {
+                    KeyValueRow(key: "Prepared", value: Format.relative(preparedAt))
+                }
+                if !workspace.fingerprint.isEmpty {
+                    KeyValueRow(key: "Input fingerprint", value: workspace.fingerprint, monospaced: true, copyable: true)
+                }
                 ForEach(workspace.toolchains) { toolchain in
                     KeyValueRow(
                         key: "Toolchain · \(toolchain.id)",
@@ -266,6 +274,55 @@ struct WorktreeDetailView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    private var occupancyFailureMessage: String? {
+        guard case .failed(let worktreeId, let message) = model.occupancyActionState, worktreeId == worktree.id else { return nil }
+        return message
+    }
+
+    /// Held handoff leases. These are explicit records of tasks the app handed
+    /// this worktree; the app never infers them and only the owner ends them.
+    private var occupancySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Handed off", systemImage: "person.badge.clock")
+                    .font(.headline)
+                Spacer()
+                Text("Archive protected")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(worktree.heldOccupancy) { lease in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lease.holderLabel)
+                            .font(.callout)
+                        Text("Since \(Format.relative(lease.acquiredAt)) · \(lease.holderKind)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Release") {
+                        Task { await model.releaseOccupancy(lease) }
+                    }
+                    .disabled(!model.canRecordOccupancy)
+                    .help("End this handoff. Only do this once the task no longer needs the worktree.")
+                }
+            }
+            if let occupancyFailureMessage {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(occupancyFailureMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Button("Dismiss") { model.dismissOccupancyFailure() }
+                        .buttonStyle(.borderless)
+                }
+            }
+        }
+        .padding(16)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     private var repositoryFacts: some View {
         FullWidthDisclosure(isExpanded: $repositoryExpanded) {
             Label("Repository identity", systemImage: "externaldrive")
@@ -276,8 +333,16 @@ struct WorktreeDetailView: View {
                 KeyValueRow(key: "Name", value: repository.displayName)
                 KeyValueRow(key: "Root", value: repository.rootPath, monospaced: true, copyable: true)
                 KeyValueRow(key: "Remote", value: repository.remote, monospaced: true, copyable: true)
-                KeyValueRow(key: "Adapter", value: repository.adapter, monospaced: true)
+                KeyValueRow(key: "Profile key", value: repository.profileKey, monospaced: true)
                 KeyValueRow(key: "Repository ID", value: repository.id, monospaced: true, copyable: true)
+                HStack {
+                    Text("Configuration").foregroundStyle(.secondary)
+                    Spacer()
+                    RepositoryAcceptanceBadge(state: model.acceptanceState(for: repository))
+                    Button("Settings") { model.selection = .repository(repository.id) }
+                        .buttonStyle(.borderless)
+                }
+                .font(.callout)
                 if let runtime = repository.runtime {
                     KeyValueRow(key: "Default target", value: runtime.defaultTargetId)
                     KeyValueRow(key: "Targets", value: runtime.targets.map(\.displayName).joined(separator: ", "))

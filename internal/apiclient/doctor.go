@@ -46,7 +46,7 @@ func (d Doctor) Run(ctx context.Context) DoctorReport {
 	client, err := d.Connector.Client()
 	if err != nil {
 		report.Checks = append(report.Checks,
-			failedCheck("runtime.discovery", "Runtime connection files are unavailable or unsafe.", err),
+			failedCheck("runtime.discovery", discoverySummary(err), err),
 			skippedCheck("daemon.handshake", "Handshake was not checked."),
 			skippedCheck("daemon.status", "Status was not checked."))
 		return report
@@ -59,7 +59,7 @@ func (d Doctor) Run(ctx context.Context) DoctorReport {
 
 	if _, err := client.Handshake(ctx); err != nil {
 		report.Checks = append(report.Checks,
-			failedCheck("daemon.handshake", "The installed daemon could not be authenticated.", err),
+			failedCheck("daemon.handshake", handshakeSummary(err), err),
 			skippedCheck("daemon.status", "Status was not checked."))
 		return report
 	}
@@ -81,6 +81,22 @@ func (d Doctor) Run(ctx context.Context) DoctorReport {
 	})
 	report.Healthy = true
 	return report
+}
+
+const upgradeRequiredSummary = "The installed daemon and this client speak different contract versions; update so both match."
+
+func discoverySummary(err error) string {
+	if CodeOf(err) == ErrorUpgradeRequired {
+		return upgradeRequiredSummary
+	}
+	return "Runtime connection files are unavailable or unsafe."
+}
+
+func handshakeSummary(err error) string {
+	if CodeOf(err) == ErrorUpgradeRequired {
+		return upgradeRequiredSummary
+	}
+	return "The installed daemon could not be authenticated."
 }
 
 func failedCheck(id, summary string, err error) DoctorCheck {

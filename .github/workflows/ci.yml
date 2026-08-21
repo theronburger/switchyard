@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, edited, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -24,8 +25,30 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Validate pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: scripts/check-pr-title.sh "$PR_TITLE"
       - name: Run production checks
         run: scripts/ci.sh
+
+  boundary:
+    name: Generic boundary
+    runs-on: macos-26
+    # Fork pull requests receive no secrets; they get a skipped scan here and
+    # the enforced scan when the change lands on a branch with access.
+    env:
+      SWITCHYARD_BOUNDARY_DENYLIST: ${{ secrets.SWITCHYARD_BOUNDARY_DENYLIST }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Scan tracked sources (enforced)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: scripts/check-generic-boundary.sh --require-denylist
+      - name: Scan tracked sources (fork, best effort)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: scripts/check-generic-boundary.sh
 
   lint:
     name: Lint
@@ -81,7 +104,7 @@ jobs:
 
   package:
     name: Package universal app
-    needs: [test, lint, vulnerabilities, secrets]
+    needs: [test, boundary, lint, vulnerabilities, secrets]
     runs-on: macos-26
     steps:
       - name: Check out source
@@ -96,3 +119,8 @@ jobs:
         run: scripts/validate-homebrew-cask.sh
       - name: Build universal dry run
         run: scripts/build-release.sh dist
+      - name: Scan the built bundle for consuming-repository identity
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          SWITCHYARD_BOUNDARY_DENYLIST: ${{ secrets.SWITCHYARD_BOUNDARY_DENYLIST }}
+        run: scripts/check-generic-boundary.sh --require-denylist --bundle dist/Switchyard.app

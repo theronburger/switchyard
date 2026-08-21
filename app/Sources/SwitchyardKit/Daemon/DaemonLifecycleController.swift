@@ -139,7 +139,7 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
             do {
                 connection = try await waitForEndpoint(retryTransientIdentity: true)
             } catch let error as RuntimeConnectionError {
-                apply(.endpointInvalid(reason: error.description), to: &machine)
+                apply(endpointFailure(error), to: &machine)
                 return await result(state: machine.state, snapshot: nil)
             } catch {
                 apply(.endpointInvalid(reason: "The restarted Switchyard daemon did not publish a verified endpoint in time."), to: &machine)
@@ -160,14 +160,14 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
                 do {
                     connection = try await waitForEndpoint(retryTransientIdentity: true)
                 } catch let error as RuntimeConnectionError {
-                    apply(.endpointInvalid(reason: error.description), to: &machine)
+                    apply(endpointFailure(error), to: &machine)
                     return await result(state: machine.state, snapshot: nil)
                 } catch {
                     apply(.endpointInvalid(reason: "The Switchyard daemon did not publish a verified endpoint in time."), to: &machine)
                     return await result(state: machine.state, snapshot: nil)
                 }
             } catch let error as RuntimeConnectionError {
-                apply(.endpointInvalid(reason: error.description), to: &machine)
+                apply(endpointFailure(error), to: &machine)
                 return await result(state: machine.state, snapshot: nil)
             } catch {
                 apply(.endpointInvalid(reason: "The Switchyard daemon runtime could not be verified."), to: &machine)
@@ -210,6 +210,15 @@ public struct DaemonLifecycleController: DaemonLifecycleControlling {
             apply(.connectionFailed(reason: "The daemon handshake failed."), to: &machine)
             return await result(state: machine.state, snapshot: nil)
         }
+    }
+
+    private func endpointFailure(_ error: RuntimeConnectionError) -> DaemonLifecycleEvent {
+        if error.requiresUpgrade {
+            return .endpointUpgradeRequired(
+                message: "The installed daemon publishes a different contract version than this app. Update Switchyard so both match."
+            )
+        }
+        return .endpointInvalid(reason: error.description)
     }
 
     private func waitForEndpoint(retryTransientIdentity: Bool) async throws -> DaemonConnection {

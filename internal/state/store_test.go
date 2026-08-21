@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/events"
 )
 
@@ -93,6 +93,35 @@ func TestCommitSnapshotAdvancesRevisionAndSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestSnapshotStorageRemainsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	for revision := 0; revision < 2_000; revision++ {
+		snapshot := validSnapshot()
+		snapshot.Daemon.State = fmt.Sprintf("observation-%d", revision)
+		if _, err := store.CommitSnapshot(ctx, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var rowCount int
+	if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM current_snapshot").Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("current snapshot rows: got %d, want 1", rowCount)
+	}
+	for _, legacyTable := range []string{"snapshot_head", "snapshot_revisions"} {
+		var count int
+		if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", legacyTable).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("legacy snapshot table %q still exists", legacyTable)
+		}
+	}
+}
+
 func TestConcurrentSnapshotCommitsRemainAtomic(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
@@ -136,7 +165,7 @@ func TestUpdateSnapshotMutatesLatestRevisionExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, changed, err := store.UpdateSnapshot(ctx, func(snapshot *contractv1.StatusSnapshot) (bool, error) {
+	updated, changed, err := store.UpdateSnapshot(ctx, func(snapshot *contractv2.StatusSnapshot) (bool, error) {
 		if snapshot.SnapshotRevision != committed.SnapshotRevision {
 			t.Fatalf("updater saw revision %d, want %d", snapshot.SnapshotRevision, committed.SnapshotRevision)
 		}
@@ -158,7 +187,7 @@ func TestUpdateSnapshotNoOpDoesNotAdvanceRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, changed, err := store.UpdateSnapshot(ctx, func(*contractv1.StatusSnapshot) (bool, error) {
+	updated, changed, err := store.UpdateSnapshot(ctx, func(*contractv2.StatusSnapshot) (bool, error) {
 		return false, nil
 	})
 	if err != nil {
@@ -273,13 +302,13 @@ func TestOperationExpectedEnvironmentRevisionIsAtomicAndRetrySafe(t *testing.T) 
 	ctx := context.Background()
 	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
 	snapshot := validSnapshot()
-	snapshot.Repositories = []contractv1.Repository{{
+	snapshot.Repositories = []contractv2.Repository{{
 		ID: "repository_01", DisplayName: "repository", RootPath: "/tmp/repository",
-		Adapter: "marketplace", Worktrees: []contractv1.Worktree{{
+		ProfileKey: "sample", Worktrees: []contractv2.Worktree{{
 			ID: "worktree_01", Path: "/tmp/repository", HeadRevision: "abc",
 		}},
 	}}
-	snapshot.Environments = []contractv1.Environment{operationTestEnvironment(7)}
+	snapshot.Environments = []contractv2.Environment{operationTestEnvironment(7)}
 	if _, err := store.CommitSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +330,7 @@ func TestOperationExpectedEnvironmentRevisionIsAtomicAndRetrySafe(t *testing.T) 
 	}
 
 	changed := snapshot
-	changed.Environments = []contractv1.Environment{operationTestEnvironment(8)}
+	changed.Environments = []contractv2.Environment{operationTestEnvironment(8)}
 	if _, err := store.CommitSnapshot(ctx, changed); err != nil {
 		t.Fatal(err)
 	}
@@ -373,13 +402,13 @@ func TestOperationCreationSerializesEnvironmentMutations(t *testing.T) {
 	}
 }
 
-func operationTestEnvironment(revision int64) contractv1.Environment {
-	return contractv1.Environment{
+func operationTestEnvironment(revision int64) contractv2.Environment {
+	return contractv2.Environment{
 		ID: "environment_01", Revision: revision,
 		RepositoryID: "repository_01", WorktreeID: "worktree_01", DisplayName: "environment",
 		DesiredState: "running", ObservedState: "running", Health: "healthy",
-		Services: []contractv1.Service{}, PortLeases: []contractv1.PortLease{},
-		InfrastructureLeases: []contractv1.InfrastructureLease{}, URLs: map[string]string{},
+		Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{},
+		InfrastructureLeases: []contractv2.InfrastructureLease{}, URLs: map[string]string{},
 		AttentionAlertIDs: []string{},
 	}
 }
@@ -391,7 +420,7 @@ func TestFailInterruptedOperationsIsAtomicAndPreservesTerminalWork(t *testing.T)
 		t.Fatal(err)
 	}
 
-	createOperation := func(id string) contractv1.Operation {
+	createOperation := func(id string) contractv2.Operation {
 		t.Helper()
 		fingerprint, err := FingerprintRequest(map[string]string{"operationId": id})
 		if err != nil {
@@ -422,7 +451,7 @@ func TestFailInterruptedOperationsIsAtomicAndPreservesTerminalWork(t *testing.T)
 		t.Fatal(err)
 	}
 
-	interrupted, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+	interrupted, err := store.FailInterruptedOperations(ctx, contractv2.ContractError{
 		Code:      "DAEMON_RESTARTED",
 		Message:   "The daemon restarted before the operation completed.",
 		Retryable: true,
@@ -451,7 +480,7 @@ func TestFailInterruptedOperationsIsAtomicAndPreservesTerminalWork(t *testing.T)
 		t.Fatalf("reconciled snapshot states: got %+v", states)
 	}
 
-	repeated, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+	repeated, err := store.FailInterruptedOperations(ctx, contractv2.ContractError{
 		Code: "DAEMON_RESTARTED", Message: "Restarted.", Retryable: true,
 	})
 	if err != nil {
@@ -522,6 +551,26 @@ func TestEventsResumeFromCursor(t *testing.T) {
 	}
 }
 
+func TestEventHistoryRemainsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "state.sqlite"))
+	for index := 1; index <= retainedEventLimit+25; index++ {
+		if _, err := store.AppendEvent(ctx, events.NewEvent{
+			ID: fmt.Sprintf("bounded_event_%d", index), Kind: "observation", Revision: int64(index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var count int
+	if err := store.database.QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != retainedEventLimit {
+		t.Fatalf("retained events: got %d, want %d", count, retainedEventLimit)
+	}
+}
+
 func openTestStore(t *testing.T, databasePath string) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), Config{Path: databasePath})
@@ -536,17 +585,17 @@ func openTestStore(t *testing.T, databasePath string) *Store {
 	return store
 }
 
-func validSnapshot() contractv1.StatusSnapshot {
-	return contractv1.StatusSnapshot{
-		Daemon: contractv1.DaemonStatus{
+func validSnapshot() contractv2.StatusSnapshot {
+	return contractv2.StatusSnapshot{
+		Daemon: contractv2.DaemonStatus{
 			InstanceID: "daemon_test",
 			Version:    "test",
 			State:      "ready",
 			StartedAt:  time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC),
 		},
-		Repositories: []contractv1.Repository{},
-		Environments: []contractv1.Environment{},
-		Operations:   []contractv1.Operation{},
-		Alerts:       []contractv1.Alert{},
+		Repositories: []contractv2.Repository{},
+		Environments: []contractv2.Environment{},
+		Operations:   []contractv2.Operation{},
+		Alerts:       []contractv2.Alert{},
 	}
 }

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/state"
 )
@@ -27,12 +27,18 @@ func TestLocalPathsUsesApplicationSupportOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("localPaths: %v", err)
 	}
-	wantDirectory := filepath.Join(root, "Switchyard", "daemon")
+	wantDirectory := filepath.Join(root, "Switchyard Development", "daemon")
+	if paths.root != filepath.Dir(wantDirectory) {
+		t.Fatalf("root: got %q, want %q", paths.root, filepath.Dir(wantDirectory))
+	}
 	if paths.directory != wantDirectory {
 		t.Fatalf("directory: got %q, want %q", paths.directory, wantDirectory)
 	}
-	if paths.database != filepath.Join(wantDirectory, "state.sqlite") {
+	if paths.database != filepath.Join(wantDirectory, "state-v2.sqlite") {
 		t.Fatalf("database: got %q", paths.database)
+	}
+	if paths.configuration != filepath.Join(root, "Switchyard Development", "configuration.yaml") {
+		t.Fatalf("configuration: got %q", paths.configuration)
 	}
 	if paths.runtimeDescriptor != filepath.Join(wantDirectory, "runtime.json") {
 		t.Fatalf("runtime descriptor: got %q", paths.runtimeDescriptor)
@@ -42,11 +48,33 @@ func TestLocalPathsUsesApplicationSupportOverride(t *testing.T) {
 	}
 }
 
+func TestApplicationDirectoryNameSeparatesBuildChannels(t *testing.T) {
+	tests := []struct {
+		channel string
+		want    string
+	}{
+		{channel: "development", want: "Switchyard Development"},
+		{channel: "release", want: "Switchyard"},
+	}
+	for _, test := range tests {
+		got, err := applicationDirectoryName(test.channel)
+		if err != nil {
+			t.Fatalf("applicationDirectoryName(%q): %v", test.channel, err)
+		}
+		if got != test.want {
+			t.Fatalf("applicationDirectoryName(%q): got %q, want %q", test.channel, got, test.want)
+		}
+	}
+	if _, err := applicationDirectoryName("unknown"); err == nil {
+		t.Fatal("unsupported build channel was accepted")
+	}
+}
+
 func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(repositoryRootOverride, root)
 	t.Setenv(gitExecutableOverride, "/usr/bin/false")
 	paths := applicationPaths{
+		root:              root,
 		directory:         root,
 		database:          filepath.Join(root, "state.sqlite"),
 		runtimeDescriptor: filepath.Join(root, "runtime.json"),
@@ -65,6 +93,11 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 	deadline := time.Now().Add(5 * time.Second)
 	var daemonErr error
 	for {
+		select {
+		case runErr := <-errCh:
+			t.Fatalf("daemon exited before readiness: %v", runErr)
+		default:
+		}
 		snapshot, err := connector.Status(context.Background())
 		if err == nil {
 			if snapshot.Daemon.State != "ready" || snapshot.Daemon.Version != version {
@@ -120,6 +153,7 @@ func TestDaemonWiringServesAuthenticatedStatusAndShutsDownCleanly(t *testing.T) 
 func TestDaemonDoesNotPublishRuntimeFilesWhenAlreadyCancelled(t *testing.T) {
 	root := t.TempDir()
 	paths := applicationPaths{
+		root:              root,
 		directory:         root,
 		database:          filepath.Join(root, "state.sqlite"),
 		runtimeDescriptor: filepath.Join(root, "runtime.json"),
@@ -162,8 +196,8 @@ func TestConnectorRejectsReusedPortBeforeSendingAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read process start: %v", err)
 	}
-	descriptor := contractv1.RuntimeDescriptor{
-		SchemaVersion:    contractv1.SchemaVersion,
+	descriptor := contractv2.RuntimeDescriptor{
+		SchemaVersion:    contractv2.SchemaVersion,
 		Endpoint:         fmt.Sprintf("http://%s", listener.Addr()),
 		DaemonInstanceID: "daemon_stale",
 		DaemonVersion:    version,

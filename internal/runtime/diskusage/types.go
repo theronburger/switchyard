@@ -92,8 +92,6 @@ type Usage struct {
 
 type Categories struct {
 	NodeModules Usage `json:"nodeModules"`
-	App         Usage `json:"app"`
-	Organizer   Usage `json:"organizer"`
 	Other       Usage `json:"other"`
 }
 

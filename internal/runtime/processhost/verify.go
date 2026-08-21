@@ -95,6 +95,7 @@ func hasTrustedAncestor(pid int, current map[int]ProcessSnapshot, trusted map[in
 func sameProcessInstance(expected, actual ProcessIdentity) bool {
 	return expected.PID == actual.PID &&
 		expected.ProcessGroupID == actual.ProcessGroupID &&
+		!unknownStartTime(expected.StartedAt) && !unknownStartTime(actual.StartedAt) &&
 		expected.StartedAt.Equal(actual.StartedAt)
 }
 

@@ -117,6 +117,8 @@ struct JiraIssueView: View {
             state = .loading
             do {
                 state = .loaded(try await JiraIssueStore.live.issue(key: issue.key, refresh: retry > 0))
+            } catch JiraRelayClientError.unavailable {
+                state = .notConfigured
             } catch {
                 state = .failed
             }
@@ -206,6 +208,8 @@ struct JiraIssueView: View {
             Text("Unavailable")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
+        case .notConfigured:
+            EmptyView()
         }
     }
 
@@ -251,6 +255,10 @@ struct JiraIssueView: View {
                 Button("Retry") { retry += 1 }
                     .controlSize(.small)
             }
+        case .notConfigured:
+            Text("No private Jira relay is configured. Declare one in integrations/jira-relay.json under Application Support to load ticket metadata.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -260,6 +268,8 @@ private enum JiraIssueState {
     case loading
     case loaded(JiraIssueSummary)
     case failed
+    /// No owner-declared relay is configured; the product ships none.
+    case notConfigured
 }
 
 struct JiraIssueBadge: View {
@@ -328,6 +338,8 @@ struct JiraIssueCompactStatus: View {
                 state = .loading
                 do {
                     state = .loaded(try await JiraIssueStore.live.issue(key: issue.key))
+                } catch JiraRelayClientError.unavailable {
+                    state = .notConfigured
                 } catch {
                     state = .failed
                 }

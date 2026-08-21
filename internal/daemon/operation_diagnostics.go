@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
@@ -25,59 +25,95 @@ var (
 	ErrOperationDiagnosticsUnavailable = errors.New("operation has no available diagnostics")
 
 	logEnvironmentAssignment = regexp.MustCompile(`(?m)^\s*[A-Za-z_][A-Za-z0-9_]*=.*$`)
-	logSensitiveValue        = regexp.MustCompile(`(?i)\b(authorization|cookie|token|secret|password|api[_-]?key|access[_-]?key)\s*[:=]\s*\S+`)
-	logUserPath              = regexp.MustCompile(`/Users/[^/\s]+`)
-	logEmail                 = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
+	// An environment-style assignment anywhere in a line (after a timestamp,
+	// a logger prefix, or a bracketed stream name) loses its value.
+	logEmbeddedAssignment = regexp.MustCompile(`\b[A-Z][A-Z0-9_]{2,}=\S+`)
+	// A credential-looking name loses everything that follows it on the line:
+	// the value may be quoted, may carry a scheme such as "Bearer", and may
+	// be followed by more secret-bearing text. The name may be embedded in a
+	// longer identifier such as GITHUB_TOKEN or stripeSecretKey.
+	logSensitiveValue = regexp.MustCompile(`(?i)([A-Za-z0-9_.-]*(?:authorization|cookie|token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|private[_-]?key|credential|key)[A-Za-z0-9_.-]*)\s*[:=]\s*.*$`)
+	// URI userinfo is redacted whole; the password is never the only part kept.
+	logURICredential = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@`)
+	logUserPath      = regexp.MustCompile(`/Users/[^/\s]+`)
+	logEmail         = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
 )
 
 type OperationDiagnosticsStore interface {
-	ReadOperation(context.Context, string) (contractv1.Operation, error)
+	ReadOperation(context.Context, string) (contractv2.Operation, error)
+}
+
+// EnvironmentRunRoots resolves the owned directory beneath the runtime root
+// that holds one configured environment's run trees. Environment-scoped log
+// references are relative to that directory; an environment the daemon does
+// not currently configure has no resolvable logs.
+type EnvironmentRunRoots interface {
+	EnvironmentRunRoot(environmentID string) (string, bool)
+}
+
+// EnvironmentRunRootMap is a fixed environment-to-run-root resolver.
+type EnvironmentRunRootMap map[string]string
+
+func (roots EnvironmentRunRootMap) EnvironmentRunRoot(environmentID string) (string, bool) {
+	root, found := roots[environmentID]
+	return root, found
 }
 
 type OperationDiagnosticsReader struct {
 	store       OperationDiagnosticsStore
 	runtimeRoot string
+	runRoots    EnvironmentRunRoots
 }
 
-func NewOperationDiagnosticsReader(store OperationDiagnosticsStore, runtimeRoot string) (*OperationDiagnosticsReader, error) {
-	if store == nil || !cleanAbsolutePath(runtimeRoot) {
+func NewOperationDiagnosticsReader(store OperationDiagnosticsStore, runtimeRoot string, runRoots EnvironmentRunRoots) (*OperationDiagnosticsReader, error) {
+	if store == nil || runRoots == nil || !cleanAbsolutePath(runtimeRoot) {
 		return nil, ErrOperationDiagnosticsInvalid
 	}
-	return &OperationDiagnosticsReader{store: store, runtimeRoot: runtimeRoot}, nil
+	return &OperationDiagnosticsReader{store: store, runtimeRoot: runtimeRoot, runRoots: runRoots}, nil
+}
+
+// RuntimeRoot is the tree the reader resolves log references beneath.
+func (reader *OperationDiagnosticsReader) RuntimeRoot() string {
+	return reader.runtimeRoot
 }
 
 func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 	ctx context.Context,
 	operationID string,
 	maximumBytes int,
-) (contractv1.OperationDiagnostics, error) {
+) (contractv2.OperationDiagnostics, error) {
 	if operationID == "" || strings.ContainsAny(operationID, "/\\\x00") {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
 	}
 	if maximumBytes == 0 {
 		maximumBytes = DefaultOperationDiagnosticBytes
 	}
 	if maximumBytes < 256 || maximumBytes > MaximumOperationDiagnosticBytes {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsInvalid
 	}
 	operation, err := reader.store.ReadOperation(ctx, operationID)
 	if errors.Is(err, state.ErrOperationNotFound) {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsNotFound
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsNotFound
 	}
 	if err != nil {
-		return contractv1.OperationDiagnostics{}, err
+		return contractv2.OperationDiagnostics{}, err
 	}
-	if operation.EnvironmentID == "" || operation.Error == nil || operation.Error.LogReference == "" {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+	if operation.Error == nil || operation.Error.LogReference == "" {
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
-	logDirectory, valid := reader.logDirectory(operation.EnvironmentID, operation.Error.LogReference)
+	// Repository, worktree, and machine scoped profile actions have no
+	// environment; every other operation's logs live under one.
+	if operation.EnvironmentID == "" && operation.Kind != ProfileActionOperationKind {
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+	}
+	logDirectory, valid := reader.logDirectory(operation.Kind, operation.EnvironmentID, operation.Error.LogReference)
 	if !valid || !ownedLogDirectory(reader.runtimeRoot, logDirectory) {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
-	diagnostics := contractv1.OperationDiagnostics{
-		SchemaVersion: contractv1.SchemaVersion, OperationID: operation.ID,
+	diagnostics := contractv2.OperationDiagnostics{
+		SchemaVersion: contractv2.SchemaVersion, OperationID: operation.ID,
 		EnvironmentID: operation.EnvironmentID, LogReference: operation.Error.LogReference,
-		Excerpts: make([]contractv1.OperationLogExcerpt, 0, 2),
+		Excerpts: make([]contractv2.OperationLogExcerpt, 0, 2),
 	}
 	for _, stream := range []string{"stdout", "stderr"} {
 		excerpt, found := readOwnedLogExcerpt(filepath.Join(logDirectory, stream+".log"), stream, maximumBytes)
@@ -86,12 +122,12 @@ func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 		}
 	}
 	if len(diagnostics.Excerpts) == 0 {
-		return contractv1.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
+		return contractv2.OperationDiagnostics{}, ErrOperationDiagnosticsUnavailable
 	}
 	return diagnostics, nil
 }
 
-func (reader *OperationDiagnosticsReader) logDirectory(environmentID, reference string) (string, bool) {
+func (reader *OperationDiagnosticsReader) logDirectory(kind, environmentID, reference string) (string, bool) {
 	if strings.ContainsRune(reference, 0) || filepath.IsAbs(reference) {
 		return "", false
 	}
@@ -99,20 +135,36 @@ func (reader *OperationDiagnosticsReader) logDirectory(environmentID, reference 
 	if cleanReference == "." || cleanReference == ".." || strings.HasPrefix(cleanReference, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	directory := filepath.Join(reader.runtimeRoot, "environments", environmentID, "runs", cleanReference)
+	var directory string
+	if kind == ProfileActionOperationKind {
+		// Command actions log under the private actions root, keyed by profile
+		// and operation, independent of any environment run directory.
+		directory = filepath.Join(reader.runtimeRoot, "actions", cleanReference)
+	} else {
+		if environmentID == "" || strings.ContainsAny(environmentID, "/\\\x00") || environmentID == "." || environmentID == ".." {
+			return "", false
+		}
+		// The run root is the same directory the plan builder launched the
+		// run beneath; the reader never derives it from the reference.
+		runRoot, found := reader.runRoots.EnvironmentRunRoot(environmentID)
+		if !found || !cleanAbsolutePath(runRoot) || !pathContainedBy(reader.runtimeRoot, runRoot) {
+			return "", false
+		}
+		directory = filepath.Join(runRoot, cleanReference)
+	}
 	return directory, pathContainedBy(reader.runtimeRoot, directory)
 }
 
-func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv1.OperationLogExcerpt, bool) {
+func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv2.OperationLogExcerpt, bool) {
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return contractv1.OperationLogExcerpt{}, false
+		return contractv2.OperationLogExcerpt{}, false
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	stat, statOK := infoSyscall(info)
 	if err != nil || !info.Mode().IsRegular() || !statOK || stat.Nlink != 1 || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {
-		return contractv1.OperationLogExcerpt{}, false
+		return contractv2.OperationLogExcerpt{}, false
 	}
 	start := info.Size() - int64(maximumBytes)
 	truncated := start > 0
@@ -122,11 +174,11 @@ func readOwnedLogExcerpt(path, stream string, maximumBytes int) (contractv1.Oper
 	contents := make([]byte, info.Size()-start)
 	read, err := file.ReadAt(contents, start)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return contractv1.OperationLogExcerpt{}, false
+		return contractv2.OperationLogExcerpt{}, false
 	}
 	text := strings.ToValidUTF8(string(contents[:read]), "?")
 	text, redacted := redactDiagnosticLog(text)
-	return contractv1.OperationLogExcerpt{
+	return contractv2.OperationLogExcerpt{
 		Stream: stream, Content: text, Truncated: truncated, Redacted: redacted,
 	}, true
 }
@@ -165,6 +217,8 @@ func redactDiagnosticLog(contents string) (string, bool) {
 			continue
 		}
 		updated := logSensitiveValue.ReplaceAllString(line, "$1=[redacted]")
+		updated = logURICredential.ReplaceAllString(updated, "$1[redacted]@")
+		updated = logEmbeddedAssignment.ReplaceAllString(updated, "[environment assignment omitted]")
 		updated = logUserPath.ReplaceAllString(updated, "/Users/[redacted]")
 		updated = logEmail.ReplaceAllString(updated, "[redacted-email]")
 		if updated != line {

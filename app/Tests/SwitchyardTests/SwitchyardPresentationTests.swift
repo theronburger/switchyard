@@ -15,13 +15,13 @@ struct SwitchyardPresentationTests {
         #expect(options.defaultTargetId == "testing")
         #expect(options.targets.map(\.id) == ["development", "testing", "demo", "production"])
         #expect(options.targets.filter(\.warnOnStart).map(\.id) == ["demo", "production"])
-        #expect(options.services.count == 18)
+        #expect(options.services.count == 8)
         #expect(options.availableServiceIDs == Set(options.services.map(\.id)))
         #expect(options.services.allSatisfy { $0.available })
         #expect(options.normalizedTarget(current: "", preferred: nil) == "testing")
         #expect(options.normalizedTarget(current: "testing", preferred: "production") == "testing")
         #expect(options.normalizedTarget(current: "", preferred: "production") == "production")
-        #expect(options.normalizedServices(current: []) == Set(["organizer", "nonprofit-service"]))
+        #expect(options.normalizedServices(current: []) == Set(["api"]))
 
         let unavailable = RuntimeService(
             id: "future-service",
@@ -41,6 +41,8 @@ struct SwitchyardPresentationTests {
         #expect(prompt.contains("`future-service`"))
         #expect(prompt.contains(worktree.path))
         #expect(prompt.contains("exact argv"))
+        #expect(prompt.contains("private Switchyard repository profile"))
+        #expect(!prompt.lowercased().contains("adapter"))
         #expect(prompt.contains("Do not mark the service available"))
     }
 
@@ -51,7 +53,7 @@ struct SwitchyardPresentationTests {
         let operation = try #require(snapshot.operations.first)
         let row = OperationRowPresentation(operation: operation, snapshot: snapshot)
 
-        #expect(row.repositoryName == "marketplace")
+        #expect(row.repositoryName == "sample")
         #expect(row.worktreeName == "feature/demo-environment")
         #expect(row.hoverDetail.contains("Target: testing"))
         #expect(row.hoverDetail.contains("Operation: \(operation.id)"))
@@ -104,7 +106,7 @@ struct SwitchyardPresentationTests {
     }
 
     @Test
-    func `Jira reference is derived from Marketplace branch without inventing metadata`() throws {
+    func `Jira reference is derived from configured repository branch without inventing metadata`() throws {
         let reference = try #require(JiraIssueReference.detect(in: "feature/PROJ-830/example-change"))
         #expect(reference.key == "PROJ-830")
         #expect(JiraIssueReference.detect(in: "maintenance/no-ticket") == nil)
@@ -121,28 +123,50 @@ struct SwitchyardPresentationTests {
     func `Jira relay command and summary stay exact and bounded`() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let relayRoot = root.appending(path: "jira-mcp-relay", directoryHint: .isDirectory)
-        let script = relayRoot.appending(path: "dist/src/issue-summary.js", directoryHint: .notDirectory)
-        let node = root.appending(path: "node", directoryHint: .notDirectory)
+        let relay = root.appending(path: "relay", directoryHint: .notDirectory)
+        let configuration = root.appending(path: "integrations/jira-relay.json", directoryHint: .notDirectory)
         try FileManager.default.createDirectory(
-            at: script.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+            at: configuration.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
         )
-        try Data("export {};\n".utf8).write(to: script)
-        try Data("#!/bin/sh\n".utf8).write(to: node)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node.path)
+        try Data("#!/bin/sh\n".utf8).write(to: relay)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: relay.path)
+        try Data(#"{"schemaVersion":1,"executable":"\#(relay.path)","arguments":["--summary"]}"#.utf8)
+            .write(to: configuration)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let resolver = JiraRelayCommandResolver(
-            homeDirectory: root,
-            environment: [
-                "SWITCHYARD_JIRA_RELAY_ROOT": relayRoot.path,
-                "SWITCHYARD_NODE_BINARY": node.path,
-            ]
-        )
+        let resolver = JiraRelayCommandResolver(configurationURL: configuration)
         let command = try resolver.command(issueKey: "PROJ-830")
-        #expect(command.executableURL == node)
-        #expect(command.arguments == [script.path, "PROJ-830"])
+        #expect(command.executableURL == relay)
+        #expect(command.arguments == ["--summary", "PROJ-830"])
+        #expect(throws: JiraRelayClientError.invalidResponse) {
+            try resolver.command(issueKey: "proj-830; rm")
+        }
+
+        // Without an owner-authored relay file the integration is unavailable:
+        // the product ships no relay path of its own.
+        let missing = JiraRelayCommandResolver(configurationURL: root.appending(path: "absent.json"))
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try missing.command(issueKey: "PROJ-830")
+        }
+        // A group- or world-writable configuration is refused.
+        try FileManager.default.setAttributes([.posixPermissions: 0o664], ofItemAtPath: configuration.path)
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try resolver.command(issueKey: "PROJ-830")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
+        // A relative or non-executable relay is refused.
+        try Data(#"{"schemaVersion":1,"executable":"relay"}"#.utf8).write(to: configuration)
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try resolver.command(issueKey: "PROJ-830")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: relay.path)
+        try Data(#"{"schemaVersion":1,"executable":"\#(relay.path)"}"#.utf8).write(to: configuration)
+        #expect(throws: JiraRelayClientError.unavailable) {
+            try resolver.command(issueKey: "PROJ-830")
+        }
 
         let data = Data(#"{"schemaVersion":1,"key":"PROJ-830","summary":"Example issue using fictional data","status":"In Development","assignee":"Example User","priority":"Medium","updated":"2026-08-12T13:21:31.616Z","url":"https://example.atlassian.net/browse/PROJ-830"}"#.utf8)
         let summary = try JSONDecoder().decode(JiraIssueSummary.self, from: data)
@@ -366,6 +390,53 @@ struct SwitchyardPresentationTests {
                 size: CGSize(width: 1_180, height: 760),
                 appearance: .dark)
         ))
+        let occupiedFixtureURL = try makeOccupiedWorktreeFixture()
+        defer { try? FileManager.default.removeItem(at: occupiedFixtureURL.deletingLastPathComponent()) }
+        let occupiedModel = AppModel(scenario: .canonical, canonicalFixtureURL: occupiedFixtureURL)
+        await occupiedModel.refresh()
+        let occupiedSnapshot = try #require(occupiedModel.snapshot)
+        let occupiedWorktree = try #require(occupiedSnapshot.repositories[0].worktrees.first)
+        #expect(occupiedWorktree.heldOccupancy.map(\.holderLabel) == ["Codex task"])
+        #expect(occupiedWorktree.heldOccupancy.first?.state == .held)
+        occupiedModel.selection = .worktree(repositoryId: occupiedSnapshot.repositories[0].id, worktreeId: occupiedWorktree.id)
+        renders.append((
+            "worktree-occupied-tall-light",
+            try render(
+                AnyView(CommandCenterView(model: occupiedModel)),
+                size: CGSize(width: 1_180, height: 1_500),
+                appearance: .light)
+        ))
+        model.selection = .repository(snapshot.repositories[0].id)
+        renders.append((
+            "repository-settings-wide-dark",
+            try render(
+                AnyView(CommandCenterView(model: model)),
+                size: CGSize(width: 1_180, height: 760),
+                appearance: .dark)
+        ))
+        renders.append((
+            "add-repository-sheet-dark",
+            try render(
+                AnyView(RepositoryEntrySheet(model: model, mode: .add, isPresented: .constant(true))),
+                size: CGSize(width: 640, height: 640),
+                appearance: .dark)
+        ))
+        if let entry = model.desiredEntry(key: "sample") {
+            renders.append((
+                "edit-repository-sheet-light",
+                try render(
+                    AnyView(RepositoryEntrySheet(model: model, mode: .edit(entry), isPresented: .constant(true))),
+                    size: CGSize(width: 640, height: 640),
+                    appearance: .light)
+            ))
+        }
+        renders.append((
+            "configuration-status-light",
+            try render(
+                AnyView(ConfigurationStatusCard(model: model).padding(20)),
+                size: CGSize(width: 900, height: 560),
+                appearance: .light)
+        ))
         renders.append((
             "settings-dark",
             try render(
@@ -403,7 +474,7 @@ struct SwitchyardPresentationTests {
                     worktree: worktree,
                     target: target,
                     services: repository.runtime?.services ?? [],
-                    selectedServiceIDs: .constant(Set(["organizer", "nonprofit-service"]))
+                    selectedServiceIDs: .constant(Set(["storefront", "billing-service"]))
                 )),
                 size: CGSize(width: 460, height: 560),
                 appearance: .dark)
@@ -468,7 +539,7 @@ struct SwitchyardPresentationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appending(path: "contracts/v1/fixtures/status.json")
+            .appending(path: "contracts/v2/fixtures/status.json")
     }
 
     private func makeRecoveryFixture() throws -> URL {
@@ -490,6 +561,34 @@ struct SwitchyardPresentationTests {
         environment["services"] = services
         environments[0] = environment
         root["environments"] = environments
+
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fixture = directory.appending(path: "status.json", directoryHint: .notDirectory)
+        try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            .write(to: fixture, options: .atomic)
+        return fixture
+    }
+
+    /// The canonical fixture with one explicit handoff lease on its worktree,
+    /// so the Handed off section renders without claiming occupancy in the
+    /// shared fixture itself.
+    private func makeOccupiedWorktreeFixture() throws -> URL {
+        let source = try Data(contentsOf: Self.fixtureURL)
+        var root = try #require(JSONSerialization.jsonObject(with: source) as? [String: Any])
+        var repositories = try #require(root["repositories"] as? [[String: Any]])
+        var worktrees = try #require(repositories[0]["worktrees"] as? [[String: Any]])
+        worktrees[0]["occupancy"] = [[
+            "id": "occupancy_01K2A2D3G2WQ7V9ZB6T1N8R5MC",
+            "worktreeId": worktrees[0]["id"] as Any,
+            "holderKind": "agent-task",
+            "holderLabel": "Codex task",
+            "state": "held",
+            "acquiredAt": "2026-08-14T09:40:00Z",
+        ]]
+        repositories[0]["worktrees"] = worktrees
+        root["repositories"] = repositories
 
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -606,4 +705,22 @@ private enum RenderAppearance: CaseIterable, Equatable {
 
 private enum PresentationTestError: Error {
     case fixtureDidNotLoad
+}
+
+struct WorkspaceStatusPresentationTests {
+    @Test
+    func `an unprepared workspace decodes its zero preparation time and hides it`() throws {
+        let payload = Data("""
+        {"ownership":"adopted","state":"unprepared","fingerprint":"","preparedAt":"0001-01-01T00:00:00Z","toolchains":[]}
+        """.utf8)
+        let workspace = try ContractDecoder().decode(WorkspaceStatus.self, from: payload)
+        #expect(workspace.state == .unprepared)
+        #expect(workspace.preparedAtIfKnown == nil)
+
+        let prepared = Data("""
+        {"ownership":"managed","state":"ready","fingerprint":"sha256:abc","preparedAt":"2026-08-20T12:00:00Z","toolchains":[]}
+        """.utf8)
+        let ready = try ContractDecoder().decode(WorkspaceStatus.self, from: prepared)
+        #expect(ready.preparedAtIfKnown != nil)
+    }
 }

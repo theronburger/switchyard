@@ -15,13 +15,14 @@ import (
 
 	"github.com/theronburger/switchyard/internal/apiclient"
 	"github.com/theronburger/switchyard/internal/cli"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/mcp"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 var version = "0.1.0-dev"
+var buildChannel = "development"
 
 const applicationSupportOverride = "SWITCHYARD_APPLICATION_SUPPORT"
 
@@ -86,7 +87,7 @@ func newConnector(paths applicationPaths) apiclient.Connector {
 
 func writeVersion() int {
 	err := json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"schemaVersion": contractv1.SchemaVersion,
+		"schemaVersion": contractv2.SchemaVersion,
 		"version":       version,
 	})
 	if err != nil {
@@ -97,10 +98,33 @@ func writeVersion() int {
 }
 
 type applicationPaths struct {
+	root              string
 	directory         string
 	database          string
+	configuration     string
 	runtimeDescriptor string
 	token             string
+}
+
+// runtimeRoot is the one owner-only tree under which every runner writes
+// process evidence, step run directories, action run directories, and
+// managed-worktree ownership records, and from which cleanup planning and
+// operation diagnostics read them. Writers and readers must never derive
+// this path independently.
+func (paths applicationPaths) runtimeRoot() string {
+	return filepath.Join(paths.root, "runtime")
+}
+
+func (paths applicationPaths) cacheRoot() string {
+	return filepath.Join(paths.root, "caches")
+}
+
+func newOperationDiagnosticsReader(store *state.Store, paths applicationPaths, runRoots daemon.EnvironmentRunRoots) (*daemon.OperationDiagnosticsReader, error) {
+	return daemon.NewOperationDiagnosticsReader(store, paths.runtimeRoot(), runRoots)
+}
+
+func newCleanupService(store *state.Store, journal *state.WorkspaceJournal, paths applicationPaths) *daemon.CleanupService {
+	return &daemon.CleanupService{Store: store, Workspaces: journal, RuntimeRoot: paths.runtimeRoot()}
 }
 
 func localPaths() (applicationPaths, error) {
@@ -112,13 +136,31 @@ func localPaths() (applicationPaths, error) {
 			return applicationPaths{}, err
 		}
 	}
-	directory := filepath.Join(configurationDirectory, "Switchyard", "daemon")
+	directoryName, err := applicationDirectoryName(buildChannel)
+	if err != nil {
+		return applicationPaths{}, err
+	}
+	root := filepath.Join(configurationDirectory, directoryName)
+	directory := filepath.Join(root, "daemon")
 	return applicationPaths{
+		root:              root,
 		directory:         directory,
-		database:          filepath.Join(directory, "state.sqlite"),
+		database:          filepath.Join(directory, "state-v2.sqlite"),
+		configuration:     filepath.Join(root, "configuration.yaml"),
 		runtimeDescriptor: filepath.Join(directory, "runtime.json"),
 		token:             filepath.Join(directory, "token"),
 	}, nil
+}
+
+func applicationDirectoryName(channel string) (string, error) {
+	switch channel {
+	case "release":
+		return "Switchyard", nil
+	case "development":
+		return "Switchyard Development", nil
+	default:
+		return "", fmt.Errorf("unsupported build channel %q", channel)
+	}
 }
 
 func runDaemon(parent context.Context, paths applicationPaths) error {
@@ -144,11 +186,17 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if err != nil {
 		return err
 	}
-	discoveredRepositories := discoverRepositoryInventory(ctx, time.Now().UTC())
+	discoveredRepositories, err := discoverAcceptedRepositoryInventory(ctx, store, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 	if err := annotateWorkspaceInventory(paths, &discoveredRepositories); err != nil {
 		return err
 	}
 	if err := restoreWorkspaceInventory(ctx, store, &discoveredRepositories); err != nil {
+		return err
+	}
+	if err := restoreOccupancyInventory(ctx, store, &discoveredRepositories); err != nil {
 		return err
 	}
 	if err := publishDaemonSnapshot(
@@ -156,7 +204,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	); err != nil {
 		return err
 	}
-	runtime, err := buildEnvironmentRuntime(
+	runtime, err := buildConfiguredProfileRuntime(
 		ctx, store, paths, instanceID, discoveredRepositories, restartDaemon,
 	)
 	if err != nil {
@@ -169,7 +217,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 			_ = runtime.CloseAndWait(waitContext)
 		}()
 	}
-	if _, err := store.FailInterruptedOperations(ctx, contractv1.ContractError{
+	if _, err := store.FailInterruptedOperations(ctx, contractv2.ContractError{
 		Code:      "DAEMON_RESTARTED",
 		Message:   "The daemon restarted before the operation completed.",
 		Retryable: true,
@@ -189,7 +237,11 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	operationDiagnostics, err := daemon.NewOperationDiagnosticsReader(store, filepath.Join(paths.directory, "runtime"))
+	operationDiagnostics, err := newOperationDiagnosticsReader(store, paths, runtime.EnvironmentRunRoots())
+	if err != nil {
+		return err
+	}
+	cleanupJournal, err := state.NewWorkspaceJournal(store)
 	if err != nil {
 		return err
 	}
@@ -201,7 +253,14 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 		StatusSource:         store,
 		EnvironmentActions:   runtime.actions,
 		WorkspaceActions:     runtime.workspaceActions,
+		ProfileActions:       runtime.profileActions,
 		OperationDiagnostics: operationDiagnostics,
+		Configuration: &daemon.ConfigurationService{
+			Store: store, Path: paths.configuration, CompilerVersion: version, Restart: restartDaemon,
+			References: store,
+		},
+		Cleanup:   newCleanupService(store, cleanupJournal, paths),
+		Occupancy: &daemon.OccupancyService{Store: store},
 	})
 	if err != nil {
 		return err
@@ -238,8 +297,8 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	default:
 	}
 
-	descriptor := contractv1.RuntimeDescriptor{
-		SchemaVersion:    contractv1.SchemaVersion,
+	descriptor := contractv2.RuntimeDescriptor{
+		SchemaVersion:    contractv2.SchemaVersion,
 		Endpoint:         server.Endpoint(),
 		DaemonInstanceID: instanceID,
 		DaemonVersion:    version,
@@ -309,7 +368,7 @@ func removeOwnedRuntimeDescriptor(path string, instanceID string) {
 	if err != nil {
 		return
 	}
-	var descriptor contractv1.RuntimeDescriptor
+	var descriptor contractv2.RuntimeDescriptor
 	if json.Unmarshal(contents, &descriptor) != nil || descriptor.DaemonInstanceID != instanceID {
 		return
 	}
@@ -326,21 +385,21 @@ func publishDaemonSnapshot(
 ) error {
 	snapshot, err := store.ReadSnapshot(ctx)
 	if errors.Is(err, state.ErrNoSnapshot) {
-		snapshot = contractv1.StatusSnapshot{}
+		snapshot = contractv2.StatusSnapshot{}
 	} else if err != nil {
 		return err
 	}
-	snapshot.Daemon = contractv1.DaemonStatus{
+	snapshot.Daemon = contractv2.DaemonStatus{
 		InstanceID: instanceID,
 		Version:    version,
 		State:      daemonState,
 		StartedAt:  startedAt,
 	}
 	if snapshot.Repositories == nil {
-		snapshot.Repositories = []contractv1.Repository{}
+		snapshot.Repositories = []contractv2.Repository{}
 	}
 	if snapshot.Environments == nil {
-		snapshot.Environments = []contractv1.Environment{}
+		snapshot.Environments = []contractv2.Environment{}
 	}
 	operations, err := store.ListOperations(ctx)
 	if err != nil {
@@ -348,7 +407,7 @@ func publishDaemonSnapshot(
 	}
 	snapshot.Operations = operations
 	if snapshot.Alerts == nil {
-		snapshot.Alerts = []contractv1.Alert{}
+		snapshot.Alerts = []contractv2.Alert{}
 	}
 	snapshot = mergeRepositoryInventory(snapshot, discoveredRepositories)
 	_, err = store.CommitSnapshot(ctx, snapshot)

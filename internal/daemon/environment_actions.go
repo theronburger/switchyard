@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	environmentcontrol "github.com/theronburger/switchyard/internal/control/environment"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/domain"
@@ -20,9 +20,9 @@ import (
 const actionFinalizationTimeout = 5 * time.Second
 
 type EnvironmentActionStore interface {
-	CreateOperation(context.Context, state.NewOperation) (contractv1.Operation, bool, error)
-	ReadOperation(context.Context, string) (contractv1.Operation, error)
-	TransitionOperation(context.Context, string, string, *contractv1.ContractError) (contractv1.Operation, error)
+	CreateOperation(context.Context, state.NewOperation) (contractv2.Operation, bool, error)
+	ReadOperation(context.Context, string) (contractv2.Operation, error)
+	TransitionOperation(context.Context, string, string, *contractv2.ContractError) (contractv2.Operation, error)
 }
 
 type EnvironmentActionJournal interface {
@@ -47,8 +47,8 @@ type EnvironmentStartResolution struct {
 }
 
 type EnvironmentActionResolver interface {
-	ResolveStart(context.Context, contractv1.StartEnvironmentRequest) (EnvironmentStartResolution, error)
-	ResolveStop(context.Context, string, contractv1.StopEnvironmentRequest) error
+	ResolveStart(context.Context, contractv2.StartEnvironmentRequest) (EnvironmentStartResolution, error)
+	ResolveStop(context.Context, string, contractv2.StopEnvironmentRequest) error
 }
 
 type EnvironmentActionServiceConfig struct {
@@ -59,6 +59,10 @@ type EnvironmentActionServiceConfig struct {
 	Workspace   WorkspaceEnsurer
 	Resolver    EnvironmentActionResolver
 	NewID       func(string) (string, error)
+	// Keys serializes an environment start against workspace lifecycle
+	// operations and worktree-scoped actions on the same worktree. Share one
+	// instance with the workspace and profile-action services.
+	Keys *OperationKeys
 }
 
 type EnvironmentActionService struct {
@@ -68,6 +72,7 @@ type EnvironmentActionService struct {
 	workspace   WorkspaceEnsurer
 	resolver    EnvironmentActionResolver
 	newID       func(string) (string, error)
+	keys        *OperationKeys
 	lifecycle   context.Context
 	cancel      context.CancelFunc
 	mutex       sync.Mutex
@@ -83,46 +88,49 @@ func NewEnvironmentActionService(config EnvironmentActionServiceConfig) (*Enviro
 	if config.NewID == nil {
 		config.NewID = randomActionID
 	}
+	if config.Keys == nil {
+		config.Keys = NewOperationKeys()
+	}
 	lifecycle, cancel := context.WithCancel(config.Lifecycle)
 	return &EnvironmentActionService{
 		store: config.Store, journal: config.Journal, coordinator: config.Coordinator,
-		workspace: config.Workspace, resolver: config.Resolver, newID: config.NewID,
+		workspace: config.Workspace, resolver: config.Resolver, newID: config.NewID, keys: config.Keys,
 		lifecycle: lifecycle, cancel: cancel,
 	}, nil
 }
 
 func (service *EnvironmentActionService) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if err := request.Validate(); err != nil {
-		return contractv1.MutationReceipt{}, invalidActionRequest()
+		return contractv2.MutationReceipt{}, invalidActionRequest()
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	if service.closed || service.lifecycle.Err() != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	resolution, err := service.resolver.ResolveStart(ctx, request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
-	if resolution.EnvironmentID == "" || resolution.Intent.Adapter == "" ||
+	if resolution.EnvironmentID == "" || resolution.Intent.ProfileDigest == "" ||
 		len(resolution.Intent.ServiceIDs) == 0 || resolution.Source.Revision == "" ||
 		resolution.Source.ObservedAt.IsZero() || (service.workspace != nil && resolution.WorktreeID == "") {
-		return contractv1.MutationReceipt{}, invalidActionRequest()
+		return contractv2.MutationReceipt{}, invalidActionRequest()
 	}
 	operationID, err := service.newID("operation")
 	if err != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	runID, err := service.newID("run")
 	if err != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	fingerprint, err := state.FingerprintRequest(request)
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidActionRequest()
+		return contractv2.MutationReceipt{}, invalidActionRequest()
 	}
 	operation, created, err := service.store.CreateOperation(ctx, state.NewOperation{
 		ID: operationID, RequestID: request.RequestID, IdempotencyKey: request.IdempotencyKey,
@@ -132,7 +140,7 @@ func (service *EnvironmentActionService) StartEnvironment(
 		RunID:                       runID,
 	})
 	if err != nil {
-		return contractv1.MutationReceipt{}, operationCreationError(err)
+		return contractv2.MutationReceipt{}, operationCreationError(err)
 	}
 	if created {
 		service.workers.Add(1)
@@ -148,29 +156,29 @@ func (service *EnvironmentActionService) StartEnvironment(
 func (service *EnvironmentActionService) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	if environmentID == "" || request.Validate() != nil {
-		return contractv1.MutationReceipt{}, invalidActionRequest()
+		return contractv2.MutationReceipt{}, invalidActionRequest()
 	}
 	service.mutex.Lock()
 	defer service.mutex.Unlock()
 	if service.closed || service.lifecycle.Err() != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	if err := service.resolver.ResolveStop(ctx, environmentID, request); err != nil {
-		return contractv1.MutationReceipt{}, safeResolutionError(err)
+		return contractv2.MutationReceipt{}, safeResolutionError(err)
 	}
 	operationID, err := service.newID("operation")
 	if err != nil {
-		return contractv1.MutationReceipt{}, actionsUnavailable()
+		return contractv2.MutationReceipt{}, actionsUnavailable()
 	}
 	fingerprint, err := state.FingerprintRequest(struct {
 		EnvironmentID string                            `json:"environmentId"`
-		Request       contractv1.StopEnvironmentRequest `json:"request"`
+		Request       contractv2.StopEnvironmentRequest `json:"request"`
 	}{EnvironmentID: environmentID, Request: request})
 	if err != nil {
-		return contractv1.MutationReceipt{}, invalidActionRequest()
+		return contractv2.MutationReceipt{}, invalidActionRequest()
 	}
 	operation, created, err := service.store.CreateOperation(ctx, state.NewOperation{
 		ID: operationID, RequestID: request.RequestID, IdempotencyKey: request.IdempotencyKey,
@@ -179,7 +187,7 @@ func (service *EnvironmentActionService) StopEnvironment(
 		ExpectedEnvironmentRevision: request.ExpectedEnvironmentRevision,
 	})
 	if err != nil {
-		return contractv1.MutationReceipt{}, operationCreationError(err)
+		return contractv2.MutationReceipt{}, operationCreationError(err)
 	}
 	if created {
 		service.workers.Add(1)
@@ -216,6 +224,16 @@ func (service *EnvironmentActionService) executeStart(
 	request environmentcontrol.StartRequest,
 ) {
 	defer service.workers.Done()
+	// The worktree key is held from workspace ensure until the coordinator
+	// has published the environment, so an archive accepted meanwhile cannot
+	// revalidate against a still-stopped snapshot and remove the checkout
+	// under a running preparation or launch.
+	release, err := service.keys.Acquire(service.lifecycle, worktreeOperationKey(worktreeID))
+	if err != nil {
+		service.finalizeUnhandled(request.OperationID, err)
+		return
+	}
+	defer release()
 	if service.workspace != nil {
 		_, err := service.workspace.Ensure(service.lifecycle, workspacecontrol.EnsureRequest{
 			OperationID: request.OperationID, WorktreeID: worktreeID,
@@ -225,7 +243,7 @@ func (service *EnvironmentActionService) executeStart(
 			return
 		}
 	}
-	_, err := service.coordinator.Start(service.lifecycle, request)
+	_, err = service.coordinator.Start(service.lifecycle, request)
 	service.finalizeUnhandled(request.OperationID, err)
 }
 
@@ -255,15 +273,15 @@ func (service *EnvironmentActionService) finalizeUnhandled(operationID string, a
 		operation.State != string(domain.OperationRunning)) {
 		return
 	}
-	failure := contractv1.ContractError{
+	failure := contractv2.ContractError{
 		Code: "ENVIRONMENT_ACTION_FAILED", Message: "The environment action could not be completed.", Retryable: true,
 	}
 	_, _ = service.store.TransitionOperation(ctx, operationID, string(domain.OperationFailed), &failure)
 }
 
-func receiptForOperation(requestID string, operation contractv1.Operation) contractv1.MutationReceipt {
-	return contractv1.MutationReceipt{
-		SchemaVersion: contractv1.SchemaVersion, RequestID: requestID,
+func receiptForOperation(requestID string, operation contractv2.Operation) contractv2.MutationReceipt {
+	return contractv2.MutationReceipt{
+		SchemaVersion: contractv2.SchemaVersion, RequestID: requestID,
 		OperationID: operation.ID, AcceptedAt: operation.CreatedAt, EnvironmentID: operation.EnvironmentID,
 		RunID: operation.RunID,
 	}
@@ -293,7 +311,7 @@ func cloneReservations(source []portlease.Reservation) []portlease.Reservation {
 
 func clonePlanIntent(intent environmentcontrol.PlanIntent) *environmentcontrol.PlanIntent {
 	return &environmentcontrol.PlanIntent{
-		Adapter: intent.Adapter, TargetID: intent.TargetID,
+		ProfileDigest: intent.ProfileDigest, TargetID: intent.TargetID,
 		ServiceIDs: append([]string(nil), intent.ServiceIDs...),
 	}
 }
@@ -301,15 +319,15 @@ func clonePlanIntent(intent environmentcontrol.PlanIntent) *environmentcontrol.P
 func operationCreationError(err error) error {
 	switch {
 	case errors.Is(err, state.ErrIdempotencyConflict):
-		return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+		return &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 			Code: "IDEMPOTENCY_CONFLICT", Message: "The idempotency key was already used for another action.",
 		}}
 	case errors.Is(err, state.ErrEnvironmentBusy):
-		return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+		return &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 			Code: "ENVIRONMENT_BUSY", Message: "The environment already has an active operation.", Retryable: true,
 		}}
 	case errors.Is(err, state.ErrEnvironmentRevisionConflict):
-		return &ActionError{Status: http.StatusConflict, Contract: contractv1.ContractError{
+		return &ActionError{Status: http.StatusConflict, Contract: contractv2.ContractError{
 			Code: "ENVIRONMENT_REVISION_CONFLICT", Message: "The environment changed before the action was accepted.", Retryable: true,
 		}}
 	default:
@@ -326,13 +344,13 @@ func safeResolutionError(err error) error {
 }
 
 func invalidActionRequest() error {
-	return &ActionError{Status: http.StatusBadRequest, Contract: contractv1.ContractError{
+	return &ActionError{Status: http.StatusBadRequest, Contract: contractv2.ContractError{
 		Code: "INVALID_ENVIRONMENT_ACTION", Message: "The environment action is invalid.",
 	}}
 }
 
 func actionsUnavailable() error {
-	return &ActionError{Status: http.StatusServiceUnavailable, Contract: contractv1.ContractError{
+	return &ActionError{Status: http.StatusServiceUnavailable, Contract: contractv2.ContractError{
 		Code: "ACTIONS_UNAVAILABLE", Message: "Environment actions are temporarily unavailable.", Retryable: true,
 	}}
 }

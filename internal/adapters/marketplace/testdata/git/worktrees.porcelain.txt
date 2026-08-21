@@ -1,3 +1,0 @@
-worktree /Users/example/Developer/marketplace\0HEAD 1111111111111111111111111111111111111111\0branch refs/heads/main\0\0
-worktree /Users/example/Developer/marketplace-worktrees/DEMO 42 chapter import\0HEAD 2222222222222222222222222222222222222222\0branch refs/heads/feature/DEMO-42/chapter-import\0locked agent owns this worktree\0\0
-worktree /Users/example/Developer/marketplace-worktrees/detached review\0HEAD abcdefabcdefabcdefabcdefabcdefabcdefabcd\0detached\0prunable gitdir file points to non-existent location\0\0

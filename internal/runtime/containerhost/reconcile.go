@@ -39,7 +39,9 @@ func (reconciler Reconciler) Apply(ctx context.Context, plan Plan) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if action.Kind == ActionCreate {
+		if action.Kind == ActionPull || action.Kind == ActionCreate {
+			// Refuse even a non-destructive pull when the planned container target
+			// has become ambiguous or foreign since the inventory snapshot.
 			if err := reconciler.verifyCreateTargetAvailable(ctx, action); err != nil {
 				return err
 			}
@@ -51,11 +53,22 @@ func (reconciler Reconciler) Apply(ctx context.Context, plan Plan) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if action.Kind == ActionPull {
+			if _, inspectErr := reconciler.Runner.Run(ctx, imageInspectCommand(dockerBinary, action.Image)); inspectErr == nil {
+				continue
+			} else if contextErr := ctx.Err(); contextErr != nil {
+				return contextErr
+			}
+		}
 		if _, err := reconciler.Runner.Run(ctx, action.Command.Clone()); err != nil {
 			return redactRunnerError(action.Command, err)
 		}
 	}
 	return nil
+}
+
+func imageInspectCommand(dockerBinary, image string) Command {
+	return Command{Executable: dockerBinary, Arguments: []string{"image", "inspect", "--", image}}
 }
 
 func (reconciler Reconciler) verifyCreateTargetAvailable(ctx context.Context, action Action) error {
@@ -126,6 +139,11 @@ func validateAction(dockerBinary string, action Action) error {
 		return ErrPlanInvalid
 	}
 	switch action.Kind {
+	case ActionPull:
+		if action.ResourceKind != ResourceContainer || action.ResourceID != "" ||
+			len(action.PortBindings) != 0 || len(action.Environment) != 0 {
+			return ErrPlanInvalid
+		}
 	case ActionCreate:
 		if action.ResourceID != "" {
 			return ErrPlanInvalid

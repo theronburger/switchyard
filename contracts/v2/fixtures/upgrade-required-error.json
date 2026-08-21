@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "error": {
+    "code": "UPGRADE_REQUIRED",
+    "message": "This client's contract schema version is not supported by the daemon.",
+    "retryable": false,
+    "resourceKind": "contract",
+    "currentState": "2",
+    "requestedState": "1",
+    "nextAction": "upgrade_client"
+  }
+}

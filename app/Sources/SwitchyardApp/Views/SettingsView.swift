@@ -52,21 +52,27 @@ struct SettingsView: View {
                     "Installed version",
                     value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
                 )
-                if let availableVersion = updates.availableVersion {
-                    LabeledContent("Available version", value: availableVersion)
-                }
-                Button(updates.buttonTitle) { updates.checkForUpdates() }
-                    .disabled(!updates.canCheckForUpdates)
-                Toggle(
-                    "Check automatically",
-                    isOn: Binding(
-                        get: { updates.automaticallyChecksForUpdates },
-                        set: { updates.setAutomaticUpdateChecks($0) }
+                if updates.isAvailable {
+                    if let availableVersion = updates.availableVersion {
+                        LabeledContent("Available version", value: availableVersion)
+                    }
+                    Button(updates.buttonTitle) { updates.checkForUpdates() }
+                        .disabled(!updates.canCheckForUpdates)
+                    Toggle(
+                        "Check automatically",
+                        isOn: Binding(
+                            get: { updates.automaticallyChecksForUpdates },
+                            set: { updates.setAutomaticUpdateChecks($0) }
+                        )
                     )
-                )
-                Text("Switchyard checks once per day and verifies every update with its dedicated Ed25519 release key before extraction.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Text("Switchyard checks once per day and verifies every update with its dedicated Ed25519 release key before extraction.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(updates.unavailableReason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .toggleStyle(.switch)
             Section("About") {

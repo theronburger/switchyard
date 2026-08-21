@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 var (
@@ -21,44 +21,44 @@ type RepositorySummary struct {
 	ID          string                            `json:"id"`
 	DisplayName string                            `json:"displayName"`
 	RootPath    string                            `json:"rootPath"`
-	Adapter     string                            `json:"adapter"`
+	ProfileKey  string                            `json:"profileKey"`
 	Remote      string                            `json:"remote"`
-	Runtime     *contractv1.RepositoryRuntime     `json:"runtime,omitempty"`
-	Observation *contractv1.RepositoryObservation `json:"observation,omitempty"`
+	Runtime     *contractv2.RepositoryRuntime     `json:"runtime,omitempty"`
+	Observation *contractv2.RepositoryObservation `json:"observation,omitempty"`
 }
 
 type WorktreeContext struct {
 	SchemaVersion    int                      `json:"schemaVersion"`
 	SnapshotRevision int64                    `json:"snapshotRevision"`
 	GeneratedAt      time.Time                `json:"generatedAt"`
-	Daemon           contractv1.DaemonStatus  `json:"daemon"`
+	Daemon           contractv2.DaemonStatus  `json:"daemon"`
 	Repository       RepositorySummary        `json:"repository"`
-	Worktree         contractv1.Worktree      `json:"worktree"`
-	Environments     []contractv1.Environment `json:"environments"`
-	Operations       []contractv1.Operation   `json:"operations"`
-	Alerts           []contractv1.Alert       `json:"alerts"`
+	Worktree         contractv2.Worktree      `json:"worktree"`
+	Environments     []contractv2.Environment `json:"environments"`
+	Operations       []contractv2.Operation   `json:"operations"`
+	Alerts           []contractv2.Alert       `json:"alerts"`
 }
 
 type EnvironmentStatus struct {
 	SchemaVersion    int                     `json:"schemaVersion"`
 	SnapshotRevision int64                   `json:"snapshotRevision"`
 	GeneratedAt      time.Time               `json:"generatedAt"`
-	Daemon           contractv1.DaemonStatus `json:"daemon"`
+	Daemon           contractv2.DaemonStatus `json:"daemon"`
 	Repository       RepositorySummary       `json:"repository"`
-	Worktree         contractv1.Worktree     `json:"worktree"`
-	Environment      contractv1.Environment  `json:"environment"`
-	Operations       []contractv1.Operation  `json:"operations"`
-	Alerts           []contractv1.Alert      `json:"alerts"`
+	Worktree         contractv2.Worktree     `json:"worktree"`
+	Environment      contractv2.Environment  `json:"environment"`
+	Operations       []contractv2.Operation  `json:"operations"`
+	Alerts           []contractv2.Alert      `json:"alerts"`
 }
 
-func WorktreeByPath(snapshot contractv1.StatusSnapshot, path string) (WorktreeContext, error) {
+func WorktreeByPath(snapshot contractv2.StatusSnapshot, path string) (WorktreeContext, error) {
 	if path == "" || !filepath.IsAbs(path) || strings.IndexByte(path, 0) >= 0 {
 		return WorktreeContext{}, ErrInvalidSelector
 	}
 	wanted := canonicalPath(path)
 	type candidate struct {
-		repository contractv1.Repository
-		worktree   contractv1.Worktree
+		repository contractv2.Repository
+		worktree   contractv2.Worktree
 		length     int
 	}
 	candidates := make([]candidate, 0, 1)
@@ -88,7 +88,7 @@ func WorktreeByPath(snapshot contractv1.StatusSnapshot, path string) (WorktreeCo
 	return buildWorktreeContext(snapshot, candidates[0].repository, candidates[0].worktree), nil
 }
 
-func WorktreeBySelector(snapshot contractv1.StatusSnapshot, selector string) (WorktreeContext, error) {
+func WorktreeBySelector(snapshot contractv2.StatusSnapshot, selector string) (WorktreeContext, error) {
 	if selector == "" || strings.IndexByte(selector, 0) >= 0 {
 		return WorktreeContext{}, ErrInvalidSelector
 	}
@@ -96,8 +96,8 @@ func WorktreeBySelector(snapshot contractv1.StatusSnapshot, selector string) (Wo
 		return WorktreeByPath(snapshot, selector)
 	}
 	type candidate struct {
-		repository contractv1.Repository
-		worktree   contractv1.Worktree
+		repository contractv2.Repository
+		worktree   contractv2.Worktree
 	}
 	candidates := make([]candidate, 0, 1)
 	for _, repository := range snapshot.Repositories {
@@ -116,7 +116,7 @@ func WorktreeBySelector(snapshot contractv1.StatusSnapshot, selector string) (Wo
 	return buildWorktreeContext(snapshot, candidates[0].repository, candidates[0].worktree), nil
 }
 
-func EnvironmentByID(snapshot contractv1.StatusSnapshot, environmentID string) (EnvironmentStatus, error) {
+func EnvironmentByID(snapshot contractv2.StatusSnapshot, environmentID string) (EnvironmentStatus, error) {
 	if environmentID == "" || strings.IndexByte(environmentID, 0) >= 0 {
 		return EnvironmentStatus{}, ErrInvalidSelector
 	}
@@ -147,11 +147,11 @@ func EnvironmentByID(snapshot contractv1.StatusSnapshot, environmentID string) (
 }
 
 func buildWorktreeContext(
-	snapshot contractv1.StatusSnapshot,
-	repository contractv1.Repository,
-	worktree contractv1.Worktree,
+	snapshot contractv2.StatusSnapshot,
+	repository contractv2.Repository,
+	worktree contractv2.Worktree,
 ) WorktreeContext {
-	environments := make([]contractv1.Environment, 0, 1)
+	environments := make([]contractv2.Environment, 0, 1)
 	environmentIDs := make(map[string]struct{})
 	for _, environment := range snapshot.Environments {
 		if environment.RepositoryID == repository.ID && environment.WorktreeID == worktree.ID {
@@ -172,10 +172,10 @@ func buildWorktreeContext(
 }
 
 func relatedState(
-	snapshot contractv1.StatusSnapshot,
+	snapshot contractv2.StatusSnapshot,
 	environmentIDs map[string]struct{},
-) ([]contractv1.Operation, []contractv1.Alert) {
-	operations := make([]contractv1.Operation, 0)
+) ([]contractv2.Operation, []contractv2.Alert) {
+	operations := make([]contractv2.Operation, 0)
 	for _, operation := range snapshot.Operations {
 		if _, related := environmentIDs[operation.EnvironmentID]; related {
 			operations = append(operations, operation)
@@ -187,7 +187,7 @@ func relatedState(
 		}
 		return operations[left].UpdatedAt.After(operations[right].UpdatedAt)
 	})
-	alerts := make([]contractv1.Alert, 0)
+	alerts := make([]contractv2.Alert, 0)
 	for _, alert := range snapshot.Alerts {
 		if _, related := environmentIDs[alert.EnvironmentID]; related {
 			alerts = append(alerts, alert)
@@ -202,10 +202,10 @@ func relatedState(
 	return operations, alerts
 }
 
-func repositorySummary(repository contractv1.Repository) RepositorySummary {
+func repositorySummary(repository contractv2.Repository) RepositorySummary {
 	return RepositorySummary{
 		ID: repository.ID, DisplayName: repository.DisplayName, RootPath: repository.RootPath,
-		Adapter: repository.Adapter, Remote: repository.Remote, Runtime: repository.Runtime,
+		ProfileKey: repository.ProfileKey, Remote: repository.Remote, Runtime: repository.Runtime,
 		Observation: repository.Observation,
 	}
 }

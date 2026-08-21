@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "acceptedDigest": "sha256:4f3a1c0d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a21",
+  "actions": [
+    {
+      "id": "prepare",
+      "repositoryId": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
+      "profileKey": "sample",
+      "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "displayName": "Prepare worktree",
+      "scope": "worktree",
+      "risk": "local",
+      "kind": "lifecycle",
+      "lifecycle": "prepare",
+      "requiresConfirmation": false
+    },
+    {
+      "id": "refresh-fixtures",
+      "repositoryId": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
+      "profileKey": "sample",
+      "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "displayName": "Refresh fixtures",
+      "scope": "environment",
+      "risk": "local",
+      "kind": "command",
+      "requiresConfirmation": false
+    },
+    {
+      "id": "publish-preview",
+      "repositoryId": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
+      "profileKey": "sample",
+      "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "displayName": "Publish preview",
+      "scope": "worktree",
+      "risk": "remote-write",
+      "kind": "command",
+      "requiresConfirmation": true
+    }
+  ]
+}

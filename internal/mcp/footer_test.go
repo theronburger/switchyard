@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestBuildEnvironmentContextCapsAttentionAndURLsDeterministically(t *testing.T) {
-	alerts := make([]contractv1.Alert, 0, 5)
+	alerts := make([]contractv2.Alert, 0, 5)
 	alertIDs := make([]string, 0, 5)
 	for index := range 5 {
 		id := fmt.Sprintf("alert_%d", index)
 		alertIDs = append(alertIDs, id)
-		alerts = append(alerts, contractv1.Alert{
+		alerts = append(alerts, contractv2.Alert{
 			ID:            id,
 			EnvironmentID: "env_test",
 			Severity:      "error",
@@ -31,8 +31,8 @@ func TestBuildEnvironmentContextCapsAttentionAndURLsDeterministically(t *testing
 		name := fmt.Sprintf("service-%02d", index)
 		urls[name] = "http://127.0.0.1:7000"
 	}
-	snapshot := contractv1.StatusSnapshot{
-		Environments: []contractv1.Environment{{
+	snapshot := contractv2.StatusSnapshot{
+		Environments: []contractv2.Environment{{
 			ID:                "env_test",
 			Revision:          17,
 			DesiredState:      "running",
@@ -69,7 +69,7 @@ func TestBuildEnvironmentContextCapsAttentionAndURLsDeterministically(t *testing
 }
 
 func TestBuildEnvironmentContextOmitsFooterForGlobalCalls(t *testing.T) {
-	context, err := BuildEnvironmentContext(contractv1.StatusSnapshot{}, "")
+	context, err := BuildEnvironmentContext(contractv2.StatusSnapshot{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,27 +79,27 @@ func TestBuildEnvironmentContextOmitsFooterForGlobalCalls(t *testing.T) {
 }
 
 func TestBuildEnvironmentContextIncludesPullRequestStatus(t *testing.T) {
-	snapshot := contractv1.StatusSnapshot{
-		Repositories: []contractv1.Repository{{
+	snapshot := contractv2.StatusSnapshot{
+		Repositories: []contractv2.Repository{{
 			ID: "repo_test",
-			Worktrees: []contractv1.Worktree{{
+			Worktrees: []contractv2.Worktree{{
 				ID: "worktree_test", HeadRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				PullRequest: &contractv1.PullRequestObservation{
+				PullRequest: &contractv2.PullRequestObservation{
 					Status: "found", Stale: true,
-					PullRequest: &contractv1.PullRequest{
-						Number: 9556, URL: "https://github.com/example/marketplace/pull/42",
+					PullRequest: &contractv2.PullRequest{
+						Number: 9556, URL: "https://github.com/example/sample/pull/42",
 						State: "open", Mergeable: "mergeable", ReviewDecision: "review_required",
 						HeadRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-						Checks:       contractv1.PullRequestChecks{State: "passing"},
+						Checks:       contractv2.PullRequestChecks{State: "passing"},
 					},
 				},
 			}},
 		}},
-		Environments: []contractv1.Environment{{
+		Environments: []contractv2.Environment{{
 			ID: "env_test", Revision: 1, RepositoryID: "repo_test", WorktreeID: "worktree_test",
 			URLs: map[string]string{}, AttentionAlertIDs: []string{},
 		}},
-		Alerts: []contractv1.Alert{},
+		Alerts: []contractv2.Alert{},
 	}
 	context, err := BuildEnvironmentContext(snapshot, "env_test")
 	if err != nil {
@@ -113,10 +113,10 @@ func TestBuildEnvironmentContextIncludesPullRequestStatus(t *testing.T) {
 }
 
 func TestBuildEnvironmentContextRejectsUnknownEnvironmentAndAlert(t *testing.T) {
-	if _, err := BuildEnvironmentContext(contractv1.StatusSnapshot{}, "env_missing"); err == nil {
+	if _, err := BuildEnvironmentContext(contractv2.StatusSnapshot{}, "env_missing"); err == nil {
 		t.Fatal("expected unknown environment error")
 	}
-	snapshot := contractv1.StatusSnapshot{Environments: []contractv1.Environment{{
+	snapshot := contractv2.StatusSnapshot{Environments: []contractv2.Environment{{
 		ID:                "env_test",
 		URLs:              map[string]string{},
 		AttentionAlertIDs: []string{"alert_missing"},

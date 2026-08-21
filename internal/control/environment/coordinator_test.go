@@ -108,7 +108,7 @@ func TestStartLateBindsExecutionPlanAfterAssignedPortsArePersisted(t *testing.T)
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_late", EnvironmentID: "env_late", RunID: "run_late",
 		Ports:  []portlease.Reservation{{Key: key, PreferredPorts: []int{7000}}},
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestStoppedEnvironmentCanRestartOnADifferentTarget(t *testing.T) {
 	}
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_switch", EnvironmentID: "env_switch", RunID: "run_new",
-		Intent: &PlanIntent{Adapter: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestStartCheckpointsAndCompletesFinitePreparationsBeforeOtherSideEffects(t 
 	}
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_prepare", EnvironmentID: "env_prepare", RunID: "run_prepare",
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +303,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		_, err = coordinator.Start(context.Background(), StartRequest{
 			OperationID: "op_prepare_failure", EnvironmentID: "env_prepare_failure",
 			RunID:  "run_prepare_failure",
-			Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+			Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 		})
 		if !errors.Is(err, failure) {
 			t.Fatalf("preparation failure: %v", err)
@@ -320,10 +320,10 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		ports := newFakePorts(7092, nil)
 		exitCode := 2
 		failure := safeTestOperationError{private: "secret@example.invalid", failure: OperationFailure{
-			Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.",
-			ResourceKind: "service", ResourceID: "nonprofit-service", Retryable: false,
+			Code: "SERVICE_PREPARATION_FAILED", Message: "billing-service preparation failed.",
+			ResourceKind: "service", ResourceID: "billing-service", Retryable: false,
 			Diagnostic:   "src/example.ts:4:2: TS2304: Cannot find name 'Missing'.",
-			LogReference: "run_test/preparations/nonprofit-service/command-0",
+			LogReference: "run_test/preparations/billing-service/command-0",
 			NextAction:   "fix_service_build", ExitCode: &exitCode,
 		}}
 		coordinator, err := NewCoordinator(Config{
@@ -340,7 +340,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		_, err = coordinator.Start(context.Background(), StartRequest{
 			OperationID: "op_structured_failure", EnvironmentID: "env_structured_failure",
 			RunID:  "run_structured_failure",
-			Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"nonprofit-service"}},
+			Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"billing-service"}},
 		})
 		if !errors.Is(err, failure) {
 			t.Fatalf("structured preparation failure: %v", err)
@@ -378,7 +378,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 			_, err := coordinator.Start(ctx, StartRequest{
 				OperationID: "op_prepare_cancel", EnvironmentID: "env_prepare_cancel",
 				RunID:  "run_prepare_cancel",
-				Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+				Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 			})
 			done <- err
 		}()
@@ -511,7 +511,7 @@ func TestStartRefusesHealthyProbeWhenOwnedProcessAlreadyExited(t *testing.T) {
 	}
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_false_healthy", EnvironmentID: "env_false_healthy", RunID: "run_false_healthy",
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if !errors.Is(err, ErrProcessNotRunning) {
 		t.Fatalf("start error: got %v, want %v", err, ErrProcessNotRunning)
@@ -593,7 +593,7 @@ func TestFailedStartDoesNotReleaseAPreexistingStableLease(t *testing.T) {
 	result, err := coordinator.Start(context.Background(), StartRequest{
 		OperationID: "op_stable", EnvironmentID: "env_stable", RunID: "run_stable",
 		Ports:  []portlease.Reservation{{Key: key}},
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 	})
 	if !errors.Is(err, applyError) {
 		t.Fatalf("start error: got %v, want %v", err, applyError)
@@ -623,7 +623,7 @@ func TestCoordinatorSerializesOneEnvironmentAndRunsDifferentEnvironmentsConcurre
 		request := func(operationID string) StartRequest {
 			return StartRequest{
 				OperationID: operationID, EnvironmentID: "env_same", RunID: "run_same",
-				Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+				Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 			}
 		}
 		firstError := make(chan error, 1)
@@ -677,7 +677,7 @@ func TestCoordinatorSerializesOneEnvironmentAndRunsDifferentEnvironmentsConcurre
 				_, err := coordinator.Start(context.Background(), StartRequest{
 					OperationID: "op_" + environmentID, EnvironmentID: environmentID,
 					RunID:  "run_" + environmentID,
-					Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{"service_web"}},
+					Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"service_web"}},
 				})
 				errorsSeen <- err
 			}(environmentID)
@@ -802,7 +802,7 @@ func TestRestartReconciliationRollsBackInterruptedStart(t *testing.T) {
 		ID: "op_restart", EnvironmentID: "env_restart", RunID: "run_restart",
 		Kind: OperationStart, State: domain.OperationRunning,
 		EnvironmentState: domain.EnvironmentStarting, Phase: PhaseLaunchingServices,
-		Intent: &PlanIntent{Adapter: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
+		Intent: &PlanIntent{ProfileDigest: "test", TargetID: "demo", ServiceIDs: []string{"service_web"}},
 		Rollback: []RollbackEntry{
 			{Kind: RollbackPorts, Armed: true, Applied: true, PortKeys: []portlease.Key{key}, Leases: leases},
 			{Kind: RollbackProjection, Armed: true, Applied: true, Projection: &projection},
@@ -891,7 +891,7 @@ func TestRestartReconciliationRefusesCrashWindowIntentEvidence(t *testing.T) {
 	intent := processhost.LaunchIntent{
 		SchemaVersion: processhost.LaunchIntentSchemaVersion,
 		EnvironmentID: service.EnvironmentID, ServiceID: service.ID, RunID: service.RunID,
-		Executable: "/tmp/marketplace-service", LaunchFingerprint: strings.Repeat("0", 64),
+		Executable: "/tmp/sample-service", LaunchFingerprint: strings.Repeat("0", 64),
 		RunDirectory: runDirectory, CreatedAt: now, UpdatedAt: now,
 	}
 	intentPayload, err := json.Marshal(intent)
@@ -929,5 +929,51 @@ func TestRestartReconciliationRefusesCrashWindowIntentEvidence(t *testing.T) {
 	}
 	if operation := journal.operation("op_crash_window"); !operation.Rollback[0].Armed {
 		t.Fatalf("crash-window orphan was marked clean: %+v", operation)
+	}
+}
+
+// TestPartialRollbackPublishesOnlyResourcesStillOwned proves that when one
+// rollback entry fails (here an unverifiable process group), the failed
+// environment result no longer lists the port leases, projection, and
+// infrastructure that the other entries already released. Publishing released
+// leases as owned would let a later allocation of the same port conflict with
+// this durable record when leases are restored after a restart.
+func TestPartialRollbackPublishesOnlyResourcesStillOwned(t *testing.T) {
+	journal := newMemoryJournal()
+	calls := make([]string, 0)
+	ports := newFakePorts(7200, &calls)
+	projection := &fakeProjection{journal: journal, operationID: "op_partial", calls: &calls}
+	infrastructure := &fakeInfrastructure{journal: journal, operationID: "op_partial", calls: &calls}
+	processes := &fakeProcesses{journal: journal, operationID: "op_partial", calls: &calls, stopErr: processhost.ErrOwnershipMismatch}
+	planner := &staticPlanner{plan: fullExecutionPlan(t, "env_partial", "run_partial")}
+	coordinator, err := NewCoordinator(Config{
+		Journal: journal, Ports: ports, Planner: planner, Projections: projection,
+		Infrastructure: infrastructure, Processes: processes,
+		Readiness: &fakeReadiness{err: errors.New("service never became ready")}, RollbackTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.Start(
+		context.Background(), fullStartRequest(t, "op_partial", "env_partial", "run_partial"),
+	)
+	if !errors.Is(err, processhost.ErrOwnershipMismatch) {
+		t.Fatalf("start error: got %v, want ownership mismatch", err)
+	}
+	if result.State != domain.EnvironmentFailed {
+		t.Fatalf("environment state: %s", result.State)
+	}
+	if ports.leaseCount() != 0 {
+		t.Fatalf("allocator still holds %d leases after rollback released them", ports.leaseCount())
+	}
+	if len(result.Ports) != 0 || result.Projection != nil || len(result.Infrastructure) != 0 {
+		t.Fatalf("released resources were published as owned: ports=%+v projection=%+v infrastructure=%+v", result.Ports, result.Projection, result.Infrastructure)
+	}
+	if len(result.Services) == 0 {
+		t.Fatal("the unverifiable process group must remain published so it is not forgotten")
+	}
+	current, found, err := journal.Current(context.Background(), "env_partial")
+	if err != nil || !found || len(current.Ports) != 0 || len(current.Services) == 0 {
+		t.Fatalf("persisted result: %+v found=%v err=%v", current, found, err)
 	}
 }

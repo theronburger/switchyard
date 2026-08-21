@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "requestId": "request_01K2A2C8ZQ0R2Y5V2H8YB1F9X4",
+  "idempotencyKey": "action:publish-preview:worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX:1",
+  "repositoryId": "repo_01J5EZ02WYT2T7AC3SFN35T7AP",
+  "actionId": "publish-preview",
+  "worktreeId": "worktree_01J5EZ3JM31Y4QF0MPN8E3P2AX",
+  "confirmedActionId": "publish-preview"
+}

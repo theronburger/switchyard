@@ -13,14 +13,14 @@ import (
 	"strconv"
 	"strings"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const tokenByteCount = 32
 
 var ErrInsecureRuntimeFile = errors.New("runtime file permissions are not private")
 
-type RuntimeDescriptor = contractv1.RuntimeDescriptor
+type RuntimeDescriptor = contractv2.RuntimeDescriptor
 
 func LoadOrCreateToken(path string, random io.Reader) (string, error) {
 	if path == "" {
@@ -126,8 +126,8 @@ func PublishRuntimeDescriptor(path string, descriptor RuntimeDescriptor) error {
 }
 
 func validateRuntimeDescriptor(descriptor RuntimeDescriptor) error {
-	if descriptor.SchemaVersion != contractv1.SchemaVersion {
-		return fmt.Errorf("runtime descriptor schema version is %d, want %d", descriptor.SchemaVersion, contractv1.SchemaVersion)
+	if descriptor.SchemaVersion != contractv2.SchemaVersion {
+		return fmt.Errorf("runtime descriptor schema version is %d, want %d", descriptor.SchemaVersion, contractv2.SchemaVersion)
 	}
 	if descriptor.DaemonInstanceID == "" {
 		return errors.New("daemon instance id is required")

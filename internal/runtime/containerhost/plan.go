@@ -110,8 +110,12 @@ func (planner Planner) actionsForCreate(goal Goal) []Action {
 	if goal.Kind != ResourceContainer {
 		return []Action{create}
 	}
+	pull := planner.newAction(ActionPull, resource, goal)
+	pull.PortBindings = nil
+	pull.Environment = nil
+	pull.Command = expectedCommand(planner.executable(), pull)
 	start := planner.newAction(ActionStart, resource, goal)
-	return []Action{create, start}
+	return []Action{pull, create, start}
 }
 
 func (planner Planner) newAction(kind ActionKind, resource Resource, goal Goal) Action {
@@ -128,6 +132,7 @@ func (planner Planner) newAction(kind ActionKind, resource Resource, goal Goal) 
 		ResourceName: resource.Name,
 		Image:        image,
 		PortBindings: clonePortBindings(portBindings),
+		Environment:  append([]string(nil), goal.Environment...),
 		Identity:     goal.Identity,
 	}
 	action.Command = expectedCommand(planner.executable(), action)
@@ -166,7 +171,11 @@ func validateGoals(goals []Goal) ([]Goal, error) {
 				return nil, err
 			}
 			goal.PortBindings = bindings
-		} else if goal.Image != "" || len(goal.PortBindings) != 0 {
+			if err := validateContainerEnvironment(goal.Environment); err != nil {
+				return nil, err
+			}
+			sort.Strings(goal.Environment)
+		} else if goal.Image != "" || len(goal.PortBindings) != 0 || len(goal.Environment) != 0 {
 			return nil, errors.New("container image and ports are only valid for a running container goal")
 		}
 		identityKey := resourceIdentityKey{Kind: goal.Kind, Identity: goal.Identity}
@@ -187,6 +196,26 @@ func validateGoals(goals []Goal) ([]Goal, error) {
 		return identitySortKey(ordered[left].Identity) < identitySortKey(ordered[right].Identity)
 	})
 	return ordered, nil
+}
+
+func validateContainerEnvironment(environment []string) error {
+	seen := make(map[string]struct{}, len(environment))
+	for _, entry := range environment {
+		name, _, found := strings.Cut(entry, "=")
+		if !found || name == "" || len(entry) > 64*1024 || strings.ContainsRune(entry, 0) {
+			return errors.New("container environment is invalid")
+		}
+		for index, character := range name {
+			if character != '_' && (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && (index == 0 || character < '0' || character > '9') {
+				return errors.New("container environment is invalid")
+			}
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return errors.New("container environment is duplicated")
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 func protectionForImmutableMismatch(resource Resource, goal Goal) *Protection {
@@ -241,12 +270,17 @@ type resourceNameKey struct {
 func expectedCommand(dockerBinary string, action Action) Command {
 	arguments := make([]string, 0, 16)
 	switch action.Kind {
+	case ActionPull:
+		arguments = []string{"image", "pull", "--", action.Image}
 	case ActionCreate:
 		arguments = append(arguments, string(action.ResourceKind), "create")
 		switch action.ResourceKind {
 		case ResourceContainer:
 			arguments = append(arguments, "--name", action.ResourceName)
 			arguments = append(arguments, ownershipLabelArguments(action.Identity)...)
+			for _, environment := range action.Environment {
+				arguments = append(arguments, "--env", environment)
+			}
 			for _, binding := range action.PortBindings {
 				arguments = append(arguments, "--publish", publishArgument(binding))
 			}

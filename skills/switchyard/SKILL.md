@@ -1,6 +1,6 @@
 ---
 name: switchyard
-description: Manage local development worktrees and isolated environments through the Switchyard MCP. Use for creating, adopting, or archiving Switchyard-owned worktrees, preparing repository toolchains and dependencies, starting or stopping Marketplace services, obtaining local URLs, inspecting health, or repairing the local control plane. Do not use for production deployments or direct Git/Docker/process lifecycle commands when Switchyard owns the resource.
+description: Manage local development worktrees and isolated environments through the Switchyard MCP. Use for creating, adopting, or archiving Switchyard-owned worktrees, preparing repository toolchains and dependencies, starting or stopping configured services, obtaining local URLs, inspecting health, or repairing the local control plane. Do not use for production deployments or direct Git/Docker/process lifecycle commands when Switchyard owns the resource.
 ---
 
 # Switchyard
@@ -23,7 +23,7 @@ Use Switchyard as the sole lifecycle owner for local worktree services. Prefer i
 4. Call `switchyard_start` with unique non-secret request and idempotency IDs, the resolved worktree ID, selected target and services, and the current revision when replacing an environment.
 5. Treat the receipt as acceptance. Poll the exact environment until the operation is terminal and selected services are healthy.
 
-The first start verifies the repository fingerprint, provisions an adapter toolchain when needed, hydrates dependencies, and records workspace readiness before services build. Do not install those prerequisites separately.
+The first start verifies the repository fingerprint, provisions a profile-declared toolchain when needed, hydrates dependencies, and records workspace readiness before services build. Do not install those prerequisites separately.
 
 ## Stop an environment
 
@@ -44,10 +44,10 @@ Archive only when explicitly requested. Resolve the exact path, verify `managed`
 
 Never work around Switchyard by:
 
-- launching persistent Marketplace services through raw Yarn, Turbo, Serverless, Vite, tmux, or `scripts/start-changed.sh`;
+- launching persistent configured services through raw package-manager, process-manager, container, or terminal commands;
 - creating or removing Switchyard-owned worktrees with raw Git commands;
 - using `kill`, `pkill`, Docker stop/remove/prune, or broad cleanup commands;
 - editing ownership records, runtime files, port leases, or generated `.switchyard.*` projections;
-- modifying Marketplace tracked files, public `.gitignore`, or local environment profiles.
+- modifying consuming-repository tracked files, public `.gitignore`, or private environment profiles.
 
 Switchyard acts only on positively owned process groups, labelled Docker resources, and verified managed worktrees. Preserve a refusal when ownership cannot be proven.

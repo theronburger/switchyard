@@ -1,4 +1,4 @@
-.PHONY: app-bundle check check-format ci format go-check icons release-dry-run swift-check test race ui-snapshots
+.PHONY: app-bundle check check-format ci format go-check icons release-checks release-dry-run swift-check test race ui-snapshots
 
 GO_FILES := $(shell find cmd internal -name '*.go' -type f 2>/dev/null)
 
@@ -17,12 +17,12 @@ go-check:
 swift-check:
 	swift build --package-path app
 	swift test --package-path app
-	swift run --package-path app SwitchyardContractCheck contracts/v1/fixtures/status.json
+	swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
 
 test:
 	go test ./...
 	swift test --package-path app
-	swift run --package-path app SwitchyardContractCheck contracts/v1/fixtures/status.json
+	swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
 
 race:
 	go test -race ./...
@@ -32,6 +32,9 @@ app-bundle:
 
 ci:
 	./scripts/ci.sh
+
+release-checks:
+	./scripts/release-checks.sh
 
 release-dry-run:
 	./scripts/build-release.sh dist

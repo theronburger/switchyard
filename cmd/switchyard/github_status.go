@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/integrations/githubstatus"
 	"github.com/theronburger/switchyard/internal/state"
 )
@@ -23,12 +23,12 @@ const (
 
 type githubStatusClient interface {
 	ActiveAccount(context.Context) (string, error)
-	PullRequest(context.Context, string, string) (*contractv1.PullRequest, bool, error)
+	PullRequest(context.Context, string, string) (*contractv2.PullRequest, bool, error)
 }
 
 type githubStatusStore interface {
-	ReadSnapshot(context.Context) (contractv1.StatusSnapshot, error)
-	UpdateSnapshot(context.Context, state.SnapshotUpdater) (contractv1.StatusSnapshot, bool, error)
+	ReadSnapshot(context.Context) (contractv2.StatusSnapshot, error)
+	UpdateSnapshot(context.Context, state.SnapshotUpdater) (contractv2.StatusSnapshot, bool, error)
 }
 
 type githubStatusObserver struct {
@@ -44,13 +44,13 @@ type githubStatusTarget struct {
 	repository   string
 	branch       string
 	headRevision string
-	previous     *contractv1.PullRequestObservation
+	previous     *contractv2.PullRequestObservation
 }
 
 type githubStatusResult struct {
 	target      githubStatusTarget
 	account     string
-	pullRequest *contractv1.PullRequest
+	pullRequest *contractv2.PullRequest
 	found       bool
 	err         error
 }
@@ -117,7 +117,7 @@ func (observer *githubStatusObserver) refreshDue(ctx context.Context) error {
 		}
 	}
 
-	_, _, err = observer.store.UpdateSnapshot(ctx, func(current *contractv1.StatusSnapshot) (bool, error) {
+	_, _, err = observer.store.UpdateSnapshot(ctx, func(current *contractv2.StatusSnapshot) (bool, error) {
 		changed := false
 		for _, result := range results {
 			worktree := currentWorktree(current, result.target)
@@ -170,7 +170,7 @@ func (observer *githubStatusObserver) queryTargets(
 	return collected
 }
 
-func dueGitHubTargets(snapshot contractv1.StatusSnapshot, now time.Time) []githubStatusTarget {
+func dueGitHubTargets(snapshot contractv2.StatusSnapshot, now time.Time) []githubStatusTarget {
 	targets := make([]githubStatusTarget, 0)
 	for _, repository := range snapshot.Repositories {
 		if !githubstatus.ValidRepository(repository.Remote) {
@@ -193,7 +193,7 @@ func dueGitHubTargets(snapshot contractv1.StatusSnapshot, now time.Time) []githu
 	return targets
 }
 
-func pullRequestObservationDue(worktree contractv1.Worktree, now time.Time) bool {
+func pullRequestObservationDue(worktree contractv2.Worktree, now time.Time) bool {
 	observation := worktree.PullRequest
 	if observation == nil || observation.LastAttemptAt.IsZero() {
 		return true
@@ -205,7 +205,7 @@ func pullRequestObservationDue(worktree contractv1.Worktree, now time.Time) bool
 	return !now.Before(observation.LastAttemptAt.Add(pullRequestCadence(observation, now)))
 }
 
-func pullRequestCadence(observation *contractv1.PullRequestObservation, now time.Time) time.Duration {
+func pullRequestCadence(observation *contractv2.PullRequestObservation, now time.Time) time.Duration {
 	if observation == nil {
 		return 0
 	}
@@ -238,9 +238,9 @@ func pullRequestCadence(observation *contractv1.PullRequestObservation, now time
 }
 
 func currentWorktree(
-	snapshot *contractv1.StatusSnapshot,
+	snapshot *contractv2.StatusSnapshot,
 	target githubStatusTarget,
-) *contractv1.Worktree {
+) *contractv2.Worktree {
 	for repositoryIndex := range snapshot.Repositories {
 		repository := &snapshot.Repositories[repositoryIndex]
 		if repository.ID != target.repositoryID || repository.Remote != target.repository {
@@ -257,14 +257,14 @@ func currentWorktree(
 	return nil
 }
 
-func pullRequestObservation(result githubStatusResult, now time.Time) *contractv1.PullRequestObservation {
+func pullRequestObservation(result githubStatusResult, now time.Time) *contractv2.PullRequestObservation {
 	if result.err == nil {
 		observedAt := now
 		status := "none"
 		if result.found && result.pullRequest != nil {
 			status = "found"
 		}
-		return &contractv1.PullRequestObservation{
+		return &contractv2.PullRequestObservation{
 			Status: status, Account: result.account, ObservedAt: &observedAt, LastAttemptAt: now,
 			PullRequest: result.pullRequest,
 		}
@@ -278,7 +278,7 @@ func pullRequestObservation(result githubStatusResult, now time.Time) *contractv
 		preserved.ErrorCode = errorCode
 		return &preserved
 	}
-	return &contractv1.PullRequestObservation{
+	return &contractv2.PullRequestObservation{
 		Status: "unavailable", Account: result.account, LastAttemptAt: now, ErrorCode: errorCode,
 	}
 }

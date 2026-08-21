@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/theronburger/switchyard/internal/apiclient"
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/control/statusview"
 )
 
@@ -28,20 +28,20 @@ const (
 )
 
 type Backend interface {
-	Status(context.Context) (contractv1.StatusSnapshot, error)
+	Status(context.Context) (contractv2.StatusSnapshot, error)
 	Doctor(context.Context) apiclient.DoctorReport
-	StartEnvironment(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+	StartEnvironment(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error)
+	StopEnvironment(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error)
 }
 
 type WorkspaceBackend interface {
-	CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	CreateWorktree(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error)
+	AdoptWorktree(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error)
+	ArchiveWorktree(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error)
 }
 
 type DiagnosticsBackend interface {
-	OperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error)
+	OperationDiagnostics(context.Context, string, int) (contractv2.OperationDiagnostics, error)
 }
 
 type LiveBackend struct {
@@ -49,7 +49,7 @@ type LiveBackend struct {
 	Now       func() time.Time
 }
 
-func (b LiveBackend) Status(ctx context.Context) (contractv1.StatusSnapshot, error) {
+func (b LiveBackend) Status(ctx context.Context) (contractv2.StatusSnapshot, error) {
 	return b.Connector.Status(ctx)
 }
 
@@ -59,37 +59,37 @@ func (b LiveBackend) Doctor(ctx context.Context) apiclient.DoctorReport {
 
 func (b LiveBackend) StartEnvironment(
 	ctx context.Context,
-	request contractv1.StartEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StartEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.StartEnvironment(ctx, request)
 }
 
 func (b LiveBackend) StopEnvironment(
 	ctx context.Context,
 	environmentID string,
-	request contractv1.StopEnvironmentRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.StopEnvironmentRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.StopEnvironment(ctx, environmentID, request)
 }
 
 func (b LiveBackend) CreateWorktree(
 	ctx context.Context,
-	request contractv1.CreateWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.CreateWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.CreateWorktree(ctx, request)
 }
 
 func (b LiveBackend) ArchiveWorktree(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.ArchiveWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.ArchiveWorktree(ctx, request)
 }
 
 func (b LiveBackend) AdoptWorktree(
 	ctx context.Context,
-	request contractv1.AdoptWorktreeRequest,
-) (contractv1.MutationReceipt, error) {
+	request contractv2.AdoptWorktreeRequest,
+) (contractv2.MutationReceipt, error) {
 	return b.Connector.AdoptWorktree(ctx, request)
 }
 
@@ -97,7 +97,7 @@ func (b LiveBackend) OperationDiagnostics(
 	ctx context.Context,
 	operationID string,
 	maximumBytes int,
-) (contractv1.OperationDiagnostics, error) {
+) (contractv2.OperationDiagnostics, error) {
 	return b.Connector.OperationDiagnostics(ctx, operationID, maximumBytes)
 }
 
@@ -221,7 +221,7 @@ type environmentStatusOutput struct {
 }
 
 type inventoryOutput struct {
-	Inventory contractv1.StatusSnapshot `json:"inventory"`
+	Inventory contractv2.StatusSnapshot `json:"inventory"`
 }
 
 type doctorOutput struct {
@@ -229,7 +229,7 @@ type doctorOutput struct {
 }
 
 type operationDiagnosticsOutput struct {
-	Diagnostics contractv1.OperationDiagnostics `json:"diagnostics"`
+	Diagnostics contractv2.OperationDiagnostics `json:"diagnostics"`
 }
 
 type startArguments struct {
@@ -264,8 +264,8 @@ type archiveWorktreeArguments struct {
 }
 
 type mutationOutput struct {
-	Receipt            contractv1.MutationReceipt     `json:"receipt"`
-	EnvironmentContext *contractv1.EnvironmentContext `json:"environmentContext,omitempty"`
+	Receipt            contractv2.MutationReceipt     `json:"receipt"`
+	EnvironmentContext *contractv2.EnvironmentContext `json:"environmentContext,omitempty"`
 }
 
 type toolErrorOutput struct {
@@ -580,9 +580,9 @@ func (s Server) callTool(
 		if err := decodeParams(params.Arguments, &arguments); err != nil {
 			return callToolResult{}, &responseError{Code: -32602, Message: "Invalid start arguments"}
 		}
-		request := contractv1.StartEnvironmentRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+		request := contractv2.StartEnvironmentRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: arguments.RequestID,
 				IdempotencyKey:              arguments.IdempotencyKey,
 				ExpectedEnvironmentRevision: arguments.ExpectedEnvironmentRevision,
 			},
@@ -603,8 +603,8 @@ func (s Server) callTool(
 		if err := decodeParams(params.Arguments, &arguments); err != nil || arguments.EnvironmentID == "" {
 			return callToolResult{}, &responseError{Code: -32602, Message: "Invalid stop arguments"}
 		}
-		request := contractv1.StopEnvironmentRequest{MutationRequest: contractv1.MutationRequest{
-			SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+		request := contractv2.StopEnvironmentRequest{MutationRequest: contractv2.MutationRequest{
+			SchemaVersion: contractv2.SchemaVersion, RequestID: arguments.RequestID,
 			IdempotencyKey:              arguments.IdempotencyKey,
 			ExpectedEnvironmentRevision: arguments.ExpectedEnvironmentRevision,
 		}}
@@ -625,9 +625,9 @@ func (s Server) callTool(
 		if !available {
 			return s.decorateCallResult(actionToolError(errors.New("workspace actions unavailable")), modern), nil
 		}
-		request := contractv1.CreateWorktreeRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+		request := contractv2.CreateWorktreeRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: arguments.RequestID,
 				IdempotencyKey: arguments.IdempotencyKey,
 			},
 			RepositoryID: arguments.RepositoryID, Branch: arguments.Branch, StartPoint: arguments.StartPoint,
@@ -649,9 +649,9 @@ func (s Server) callTool(
 		if !available {
 			return s.decorateCallResult(actionToolError(errors.New("workspace actions unavailable")), modern), nil
 		}
-		request := contractv1.ArchiveWorktreeRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+		request := contractv2.ArchiveWorktreeRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: arguments.RequestID,
 				IdempotencyKey: arguments.IdempotencyKey,
 			},
 			WorktreeID: arguments.WorktreeID,
@@ -673,9 +673,9 @@ func (s Server) callTool(
 		if !available {
 			return s.decorateCallResult(actionToolError(errors.New("workspace actions unavailable")), modern), nil
 		}
-		request := contractv1.AdoptWorktreeRequest{
-			MutationRequest: contractv1.MutationRequest{
-				SchemaVersion: contractv1.SchemaVersion, RequestID: arguments.RequestID,
+		request := contractv2.AdoptWorktreeRequest{
+			MutationRequest: contractv2.MutationRequest{
+				SchemaVersion: contractv2.SchemaVersion, RequestID: arguments.RequestID,
 				IdempotencyKey: arguments.IdempotencyKey,
 			},
 			WorktreeID: arguments.WorktreeID,
@@ -737,7 +737,7 @@ func environmentStatusSummary(status statusview.EnvironmentStatus) string {
 	return summary
 }
 
-func repositoryObservationSummary(observation *contractv1.RepositoryObservation) string {
+func repositoryObservationSummary(observation *contractv2.RepositoryObservation) string {
 	if observation == nil {
 		return " Repository observation freshness is unavailable."
 	}
@@ -891,7 +891,7 @@ func mutationToolDefinition(
 	}
 }
 
-func worktreeCount(repositories []contractv1.Repository) int {
+func worktreeCount(repositories []contractv2.Repository) int {
 	count := 0
 	for _, repository := range repositories {
 		count += len(repository.Worktrees)
@@ -901,7 +901,7 @@ func worktreeCount(repositories []contractv1.Repository) int {
 
 func (s Server) mutationResult(
 	ctx context.Context,
-	receipt contractv1.MutationReceipt,
+	receipt contractv2.MutationReceipt,
 	action string,
 ) callToolResult {
 	output := mutationOutput{Receipt: receipt}

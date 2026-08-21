@@ -8,7 +8,7 @@ Switchyard is a machine-local control plane. It coordinates developer resources 
 Codex / Claude ── MCP ──┐
                         │
 Human shell ──── CLI ───┼── local versioned API ── Go daemon
-                        │                         ├── repository adapters
+                        │                         ├── accepted repository profiles
 SwiftUI app ────────────┘                         ├── leases and supervisor
                                                   ├── health and reconciliation
                                                   ├── Docker/Colima observer
@@ -32,7 +32,7 @@ The app is the primary human experience:
 - notifications with direct actions such as Open Logs, Restart, Stop, or Review Plan.
 - per-service committed and uncommitted line attribution, with shared repository changes kept separate;
 - exact-worktree editor actions such as opening the checkout in a new Zed window;
-- branch-derived Jira references with optional app-owned reads through the raw relay contract, isolated from daemon health;
+- branch-derived Jira references with optional app-owned reads through a private, owner-declared relay command (`integrations/jira-relay.json` under Application Support; the product ships no relay and knows no relay path), isolated from daemon health;
 - daemon-owned GitHub pull-request and CI observations through the user's authenticated Keychain-backed `gh` session, isolated from environment health;
 - running state rendered directly in the menu-bar mark, with configurable compact attention and resource indicators beside it.
 
@@ -73,17 +73,19 @@ The core knows these generic concepts:
 - `AgentSession`
 - `Event`
 
-It does not know Node, Yarn, Go, Deed environment variable names, or Turbo commands. An adapter turns repository inputs into exact finite workspace steps, generic toolchain metadata, requirements, and environment plans.
+It does not know package managers, language runtimes, repository-specific environment variable names, or build orchestrators. The profile compiler turns an accepted private repository profile into exact finite workspace steps, generic toolchain metadata, requirements, and environment plans.
 
 ### Workspace before environment
 
-Every environment start passes through `workspace.Ensure` first. The coordinator serializes per worktree, computes an adapter-provided content fingerprint, re-verifies readiness requirements on cache hits, durably checkpoints each finite step, and publishes a repository-neutral readiness result to SQLite and the status snapshot. Marketplace fingerprints `.nvmrc`, Yarn configuration/lock state, and bounded package manifests; generated `node_modules` content is excluded. It uses immutable Yarn hydration and shared content-addressed caches while leaving each worktree's mutable install tree separate.
+Every environment start passes through `workspace.Ensure` first. The coordinator serializes per worktree, computes a profile-defined content fingerprint, re-verifies readiness requirements on cache hits, durably checkpoints each finite step, and publishes a repository-neutral readiness result to SQLite and the status snapshot. Profiles can fingerprint toolchain files, lockfiles, and bounded package manifests while excluding generated dependency trees. Shared content-addressed caches remain available while each worktree keeps its own mutable install tree.
+
+Agent occupancy is explicit. When the app launches a task into a worktree it first records one conservative handoff lease through the daemon (`occupancy`), with a generic holder kind and a bounded label, and only then opens the task; a refused lease means no launch, a failed launch releases the lease it acquired, and a failed rollback keeps the protective lease and tells the owner where to release it. The daemon never infers occupancy from a deep link, process, or transcript, never expires a lease, and only an owner release ends it. Held leases are durable, survive restarts and inventory rebuilds, and make archive refuse with `WORKTREE_OCCUPIED`.
 
 Git creation/adoption/removal is a separate positively-owned lifecycle. Existing worktrees are auto-discovered with run-only `adopted` inventory ownership. An explicit adoption may promote an eligible non-primary checkout to `managed` only when it is a clean, pushed, non-symlinked direct child of the configured managed root and Git proves it belongs to the exact repository. Switchyard-managed worktrees have a durable private ownership record bound to repository root, exact worktree path, branch, upstream/start revision, and Git administrative directory. Archive re-verifies that identity and refuses primary, active, dirty, unpushed, foreign, or unverifiable worktrees.
 
-### Repository adapters
+### Repository profiles
 
-An adapter translates repository-specific reality into the core:
+A private repository profile translates repository-specific reality into generic control-plane inputs:
 
 - discovery and identity;
 - affected-service calculation;
@@ -94,11 +96,21 @@ An adapter translates repository-specific reality into the core:
 - worktree bootstrap hints;
 - integration/union provenance.
 
-Marketplace is built in first. The boundary should be a small Go interface plus a schema-versioned local manifest, not a runtime plugin marketplace.
+Profiles are data, not compiled adapters. Adding or changing a consuming repository must not require product code changes. Generic capabilities belong in the control plane only when they can be described, validated, planned, and tested without repository identity.
 
 ## State and identity
 
 State lives under `~/Library/Application Support/Switchyard/` unless the final name changes. SQLite is authoritative; generated files are projections.
+
+Durable state is bounded and pinned:
+
+- the atomic status snapshot is one row with a monotonic revision; history is never retained merely to update a timestamp;
+- event history keeps the most recent 10,000 audit events (`operation.created`, `operation.transitioned`, `configuration.accepted`, `occupancy.acquired`, `occupancy.released`, `cleanup.applied`), each appended in the transaction that made the change;
+- terminal operations keep the most recent 500 unless a current environment or workspace result still references them; incomplete operations are never pruned;
+- accepted configuration revisions keep the head, the most recent 16 revisions, and every revision whose repository digest is pinned by a live (non-stopped) environment result or an incomplete environment operation; staged-but-unaccepted candidates keep the most recent 16;
+- every environment result and operation intent records the accepted repository-profile digest it was compiled from, so a restart after a later acceptance recovers the exact payload; a live result or incomplete operation whose pinned payload is no longer retained, or whose environment no longer belongs to an accepted profile, fails boot closed rather than silently re-reading the head. A stopped result is finished history: it pins nothing and never blocks boot, so archiving a worktree or disabling a repository after its environments have stopped keeps the daemon bootable.
+
+Repository identity in the public contract is the private `profileKey`; the adapter concept does not exist in contract v2 or in persisted 0.2.0 state. Switchyard 0.2.0 is a clean cutover from 0.1.x: it opens a fresh `state-v2.sqlite` and carries no reader, importer, or migration for 0.1.x state, operations, or runtime ownership. A single-user install removes or archives the 0.1.x Application Support contents and starts fresh.
 
 Stable identity must not depend only on directory basename or branch name:
 
@@ -110,14 +122,14 @@ Stable identity must not depend only on directory basename or branch name:
 
 ## Local API
 
-Use a small versioned JSON contract. Unix-domain socket versus authenticated loopback HTTP remains an implementation decision; the contract must not depend on transport.
+Use a small versioned JSON contract (`contracts/v2`, `schemaVersion: 2`). Unix-domain socket versus authenticated loopback HTTP remains an implementation decision; the contract must not depend on transport.
 
 V1 uses authenticated loopback HTTP on an ephemeral port described by a mode-`0600` runtime file. A separate mode-`0600` bearer token authenticates all clients. Required qualities:
 
 - request IDs and idempotency keys for mutations;
 - explicit desired and observed states;
 - tail-friendly logs/events without making the UI poll aggressively or placing raw log contents in routine agent context;
-- an exact-version handshake with a stable upgrade-required error;
+- an exact-version handshake with a stable upgrade-required error: every versioned request declares `X-Switchyard-Schema-Version`, and a mismatch is HTTP 426 `UPGRADE_REQUIRED`;
 - atomic status snapshots;
 - stable machine-readable error codes;
 - no secret values in responses.
@@ -140,12 +152,12 @@ Illustrative shape:
     "environmentId": "env_01J5EXAMPLE",
     "health": "degraded",
     "urls": {
-      "organizer": "http://localhost:7005"
+      "storefront": "http://localhost:7005"
     },
     "attention": [
       {
         "code": "SERVICE_CRASHED",
-        "summary": "nonprofit-service exited with status 1"
+        "summary": "billing-service exited with status 1"
       }
     ]
   }
@@ -157,7 +169,7 @@ Cap attention at three entries and URLs at eight. The UI owns proactive notifica
 ## Service lifecycle
 
 1. Resolve or create the environment.
-2. Ask the adapter for a service plan.
+2. Compile the service plan from the accepted repository profile pinned by the operation's `ProfileDigest`.
 3. Acquire stable leases after checking both daemon state and the operating system.
 4. Materialize the environment projection.
 5. Ensure infrastructure with explicit sharing scope.
@@ -169,7 +181,13 @@ Cap attention at three entries and URLs at eight. The UI owns proactive notifica
 
 Every mutation is first persisted as an asynchronous operation. Operations are serialized per environment so unrelated environments progress concurrently. Reconciliation resumes or safely fails incomplete operations after a daemon restart.
 
-Immediately before a start is accepted, the adapter reads the exact worktree HEAD and tracked/untracked dirty state. That source snapshot and the newly allocated run ID are persisted with the operation and projected into every service run. A terminal operation is not evidence that an older healthy run was replaced unless the published environment carries the same run ID.
+Operations that are not environment-scoped are serialized by narrow resource keys shared across the workspace, environment, and profile-action services. Everything that mutates one worktree holds its worktree key: preparation, archive, adoption, an environment start from its workspace ensure until the coordinator publishes the environment, and worktree-, environment-, or service-scoped command actions. Everything that mutates a repository's shared Git administrative state holds its repository key: creation, archive, adoption, and repository- or machine-scoped command actions. A conflicting operation is accepted immediately but stays `pending` until the keys are free; keys are taken all-or-nothing so a queued archive never stalls unrelated worktrees through the repository key, and an operation still waiting when the daemon shuts down fails as interrupted without ever having run. Unrelated worktrees and repositories keep running concurrently.
+
+Finite command actions launch through the same process-ownership host as services: a launch intent is persisted before fork and the verified leader identity immediately after, in the action's private run directory under `runtime/actions/<profileKey>/<operationId>`. A daemon that dies mid-action therefore leaves positively verifiable evidence. On every boot, before any profile is consulted, the daemon stops each action group whose record is still running through the verified TERM, grace, KILL sequence, then fails the interrupted operation with `DAEMON_RESTARTED`; evidence that cannot be verified (an intent without ownership, a malformed record, a live identity that no longer matches) is counted and left alone. A finished action ends with its whole group stopped, including descendants that outlived the leader.
+
+Workspace preparation steps and environment initialization commands are owned the same way. Because a step's own run directory is exactly what the private-preparation cleanup planner identifies (its `ownership.json` marker and bounded logs), their process evidence lives in a separate flat tree, `runtime/preparation-runs/<launch>`, one private directory per launch; the step or initialization run directory keeps only its marker and logs. Boot stops every launch whose record is still running before the interrupted preparation or start is failed, leaves unverifiable evidence in place, and a launch whose group is verified stopped removes its own evidence, so the tree only ever holds launches a restart must still act on or report.
+
+Immediately before a start is accepted, the daemon reads the exact worktree HEAD and tracked/untracked dirty state. That source snapshot and the newly allocated run ID are persisted with the operation and projected into every service run. A terminal operation is not evidence that an older healthy run was replaced unless the published environment carries the same run ID.
 
 Retries use bounded exponential backoff. Crash loops become an alert rather than an infinite silent restart.
 

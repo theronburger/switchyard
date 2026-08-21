@@ -70,6 +70,7 @@ type Goal struct {
 	Name         string
 	Image        string
 	PortBindings []PortBinding
+	Environment  []string
 	Identity     Identity
 	DesiredState DesiredState
 }
@@ -77,6 +78,7 @@ type Goal struct {
 type ActionKind string
 
 const (
+	ActionPull   ActionKind = "pull"
 	ActionCreate ActionKind = "create"
 	ActionStart  ActionKind = "start"
 	ActionStop   ActionKind = "stop"
@@ -90,6 +92,7 @@ type Action struct {
 	ResourceName string
 	Image        string
 	PortBindings []PortBinding
+	Environment  []string
 	Identity     Identity
 	Command      Command
 }

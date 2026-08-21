@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	"github.com/theronburger/switchyard/internal/events"
 )
 
 type StatusSource interface {
-	ReadSnapshot(ctx context.Context) (contractv1.StatusSnapshot, error)
+	ReadSnapshot(ctx context.Context) (contractv2.StatusSnapshot, error)
 }
 
 type EventSource interface {
@@ -24,18 +24,31 @@ type EventSource interface {
 }
 
 type EnvironmentActions interface {
-	StartEnvironment(context.Context, contractv1.StartEnvironmentRequest) (contractv1.MutationReceipt, error)
-	StopEnvironment(context.Context, string, contractv1.StopEnvironmentRequest) (contractv1.MutationReceipt, error)
+	StartEnvironment(context.Context, contractv2.StartEnvironmentRequest) (contractv2.MutationReceipt, error)
+	StopEnvironment(context.Context, string, contractv2.StopEnvironmentRequest) (contractv2.MutationReceipt, error)
 }
 
 type WorkspaceActions interface {
-	CreateWorktree(context.Context, contractv1.CreateWorktreeRequest) (contractv1.MutationReceipt, error)
-	AdoptWorktree(context.Context, contractv1.AdoptWorktreeRequest) (contractv1.MutationReceipt, error)
-	ArchiveWorktree(context.Context, contractv1.ArchiveWorktreeRequest) (contractv1.MutationReceipt, error)
+	CreateWorktree(context.Context, contractv2.CreateWorktreeRequest) (contractv2.MutationReceipt, error)
+	AdoptWorktree(context.Context, contractv2.AdoptWorktreeRequest) (contractv2.MutationReceipt, error)
+	ArchiveWorktree(context.Context, contractv2.ArchiveWorktreeRequest) (contractv2.MutationReceipt, error)
+	PrepareWorktree(context.Context, contractv2.PrepareWorktreeRequest) (contractv2.MutationReceipt, error)
 }
 
 type OperationDiagnosticsSource interface {
-	ReadOperationDiagnostics(context.Context, string, int) (contractv1.OperationDiagnostics, error)
+	ReadOperationDiagnostics(context.Context, string, int) (contractv2.OperationDiagnostics, error)
+}
+
+type ConfigurationActions interface {
+	Status(context.Context) (contractv2.ConfigurationStatus, error)
+	Validate(context.Context, contractv2.ConfigurationValidationRequest) (contractv2.ConfigurationStatus, error)
+	Accept(context.Context, contractv2.ConfigurationAcceptanceRequest) (contractv2.ConfigurationStatus, error)
+	MutateRepository(context.Context, contractv2.ConfigurationRepositoryMutationRequest) (contractv2.ConfigurationStatus, error)
+}
+
+type CleanupActions interface {
+	Plan(context.Context, contractv2.CleanupPlanRequest) (contractv2.CleanupPlan, error)
+	Apply(context.Context, contractv2.CleanupApplyRequest) (contractv2.CleanupResult, error)
 }
 
 type HandlerConfig struct {
@@ -48,11 +61,15 @@ type HandlerConfig struct {
 	EnvironmentActions   EnvironmentActions
 	WorkspaceActions     WorkspaceActions
 	OperationDiagnostics OperationDiagnosticsSource
+	Configuration        ConfigurationActions
+	Cleanup              CleanupActions
+	ProfileActions       ProfileActions
+	Occupancy            OccupancyActions
 }
 
 type errorResponse struct {
 	SchemaVersion int                      `json:"schemaVersion"`
-	Error         contractv1.ContractError `json:"error"`
+	Error         contractv2.ContractError `json:"error"`
 }
 
 func NewHTTPHandler(config HandlerConfig) (http.Handler, error) {
@@ -98,6 +115,9 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		writeError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required", false)
 		return
 	}
+	if routeRequiresAuthentication(request.URL.Path) && enforceSchemaDeclaration(response, request) {
+		return
+	}
 
 	switch request.URL.Path {
 	case "/handshake":
@@ -122,7 +142,19 @@ func (handler *apiHandler) serveHTTP(response http.ResponseWriter, request *http
 		}
 		handler.events(response, request)
 	default:
+		if handler.cleanup(response, request) {
+			return
+		}
+		if handler.profileActions(response, request) {
+			return
+		}
+		if handler.configuration(response, request) {
+			return
+		}
 		if handler.operationDiagnostics(response, request) {
+			return
+		}
+		if handler.occupancy(response, request) {
 			return
 		}
 		if handler.mutation(response, request) {
@@ -190,11 +222,11 @@ func (handler *apiHandler) operationDiagnostics(response http.ResponseWriter, re
 }
 
 func (handler *apiHandler) handshake(response http.ResponseWriter) {
-	writeJSON(response, http.StatusOK, contractv1.Handshake{
-		SchemaVersion:           contractv1.SchemaVersion,
+	writeJSON(response, http.StatusOK, contractv2.Handshake{
+		SchemaVersion:           contractv2.SchemaVersion,
 		DaemonInstanceID:        handler.config.DaemonInstanceID,
 		DaemonVersion:           handler.config.DaemonVersion,
-		SupportedSchemaVersions: []int{contractv1.SchemaVersion},
+		SupportedSchemaVersions: []int{contractv2.SchemaVersion},
 	})
 }
 
@@ -204,7 +236,7 @@ func (handler *apiHandler) status(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusServiceUnavailable, "STATUS_UNAVAILABLE", "Status is not ready", true)
 		return
 	}
-	if snapshot.SchemaVersion != contractv1.SchemaVersion ||
+	if snapshot.SchemaVersion != contractv2.SchemaVersion ||
 		snapshot.Daemon.InstanceID != handler.config.DaemonInstanceID ||
 		snapshot.Daemon.Version != handler.config.DaemonVersion {
 		writeError(response, http.StatusServiceUnavailable, "STATUS_UNAVAILABLE", "Status belongs to an incompatible daemon instance", true)
@@ -241,12 +273,12 @@ func tokenMatches(request *http.Request, expectedToken string) bool {
 }
 
 func writeError(response http.ResponseWriter, status int, code, message string, retryable bool) {
-	writeContractError(response, status, contractv1.ContractError{Code: code, Message: message, Retryable: retryable})
+	writeContractError(response, status, contractv2.ContractError{Code: code, Message: message, Retryable: retryable})
 }
 
-func writeContractError(response http.ResponseWriter, status int, contractError contractv1.ContractError) {
+func writeContractError(response http.ResponseWriter, status int, contractError contractv2.ContractError) {
 	writeJSON(response, status, errorResponse{
-		SchemaVersion: contractv1.SchemaVersion,
+		SchemaVersion: contractv2.SchemaVersion,
 		Error:         contractError,
 	})
 }

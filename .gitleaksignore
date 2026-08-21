@@ -2,3 +2,7 @@
 ecb64913dccdc9266c44df41fc9ad23e6171bc64:app/Sources/SwitchyardContractCheck/main.swift:generic-api-key:222
 e27f02801636b9f4d0f097b093598e195acd51a8:internal/daemon/environment_actions_test.go:generic-api-key:315
 faae437fe300140785f72eb2d7dc82c0888b98cd:app/Sources/SwitchyardContractCheck/main.swift:generic-api-key:222
+# Reviewed synthetic Stripe-shaped fixture for the diagnostics-redaction test; the
+# redactor matches the credential name, and the value never existed outside this test.
+74be96aaf1e9a8178c31292e185d20feaa5a2cde:internal/daemon/operation_diagnostics_test.go:generic-api-key:271
+3b342d61cee79c3d040b8786f3549487d28b5293:internal/daemon/operation_diagnostics_test.go:generic-api-key:271

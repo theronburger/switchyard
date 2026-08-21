@@ -3,7 +3,7 @@ import SwitchyardKit
 
 // Dependency-free conformance and lifecycle suite. This machine's Command
 // Line Tools toolchain ships without XCTest, so verification runs as a plain
-// executable: `SwitchyardContractCheck contracts/v1/fixtures/status.json`.
+// executable: `SwitchyardContractCheck contracts/v2/fixtures/status.json`.
 
 struct CheckError: Error, CustomStringConvertible {
     let description: String
@@ -239,6 +239,7 @@ actor StubWorkspaceActions: WorkspaceActionSubmitting {
     private(set) var creates: [CreateWorktreeRequest] = []
     private(set) var adopts: [AdoptWorktreeRequest] = []
     private(set) var archives: [ArchiveWorktreeRequest] = []
+    private(set) var prepares: [PrepareWorktreeRequest] = []
 
     init(receipt: MutationReceipt) {
         self.receipt = receipt
@@ -256,6 +257,11 @@ actor StubWorkspaceActions: WorkspaceActionSubmitting {
 
     func adoptWorktree(_ request: AdoptWorktreeRequest) async throws -> MutationReceipt {
         adopts.append(request)
+        return receipt
+    }
+
+    func prepareWorktree(_ request: PrepareWorktreeRequest) async throws -> MutationReceipt {
+        prepares.append(request)
         return receipt
     }
 }
@@ -397,7 +403,7 @@ runner.check("mutation fixtures decode across the Swift boundary") {
     try expect(start.worktreeId.hasPrefix("worktree_"), "start worktree id did not decode")
     try expect(start.targetId == "testing", "start target did not decode")
     try expect(start.confirmedTargetId == nil, "safe fixture unexpectedly requires confirmation")
-    try expect(start.serviceIds == ["organizer", "nonprofit-service"], "start service selection changed")
+    try expect(start.serviceIds == ["storefront", "billing-service"], "start service selection changed")
 
     let stop = try decoder.decode(
         StopEnvironmentRequest.self,
@@ -414,6 +420,97 @@ runner.check("mutation fixtures decode across the Swift boundary") {
     try expect(receipt.environmentId == "environment_daad7f2bc132", "receipt environment changed")
 }
 
+runner.check("configuration, profile-action, and diagnostics fixtures decode across the Swift boundary") {
+    let fixtures = fixtureURL.deletingLastPathComponent()
+    let decoder = ContractDecoder()
+
+    let configuration = try decoder.decode(
+        ConfigurationStatus.self,
+        from: Data(contentsOf: fixtures.appending(path: "configuration-status.json"))
+    )
+    try expect(configuration.state == .pending, "configuration fixture state changed")
+    try expect(configuration.acceptedRevision == 3, "configuration fixture revision changed")
+    try expect(configuration.candidate?.repositoryDigests["sample"] != nil, "candidate repository digest missing")
+    try expect(configuration.desired?.repositories.map(\.key) == ["sample"], "desired repositories changed")
+    try expect(configuration.desired?.sourceDigest?.hasPrefix("sha256:") == true, "desired digest missing")
+
+    let actions = try decoder.decode(
+        ProfileActionList.self,
+        from: Data(contentsOf: fixtures.appending(path: "profile-action-list.json"))
+    )
+    try expect(actions.actions.count == 3, "profile action count changed")
+    try expect(actions.actions[0].kind == .lifecycle && actions.actions[0].lifecycle == .prepare, "lifecycle action changed")
+    try expect(actions.actions[1].kind == .command && actions.actions[1].lifecycle == nil, "command action changed")
+    try expect(actions.actions[2].risk == .remoteWrite && actions.actions[2].requiresConfirmation, "remote-write action changed")
+    try expect(actions.actions.allSatisfy { $0.scope != .unknown && $0.risk != .unknown }, "action vocabulary drifted")
+
+    let run = try decoder.decode(
+        RunProfileActionRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "run-profile-action-request.json"))
+    )
+    try expect(run.actionId == "publish-preview" && run.confirmedActionId == run.actionId, "run request confirmation changed")
+    try expect(run.worktreeId != nil && run.environmentId == nil && run.serviceId == nil, "run request scope changed")
+    let encodedRun = try JSONEncoder().encode(RunProfileActionRequest(
+        requestId: run.requestId, idempotencyKey: run.idempotencyKey, repositoryId: run.repositoryId,
+        actionId: run.actionId, worktreeId: run.worktreeId, confirmedActionId: run.confirmedActionId
+    ))
+    let reRun = try decoder.decode(RunProfileActionRequest.self, from: encodedRun)
+    try expect(reRun == run, "run request does not round-trip")
+
+    let diagnostics = try decoder.decode(
+        OperationDiagnostics.self,
+        from: Data(contentsOf: fixtures.appending(path: "operation-diagnostics.json"))
+    )
+    try expect(diagnostics.excerpts.map(\.stream) == ["stdout", "stderr"], "diagnostics streams changed")
+    try expect(diagnostics.excerpts[1].truncated && diagnostics.excerpts[1].redacted, "diagnostics flags changed")
+    try expect(!diagnostics.logReference.hasPrefix("/"), "log reference must stay opaque")
+}
+
+runner.check("occupancy and upgrade fixtures decode across the Swift boundary") {
+    let fixtures = fixtureURL.deletingLastPathComponent()
+    let decoder = ContractDecoder()
+    let lease = try decoder.decode(
+        OccupancyLease.self,
+        from: Data(contentsOf: fixtures.appending(path: "occupancy-lease.json"))
+    )
+    try expect(lease.state == .held && lease.releasedAt == nil, "occupancy lease fixture must be held")
+    let acquire = try decoder.decode(
+        AcquireOccupancyRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "acquire-occupancy-request.json"))
+    )
+    let release = try decoder.decode(
+        ReleaseOccupancyRequest.self,
+        from: Data(contentsOf: fixtures.appending(path: "release-occupancy-request.json"))
+    )
+    try expect(acquire.worktreeId == lease.worktreeId && release.leaseId == lease.id, "occupancy fixtures disagree")
+    try expect(acquire.holderKind == lease.holderKind && acquire.holderLabel == lease.holderLabel, "occupancy holder drifted")
+    let reAcquire = try decoder.decode(AcquireOccupancyRequest.self, from: JSONEncoder().encode(AcquireOccupancyRequest(
+        requestId: acquire.requestId, worktreeId: acquire.worktreeId, holderKind: acquire.holderKind, holderLabel: acquire.holderLabel
+    )))
+    try expect(reAcquire == acquire, "acquire request does not round-trip")
+
+    // The status fixture's worktree carries the lease once attached, and a
+    // worktree without the field reports no occupancy rather than failing.
+    var root = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
+    var repositories = root["repositories"] as! [[String: Any]]
+    var worktrees = repositories[0]["worktrees"] as! [[String: Any]]
+    worktrees[0]["occupancy"] = [try JSONSerialization.jsonObject(with: Data(contentsOf: fixtures.appending(path: "occupancy-lease.json")))]
+    repositories[0]["worktrees"] = worktrees
+    root["repositories"] = repositories
+    let occupied = try decoder.decode(StatusSnapshot.self, from: JSONSerialization.data(withJSONObject: root))
+    try expect(occupied.repositories[0].worktrees[0].heldOccupancy.map(\.id) == [lease.id], "occupancy did not attach to the worktree")
+    let plain = try decoder.decode(StatusSnapshot.self, from: fixtureData)
+    try expect(plain.repositories[0].worktrees[0].heldOccupancy.isEmpty, "absent occupancy must decode as empty")
+
+    let upgrade = try decoder.decode(
+        ContractErrorEnvelope.self,
+        from: Data(contentsOf: fixtures.appending(path: "upgrade-required-error.json"))
+    )
+    try expect(upgrade.error.code == DaemonClient.upgradeRequiredCode, "upgrade fixture code changed")
+    try expect(upgrade.error.currentState == "2" && upgrade.error.requestedState == "1", "upgrade fixture context changed")
+    try expect(upgrade.error.nextAction == "upgrade_client" && !upgrade.error.retryable, "upgrade fixture action changed")
+}
+
 runner.check("Swift mutation requests encode canonical non-null service arrays") {
     let request = StartEnvironmentRequest(
         requestId: "request_test",
@@ -421,12 +518,12 @@ runner.check("Swift mutation requests encode canonical non-null service arrays")
         worktreeId: "worktree_test",
         targetId: "demo",
         confirmedTargetId: "demo",
-        serviceIds: ["organizer"]
+        serviceIds: ["storefront"]
     )
     let encoded = try JSONEncoder().encode(request)
     let value = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     try expect(value?["schemaVersion"] as? Int == contractSchemaVersion, "encoded schema changed")
-    try expect(value?["serviceIds"] as? [String] == ["organizer"], "services did not encode as an array")
+    try expect(value?["serviceIds"] as? [String] == ["storefront"], "services did not encode as an array")
     try expect(value?["targetId"] as? String == "demo", "target did not encode")
     try expect(value?["confirmedTargetId"] as? String == "demo", "target confirmation did not encode")
     try expect(value?["expectedEnvironmentRevision"] == nil, "nil revision did not stay omitted")
@@ -439,7 +536,7 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(snapshot.daemon.state == .ready, "daemon state did not decode")
     try expect(snapshot.repositories.count == 1, "expected one repository")
     let repository = snapshot.repositories[0]
-    try expect(repository.adapter == "marketplace", "repository adapter did not decode")
+    try expect(repository.profileKey == "sample", "repository profile key did not decode")
     try expect(repository.observation?.stale == false, "repository observation freshness did not decode")
     try expect(repository.runtime?.defaultTargetId == "testing", "repository runtime default did not decode")
     try expect(repository.runtime?.targets.count == 4, "repository targets did not decode")
@@ -447,7 +544,7 @@ runner.check("canonical fixture decodes with expected fields") {
         repository.runtime?.targets.filter(\.warnOnStart).map(\.id) == ["demo", "production"],
         "warn-on-start target policy did not decode"
     )
-    try expect(repository.runtime?.services.count == 18, "repository service catalog did not decode")
+    try expect(repository.runtime?.services.count == 8, "repository service catalog did not decode")
     try expect(repository.worktrees.count == 1, "expected one worktree")
     try expect(!repository.worktrees[0].git.isClean, "canonical worktree should report fixture changes")
     try expect(repository.worktrees[0].git.hasTrackedChanges, "canonical tracked-change state did not decode")
@@ -472,30 +569,30 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(environment.observedState == .running, "observed state did not decode")
     try expect(environment.services.count == 2, "expected two services")
 
-    guard let organizer = environment.services.first(where: { $0.id == "organizer" }) else {
-        throw CheckError("organizer service is missing")
+    guard let storefront = environment.services.first(where: { $0.id == "storefront" }) else {
+        throw CheckError("storefront service is missing")
     }
-    try expect(organizer.run?.cpuPercent == 8.2, "organizer run cpu did not decode")
-    try expect(organizer.run?.processCount == 7, "organizer run process count did not decode")
+    try expect(storefront.run?.cpuPercent == 8.2, "storefront run cpu did not decode")
+    try expect(storefront.run?.processCount == 7, "storefront run process count did not decode")
     try expect(
-        organizer.run?.sourceRevision == "0123456789abcdef0123456789abcdef01234567",
-        "organizer source revision did not decode"
+        storefront.run?.sourceRevision == "0123456789abcdef0123456789abcdef01234567",
+        "storefront source revision did not decode"
     )
-    try expect(organizer.run?.sourceHasTrackedChanges == true, "organizer source dirty state did not decode")
+    try expect(storefront.run?.sourceHasTrackedChanges == true, "storefront source dirty state did not decode")
 
-    guard let nonprofit = environment.services.first(where: { $0.id == "nonprofit-service" }) else {
-        throw CheckError("nonprofit service is missing")
+    guard let billing = environment.services.first(where: { $0.id == "billing-service" }) else {
+        throw CheckError("billing service is missing")
     }
-    try expect(nonprofit.observedState == .exited, "nonprofit observed state did not decode")
-    try expect(nonprofit.health == .unhealthy, "nonprofit health did not decode")
-    try expect(nonprofit.run?.restartCount == 2, "nonprofit restart count did not decode")
+    try expect(billing.observedState == .exited, "billing observed state did not decode")
+    try expect(billing.health == .unhealthy, "billing health did not decode")
+    try expect(billing.run?.restartCount == 2, "billing restart count did not decode")
 
     try expect(environment.portLeases.count == 3, "expected three port leases")
-    try expect(environment.portLease(withId: "port_organizer_http")?.port == 7005, "organizer port did not decode")
-    try expect(environment.portLeases(for: nonprofit).count == 2, "nonprofit port leases did not resolve")
+    try expect(environment.portLease(withId: "port_storefront_http")?.port == 7005, "storefront port did not decode")
+    try expect(environment.portLeases(for: billing).count == 2, "billing port leases did not resolve")
     try expect(environment.infrastructureLeases.first?.ownership == "owned", "infrastructure ownership did not decode")
     try expect(environment.urls.count == 2, "expected two URLs")
-    try expect(environment.sortedURLs.first?.service == "nonprofit-service", "URL ordering is not deterministic")
+    try expect(environment.sortedURLs.first?.service == "billing-service", "URL ordering is not deterministic")
     try expect(environment.resources.memoryBytes == 1_400_000_000, "aggregate memory did not decode")
 
     guard let worktreeChanges = snapshot.repositories.first?.worktrees.first?.changes else {
@@ -503,11 +600,11 @@ runner.check("canonical fixture decodes with expected fields") {
     }
     try expect(worktreeChanges.committed.additions == 2_031, "committed additions did not decode")
     try expect(worktreeChanges.uncommitted.deletions == 3, "uncommitted deletions did not decode")
-    try expect(worktreeChanges.service("organizer")?.committed.files == 11, "service attribution did not decode")
+    try expect(worktreeChanges.service("storefront")?.committed.files == 11, "service attribution did not decode")
     try expect(worktreeChanges.sharedCommitted.additions == 30, "shared changes did not decode")
 
     try expect(snapshot.operations.first?.state == .succeeded, "operation state did not decode")
-    try expect(snapshot.operations.first?.runId == organizer.run?.id, "operation run identity did not decode")
+    try expect(snapshot.operations.first?.runId == storefront.run?.id, "operation run identity did not decode")
     try expect(snapshot.alerts.first?.code == "SERVICE_EXITED", "alert code did not decode")
     try expect(snapshot.alerts.first?.severity == .error, "alert severity did not decode")
 }
@@ -526,7 +623,7 @@ runner.check("canonical fixture derivations are correct") {
     guard let environment = snapshot.environments.first else {
         throw CheckError("canonical environment is missing")
     }
-    try expect(snapshot.repository(for: environment)?.displayName == "marketplace", "repository lookup")
+    try expect(snapshot.repository(for: environment)?.displayName == "sample", "repository lookup")
     try expect(snapshot.worktree(for: environment)?.branch == "feature/demo-environment", "worktree lookup")
     try expect(snapshot.alerts(forEnvironment: environment.id).count == 1, "environment alert lookup")
     try expect(snapshot.operations(forEnvironment: environment.id).count == 1, "environment operation lookup")
@@ -587,7 +684,7 @@ runner.check("failed ownership recovery states remain explicit and actionable") 
 runner.check("additive fields are ignored") {
     let json = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "snapshotRevision": 3,
       "generatedAt": "2026-08-14T08:00:00Z",
       "futureTopLevelField": {"nested": true},
@@ -612,7 +709,7 @@ runner.check("additive fields are ignored") {
 runner.check("fractional RFC 3339 timestamps decode") {
     let json = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "endpoint": "http://127.0.0.1:49402",
       "daemonInstanceId": "daemon_fractional",
       "daemonVersion": "0.1.0-dev",
@@ -636,7 +733,7 @@ runner.check("environment context footer decodes with caps") {
       "desiredState": "running",
       "observedState": "running",
       "health": "degraded",
-      "urls": {"organizer": "http://127.0.0.1:7005"},
+      "urls": {"storefront": "http://127.0.0.1:7005"},
       "attentionCount": 5,
       "attention": [
         {"severity": "error", "code": "SERVICE_CRASHED", "summary": "one"},
@@ -656,7 +753,7 @@ runner.check("environment context footer decodes with caps") {
 // MARK: - Endpoint descriptor and token
 
 let sampleDescriptor = EndpointDescriptor(
-    schemaVersion: 1,
+    schemaVersion: contractSchemaVersion,
     transport: "http",
     host: "127.0.0.1",
     port: 49402,
@@ -685,23 +782,23 @@ runner.check("endpoint descriptor validates invariants") {
     }
 
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 2, transport: "http", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
-        .unsupportedSchemaVersion(2)
+        EndpointDescriptor(schemaVersion: contractSchemaVersion + 1, transport: "http", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
+        .unsupportedSchemaVersion(contractSchemaVersion + 1)
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "unix", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "unix", host: "127.0.0.1", port: 1, daemonVersion: "x", instanceId: "y"),
         .unsupportedTransport("unix")
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "http", host: "192.168.1.5", port: 1, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "http", host: "192.168.1.5", port: 1, daemonVersion: "x", instanceId: "y"),
         .nonLoopbackHost("192.168.1.5")
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "http", host: "localhost", port: 1, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "http", host: "localhost", port: 1, daemonVersion: "x", instanceId: "y"),
         .nonLoopbackHost("localhost")
     )
     try expectValidationError(
-        EndpointDescriptor(schemaVersion: 1, transport: "http", host: "127.0.0.1", port: 0, daemonVersion: "x", instanceId: "y"),
+        EndpointDescriptor(schemaVersion: contractSchemaVersion, transport: "http", host: "127.0.0.1", port: 0, daemonVersion: "x", instanceId: "y"),
         .invalidPort(0)
     )
     try expect(!EndpointDescriptor.isLoopback("127.5.5.5"), "only the canonical IPv4 loopback is allowed")
@@ -717,7 +814,7 @@ runner.check("endpoint descriptor loader enforces owner-only files") {
 
     let descriptorJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "endpoint": "http://127.0.0.1:49402",
       "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
       "daemonVersion": "0.1.0-dev",
@@ -951,7 +1048,7 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         if command.executableURL == launchctlURL, command.arguments.first == "print" {
@@ -979,7 +1076,10 @@ await runner.checkAsync("LaunchAgent install is exact atomic and secret-free") {
         dictionary["AssociatedBundleIdentifiers"] as? [String] == ["com.theronburger.switchyard"],
         "LaunchAgent is not attributed to the main app bundle"
     )
-    try expect(dictionary["EnvironmentVariables"] == nil, "LaunchAgent must not carry environment secrets")
+    try expect(
+        dictionary["EnvironmentVariables"] as? [String: String] == ["SWITCHYARD_CHANNEL": "release"],
+        "LaunchAgent build channel is missing or unexpected"
+    )
     let plistText = String(decoding: plan.propertyList, as: UTF8.self).lowercased()
     try expect(!plistText.contains("token") && !plistText.contains("authorization"), "LaunchAgent plist contains credentials")
 
@@ -1021,7 +1121,7 @@ await runner.checkAsync("changed LaunchAgent plist reloads only the owned servic
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1074,7 +1174,7 @@ await runner.checkAsync("unchanged LaunchAgent install does not rewrite owned fi
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1138,7 +1238,7 @@ await runner.checkAsync("changed packaged helper is detected atomically replaced
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1223,7 +1323,7 @@ await runner.checkAsync("foreign sy command is refused without mutation") {
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1259,7 +1359,7 @@ await runner.checkAsync("outdated plist is replaced without carrying credentials
         if command.arguments == ["version"] {
             return ExactCommandResult(
                 exitCode: 0,
-                standardOutput: Data("{\"schemaVersion\":1,\"version\":\"0.1.0-dev\"}".utf8)
+                standardOutput: Data("{\"schemaVersion\":\(contractSchemaVersion),\"version\":\"0.1.0-dev\"}".utf8)
             )
         }
         return ExactCommandResult(exitCode: 0)
@@ -1611,7 +1711,7 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let requestId = "request_app_start"
     let receipt = """
-    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_app_start",
+    {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_app_start",
      "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_app_start"}
     """
     let transport = MockTransport { request in
@@ -1627,7 +1727,7 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
         try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
         try expect(body?["targetId"] as? String == "production", "target was not encoded")
         try expect(body?["confirmedTargetId"] as? String == "production", "target confirmation was not encoded")
-        try expect(body?["serviceIds"] as? [String] == ["organizer", "nonprofit-service"], "services were not encoded")
+        try expect(body?["serviceIds"] as? [String] == ["storefront", "billing-service"], "services were not encoded")
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
     }
     let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
@@ -1637,7 +1737,7 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
         worktreeId: "worktree_app",
         targetId: "production",
         confirmedTargetId: "production",
-        serviceIds: ["organizer", "nonprofit-service"]
+        serviceIds: ["storefront", "billing-service"]
     ))
     try expect(result.operationId == "operation_app_start", "mutation receipt did not decode")
 }
@@ -1651,7 +1751,7 @@ await runner.checkAsync("daemon client encodes revisioned stops and rejects host
         let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
         try expect(body?["expectedEnvironmentRevision"] as? Int == 17, "stop revision was not encoded")
         let receipt = """
-        {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_app_stop",
+        {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_app_stop",
          "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_app"}
         """
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
@@ -1692,7 +1792,7 @@ await runner.checkAsync("daemon client submits managed worktree mutations and re
             try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
         }
         let receipt = """
-        {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_workspace",
+        {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_workspace",
          "acceptedAt":"2026-08-17T16:00:00Z"}
         """
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
@@ -1738,11 +1838,11 @@ await runner.checkAsync("live workspace actions handshake before mutation") {
     let paths = LockedRecorder<String>()
     let requestId = "request_verified_workspace"
     let handshake = """
-    {"schemaVersion":1,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
-     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+    {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
     """
     let receipt = """
-    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_verified_workspace",
+    {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_verified_workspace",
      "acceptedAt":"2026-08-17T16:00:00Z"}
     """
     let client = try DaemonClient(
@@ -1770,11 +1870,11 @@ await runner.checkAsync("live environment actions handshake before mutation") {
     let paths = LockedRecorder<String>()
     let requestId = "request_verified_start"
     let handshake = """
-    {"schemaVersion":1,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
-     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+    {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
     """
     let receipt = """
-    {"schemaVersion":1,"requestId":"\(requestId)","operationId":"operation_verified_start",
+    {"schemaVersion":2,"requestId":"\(requestId)","operationId":"operation_verified_start",
      "acceptedAt":"2026-08-14T10:00:00Z","environmentId":"environment_verified"}
     """
     let client = try DaemonClient(
@@ -1793,7 +1893,7 @@ await runner.checkAsync("live environment actions handshake before mutation") {
         requestId: requestId,
         idempotencyKey: "start_verified",
         worktreeId: "worktree_verified",
-        serviceIds: ["organizer"]
+        serviceIds: ["storefront"]
     ))
     try expect(paths.values == ["/handshake", "/v1/environments"], "mutation did not verify the live daemon first")
 }
@@ -1832,6 +1932,147 @@ await runner.checkAsync("daemon client maps the stable upgrade-required error") 
         }
         try expect(message == "daemon 0.1.0 requires app 0.2.0", "upgrade message did not survive")
     }
+}
+
+await runner.checkAsync("daemon client declares its exact schema version on every request") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let declared = LockedRecorder<String>()
+    let handshake = """
+    {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+     "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
+    """
+    let receipt = """
+    {"schemaVersion":2,"requestId":"request_declared","operationId":"operation_declared",
+     "acceptedAt":"2026-08-14T10:00:00Z"}
+    """
+    let transport = MockTransport { request in
+        declared.append(request.value(forHTTPHeaderField: DaemonClient.schemaVersionHeader) ?? "")
+        let isHandshake = request.url?.path() == "/handshake"
+        return (Data((isHandshake ? handshake : receipt).utf8), httpResponse(for: request, status: isHandshake ? 200 : 202))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    _ = try await client.handshake()
+    _ = try await client.prepareWorktree(PrepareWorktreeRequest(
+        requestId: "request_declared", idempotencyKey: "prepare:declared", worktreeId: "worktree_app"
+    ))
+    try expect(declared.values == ["2", "2"], "GET and POST must both declare schema version 2, got \(declared.values)")
+}
+
+await runner.checkAsync("daemon client maps HTTP 426 to upgradeRequired even without a readable envelope") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let envelope = """
+    {"schemaVersion":2,"error":{"code":"UPGRADE_REQUIRED","message":"This client's contract schema version is not supported by the daemon.","retryable":false,"currentState":"3","requestedState":"2","nextAction":"upgrade_client"}}
+    """
+    for body in [envelope, "not json", "{\"error\":{\"code\":\"OTHER\",\"message\":\"x\",\"retryable\":false}}"] {
+        let transport = MockTransport { request in
+            (Data(body.utf8), httpResponse(for: request, status: 426))
+        }
+        let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+        do {
+            _ = try await client.status()
+            throw CheckError("expected upgradeRequired for 426")
+        } catch let error as DaemonClientError {
+            guard case .upgradeRequired(let message) = error else {
+                throw CheckError("expected upgradeRequired for 426, got \(error)")
+            }
+            if body == envelope {
+                try expect(message == "This client's contract schema version is not supported by the daemon.", "daemon message did not survive")
+            }
+        }
+    }
+}
+
+await runner.checkAsync("handshake schema mismatches are upgrade problems, not malformed responses") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let cases: [(String, Bool)] = [
+        ("""
+        {"schemaVersion":3,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+         "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[3]}
+        """, true),
+        ("""
+        {"schemaVersion":2,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+         "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[1]}
+        """, true),
+        ("""
+        {"schemaVersion":0,"daemonInstanceId":"daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
+         "daemonVersion":"0.1.0-dev","supportedSchemaVersions":[2]}
+        """, false),
+    ]
+    for (body, upgrade) in cases {
+        let transport = MockTransport { request in
+            (Data(body.utf8), httpResponse(for: request, status: 200))
+        }
+        let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+        do {
+            _ = try await client.handshake()
+            throw CheckError("expected handshake failure")
+        } catch let error as DaemonClientError {
+            switch (error, upgrade) {
+            case (.upgradeRequired, true), (.malformedResponse, false):
+                break
+            default:
+                throw CheckError("unexpected handshake mapping \(error) for upgrade=\(upgrade)")
+            }
+        }
+    }
+}
+
+runner.check("a descriptor from another contract generation routes to upgradeRequired") {
+    let error = RuntimeConnectionError.descriptor(.unsupportedSchemaVersion(1))
+    try expect(error.requiresUpgrade, "unsupported schema descriptor must require an upgrade")
+    try expect(!RuntimeConnectionError.descriptor(.malformed("x")).requiresUpgrade, "malformed descriptors are not upgrade problems")
+    try expect(!error.retryableWhileDaemonStarts, "an upgrade requirement must not be retried as a startup race")
+
+    var machine = DaemonLifecycleMachine(state: .locatingEndpoint)
+    try machine.handle(.endpointUpgradeRequired(message: "update"))
+    try expect(machine.state == .upgradeRequired(message: "update"), "descriptor mismatch should reach upgradeRequired")
+    try expect(machine.state.needsUserAction && machine.state.canRepair, "upgradeRequired needs the user and offers repair")
+}
+
+await runner.checkAsync("daemon client acquires and releases occupancy through exact routes and refuses unsafe holders") {
+    let token = try BearerToken(rawValue: sampleTokenRaw)
+    let paths = LockedRecorder<String>()
+    let transport = MockTransport { request in
+        paths.append("\(request.httpMethod ?? "") \(request.url?.path() ?? "")")
+        let body: String
+        if request.url?.path().hasSuffix("/release") == true {
+            body = """
+            {"id":"occupancy_01","worktreeId":"worktree_app","holderKind":"agent-task","holderLabel":"Codex task",
+             "state":"released","acquiredAt":"2026-08-21T09:05:00Z","releasedAt":"2026-08-21T09:45:00Z"}
+            """
+        } else {
+            body = """
+            {"id":"occupancy_01","worktreeId":"worktree_app","holderKind":"agent-task","holderLabel":"Codex task",
+             "state":"held","acquiredAt":"2026-08-21T09:05:00Z"}
+            """
+        }
+        return (Data(body.utf8), httpResponse(for: request, status: 200))
+    }
+    let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
+    let lease = try await client.acquireOccupancy(AcquireOccupancyRequest(
+        requestId: "request_occupancy", worktreeId: "worktree_app", holderKind: "agent-task", holderLabel: "Codex task"
+    ))
+    try expect(lease.state == .held, "acquired lease must be held")
+    let released = try await client.releaseOccupancy(ReleaseOccupancyRequest(
+        requestId: "request_release", worktreeId: "worktree_app", leaseId: lease.id
+    ))
+    try expect(released.state == .released, "released lease must be released")
+    try expect(
+        paths.values == ["POST /v1/worktrees/worktree_app/occupancy", "POST /v1/worktrees/worktree_app/occupancy/occupancy_01/release"],
+        "occupancy routes changed: \(paths.values)"
+    )
+
+    for (kind, label) in [("Codex Desktop", "Codex task"), ("agent-", "Codex task"), ("agent-task", "/Users/someone"), ("agent-task", "")] {
+        do {
+            _ = try await client.acquireOccupancy(AcquireOccupancyRequest(
+                requestId: "request_bad", worktreeId: "worktree_app", holderKind: kind, holderLabel: label
+            ))
+            throw CheckError("unsafe holder \(kind)/\(label) reached the daemon")
+        } catch let error as DaemonClientError {
+            guard case .invalidRequest = error else { throw CheckError("expected invalidRequest, got \(error)") }
+        }
+    }
+    try expect(paths.values.count == 2, "unsafe occupancy requests must not be sent")
 }
 
 await runner.checkAsync("daemon client surfaces contract errors") {
@@ -2003,8 +2244,8 @@ runner.check("lifecycle states describe themselves") {
 await runner.checkAsync("lifecycle controller waits boundedly then performs live handshake and status") {
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let handshakeBody = """
-    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
-     "supportedSchemaVersions": [1]}
+    {"schemaVersion": 2, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions":[2]}
     """
     let client = try DaemonClient(
         descriptor: sampleDescriptor,
@@ -2058,8 +2299,8 @@ await runner.checkAsync("lifecycle controller refuses an invalid runtime without
 await runner.checkAsync("lifecycle refresh automatically reinstalls an outdated helper") {
     let token = try BearerToken(rawValue: sampleTokenRaw)
     let handshakeBody = """
-    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
-     "supportedSchemaVersions": [1]}
+    {"schemaVersion": 2, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions":[2]}
     """
     let connection = DaemonConnection(
         descriptor: sampleDescriptor,
@@ -2127,7 +2368,7 @@ await runner.checkAsync("live doctor passes with valid files and a responsive da
     defer { try? fileManager.removeItem(at: directory) }
 
     let descriptorJSON = """
-    {"schemaVersion": 1, "endpoint": "http://127.0.0.1:49402",
+    {"schemaVersion": 2, "endpoint": "http://127.0.0.1:49402",
      "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev", "pid": 4242,
      "processStartedAt": "2026-08-14T09:00:00Z", "generatedAt": "2026-08-14T09:00:01Z"}
     """
@@ -2147,8 +2388,8 @@ await runner.checkAsync("live doctor passes with valid files and a responsive da
     )
 
     let handshakeBody = """
-    {"schemaVersion": 1, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
-     "supportedSchemaVersions": [1]}
+    {"schemaVersion": 2, "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8", "daemonVersion": "0.1.0-dev",
+     "supportedSchemaVersions":[2]}
     """
     let serviceManager = StubServiceManager(status: .enabled)
     let doctor = LiveConnectionDoctor(
@@ -2187,6 +2428,47 @@ runner.check("app launch defaults live and fixtures require an explicit switch")
     try expect(
         AppLaunchConfiguration.resolve(arguments: ["Switchyard"], environment: ["SWITCHYARD_FIXTURE": "failure"]) == .fixture(.failure),
         "fixture environment switch was not honored"
+    )
+}
+
+runner.check("development channel is isolated from release paths and identity") {
+    try expect(
+        SwitchyardChannel.resolve(
+            infoDictionary: ["SwitchyardChannel": "development"],
+            environment: ["SWITCHYARD_CHANNEL": "release"]
+        ) == .development,
+        "a packaged development app could be redirected to the release channel"
+    )
+    try expect(
+        SwitchyardChannel.resolve(infoDictionary: nil, environment: ["SWITCHYARD_CHANNEL": "release"]) == .release,
+        "an unpackaged release-channel override was ignored"
+    )
+    let developmentPaths = LaunchAgentPaths.standard(channel: .development)
+    let releasePaths = LaunchAgentPaths.standard(channel: .release)
+    try expect(developmentPaths.installedBinaryURL != releasePaths.installedBinaryURL, "helper paths overlap")
+    try expect(developmentPaths.launchAgentURL != releasePaths.launchAgentURL, "LaunchAgent paths overlap")
+
+    let developmentLocation = DaemonEndpointLocation.standard(channel: .development)
+    let releaseLocation = DaemonEndpointLocation.standard(channel: .release)
+    try expect(developmentLocation != releaseLocation, "runtime connection paths overlap")
+
+    let plan = try LaunchAgentPlanBuilder.make(
+        binary: DaemonBinary(sourceURL: URL(fileURLWithPath: "/tmp/SwitchyardDevelopmentDaemon")),
+        paths: developmentPaths,
+        userID: 501,
+        channel: .development
+    )
+    let plist = try PropertyListSerialization.propertyList(from: plan.propertyList, options: [], format: nil)
+    guard let dictionary = plist as? [String: Any] else {
+        throw CheckError("development LaunchAgent plist is not a dictionary")
+    }
+    try expect(
+        dictionary["Label"] as? String == SwitchyardChannel.development.launchAgentLabel,
+        "development LaunchAgent uses the release label"
+    )
+    try expect(
+        dictionary["AssociatedBundleIdentifiers"] as? [String] == [SwitchyardChannel.development.appBundleIdentifier],
+        "development LaunchAgent is attributed to the release app"
     )
 }
 
@@ -2259,7 +2541,7 @@ await runner.checkAsync("live app model keeps start and stop transitions scoped 
         worktreeId: snapshot.repositories[0].worktrees[0].id,
         targetId: "demo",
         confirmedTargetId: "demo",
-        serviceIds: ["organizer", "nonprofit-service"]
+        serviceIds: ["storefront", "billing-service"]
     )
     guard case .accepted(let start) = model.environmentActionState else {
         throw CheckError("accepted start receipt was not exposed")
@@ -2272,7 +2554,7 @@ await runner.checkAsync("live app model keeps start and stop transitions scoped 
     try expect(starts.count == 1, "start action was not submitted once")
     try expect(starts[0].targetId == "demo", "selected target changed")
     try expect(starts[0].confirmedTargetId == "demo", "selected target confirmation changed")
-    try expect(starts[0].serviceIds == ["organizer", "nonprofit-service"], "selected services changed")
+    try expect(starts[0].serviceIds == ["storefront", "billing-service"], "selected services changed")
 
     guard let environment = snapshot.environments.first else { throw CheckError("fixture environment missing") }
     let stopModel = AppModel(
@@ -2342,7 +2624,7 @@ await runner.checkAsync("live app model rejects an old healthy run as start comp
     await model.refresh()
     await model.startEnvironment(
         worktreeId: snapshot.repositories[0].worktrees[0].id,
-        serviceIds: ["organizer", "nonprofit-service"]
+        serviceIds: ["storefront", "billing-service"]
     )
     for _ in 0..<50 {
         if case .failed = model.environmentActionState { break }

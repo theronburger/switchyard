@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,14 +10,14 @@ import (
 	"strings"
 	"unicode"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const maximumMutationBodyBytes = 64 * 1024
 
 type ActionError struct {
 	Status   int
-	Contract contractv1.ContractError
+	Contract contractv2.ContractError
 }
 
 func (actionError *ActionError) Error() string {
@@ -39,6 +40,10 @@ func (handler *apiHandler) mutation(response http.ResponseWriter, request *http.
 		handler.archiveWorktree(response, request, worktreeID)
 		return true
 	}
+	if worktreeID, matches := prepareWorktreePath(request.URL.Path); matches {
+		handler.prepareWorktree(response, request, worktreeID)
+		return true
+	}
 	if request.URL.Path == "/v1/environments" {
 		handler.startEnvironment(response, request)
 		return true
@@ -51,6 +56,30 @@ func (handler *apiHandler) mutation(response http.ResponseWriter, request *http.
 	return true
 }
 
+func (handler *apiHandler) prepareWorktree(
+	response http.ResponseWriter,
+	request *http.Request,
+	worktreeID string,
+) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
+		return
+	}
+	var mutation contractv2.PrepareWorktreeRequest
+	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil ||
+		mutation.WorktreeID != worktreeID {
+		writeDecodeFailure(response, err, "INVALID_REQUEST", "The worktree preparation request is invalid")
+		return
+	}
+	if handler.config.WorkspaceActions == nil {
+		writeError(response, http.StatusServiceUnavailable, "ACTIONS_UNAVAILABLE", "Workspace actions are unavailable", true)
+		return
+	}
+	receipt, err := handler.config.WorkspaceActions.PrepareWorktree(request.Context(), mutation)
+	handler.writeMutationResult(response, receipt, err)
+}
+
 func (handler *apiHandler) adoptWorktree(
 	response http.ResponseWriter,
 	request *http.Request,
@@ -61,10 +90,10 @@ func (handler *apiHandler) adoptWorktree(
 		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 		return
 	}
-	var mutation contractv1.AdoptWorktreeRequest
+	var mutation contractv2.AdoptWorktreeRequest
 	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil ||
 		mutation.WorktreeID != worktreeID {
-		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree adoption request is invalid", false)
+		writeDecodeFailure(response, err, "INVALID_REQUEST", "The worktree adoption request is invalid")
 		return
 	}
 	if handler.config.WorkspaceActions == nil {
@@ -81,9 +110,9 @@ func (handler *apiHandler) createWorktree(response http.ResponseWriter, request 
 		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 		return
 	}
-	var mutation contractv1.CreateWorktreeRequest
+	var mutation contractv2.CreateWorktreeRequest
 	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
-		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree creation request is invalid", false)
+		writeDecodeFailure(response, err, "INVALID_REQUEST", "The worktree creation request is invalid")
 		return
 	}
 	if handler.config.WorkspaceActions == nil {
@@ -104,10 +133,10 @@ func (handler *apiHandler) archiveWorktree(
 		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 		return
 	}
-	var mutation contractv1.ArchiveWorktreeRequest
+	var mutation contractv2.ArchiveWorktreeRequest
 	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil ||
 		mutation.WorktreeID != worktreeID {
-		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The worktree archive request is invalid", false)
+		writeDecodeFailure(response, err, "INVALID_REQUEST", "The worktree archive request is invalid")
 		return
 	}
 	if handler.config.WorkspaceActions == nil {
@@ -124,9 +153,9 @@ func (handler *apiHandler) startEnvironment(response http.ResponseWriter, reques
 		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 		return
 	}
-	var mutation contractv1.StartEnvironmentRequest
+	var mutation contractv2.StartEnvironmentRequest
 	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
-		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The environment start request is invalid", false)
+		writeDecodeFailure(response, err, "INVALID_REQUEST", "The environment start request is invalid")
 		return
 	}
 	if handler.config.EnvironmentActions == nil {
@@ -147,9 +176,9 @@ func (handler *apiHandler) stopEnvironment(
 		writeError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", false)
 		return
 	}
-	var mutation contractv1.StopEnvironmentRequest
+	var mutation contractv2.StopEnvironmentRequest
 	if err := decodeMutationRequest(request, &mutation); err != nil || mutation.Validate() != nil {
-		writeError(response, http.StatusBadRequest, "INVALID_REQUEST", "The environment stop request is invalid", false)
+		writeDecodeFailure(response, err, "INVALID_REQUEST", "The environment stop request is invalid")
 		return
 	}
 	if handler.config.EnvironmentActions == nil {
@@ -162,7 +191,7 @@ func (handler *apiHandler) stopEnvironment(
 
 func (handler *apiHandler) writeMutationResult(
 	response http.ResponseWriter,
-	receipt contractv1.MutationReceipt,
+	receipt contractv2.MutationReceipt,
 	err error,
 ) {
 	if err != nil {
@@ -190,16 +219,50 @@ func decodeMutationRequest(request *http.Request, destination any) error {
 		return errors.New("mutation body exceeds the safety limit")
 	}
 	reader := http.MaxBytesReader(nil, request.Body, maximumMutationBodyBytes)
-	decoder := json.NewDecoder(reader)
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
+		// A body from another contract generation may carry fields this
+		// daemon does not know. Report the version mismatch before the
+		// shape mismatch so the client learns the actionable cause, while
+		// still rejecting the body.
+		if declared, mismatch := bodySchemaVersionMismatch(body); mismatch {
+			return &schemaVersionMismatchError{declared: declared}
+		}
 		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("mutation body must contain one JSON value")
 	}
+	if declared, mismatch := bodySchemaVersionMismatch(body); mismatch {
+		return &schemaVersionMismatchError{declared: declared}
+	}
 	return nil
+}
+
+// bodySchemaVersionMismatch reports whether a JSON object body declares a
+// positive integer schemaVersion other than the exact supported version.
+// Missing, non-integer, or non-positive declarations are ordinary validation
+// failures, not upgrade problems.
+func bodySchemaVersionMismatch(body []byte) (int, bool) {
+	var probe struct {
+		SchemaVersion json.Number `json:"schemaVersion"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if decoder.Decode(&probe) != nil || probe.SchemaVersion == "" {
+		return 0, false
+	}
+	declared, ok := parseDeclaredSchemaVersion(probe.SchemaVersion.String())
+	if !ok || declared == contractv2.SchemaVersion {
+		return 0, false
+	}
+	return declared, true
 }
 
 func stopEnvironmentPath(path string) (string, bool) {
@@ -217,6 +280,10 @@ func archiveWorktreePath(path string) (string, bool) {
 
 func adoptWorktreePath(path string) (string, bool) {
 	return worktreeActionPath(path, "adopt")
+}
+
+func prepareWorktreePath(path string) (string, bool) {
+	return worktreeActionPath(path, "prepare")
 }
 
 func worktreeActionPath(path string, action string) (string, bool) {

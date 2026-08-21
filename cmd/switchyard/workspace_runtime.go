@@ -5,20 +5,24 @@ import (
 	"net/http"
 	"path/filepath"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	"github.com/theronburger/switchyard/internal/configuration"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 	workspacecontrol "github.com/theronburger/switchyard/internal/control/workspace"
 	"github.com/theronburger/switchyard/internal/daemon"
 	"github.com/theronburger/switchyard/internal/state"
 )
 
 type managedWorkspaceSnapshotStore interface {
-	ReadSnapshot(context.Context) (contractv1.StatusSnapshot, error)
+	ReadSnapshot(context.Context) (contractv2.StatusSnapshot, error)
+	HeldOccupancyForWorktree(context.Context, string) ([]contractv2.OccupancyLease, error)
 }
 
 type managedWorkspaceResolver struct {
-	store        managedWorkspaceSnapshotStore
-	repositories map[string]contractv1.Repository
-	worktrees    map[string]managedWorkspaceTarget
+	store                       managedWorkspaceSnapshotStore
+	repositories                map[string]contractv2.Repository
+	worktrees                   map[string]managedWorkspaceTarget
+	configurationPath           string
+	acceptedConfigurationDigest string
 }
 
 type managedWorkspaceTarget struct {
@@ -32,7 +36,7 @@ func newManagedWorkspaceResolver(
 	discovered repositoryInventory,
 ) managedWorkspaceResolver {
 	resolver := managedWorkspaceResolver{
-		store: store, repositories: make(map[string]contractv1.Repository),
+		store: store, repositories: make(map[string]contractv2.Repository),
 		worktrees: make(map[string]managedWorkspaceTarget),
 	}
 	for _, repository := range discovered.Repositories {
@@ -48,7 +52,7 @@ func newManagedWorkspaceResolver(
 
 func (resolver managedWorkspaceResolver) ResolveCreate(
 	_ context.Context,
-	request contractv1.CreateWorktreeRequest,
+	request contractv2.CreateWorktreeRequest,
 ) (workspacecontrol.CreateManagedRequest, error) {
 	if _, found := resolver.repositories[request.RepositoryID]; !found {
 		return workspacecontrol.CreateManagedRequest{}, workspaceActionError(
@@ -62,7 +66,7 @@ func (resolver managedWorkspaceResolver) ResolveCreate(
 
 func (resolver managedWorkspaceResolver) ResolveArchive(
 	ctx context.Context,
-	request contractv1.ArchiveWorktreeRequest,
+	request contractv2.ArchiveWorktreeRequest,
 ) (workspacecontrol.ArchiveManagedRequest, error) {
 	target, found := resolver.worktrees[request.WorktreeID]
 	if !found {
@@ -94,6 +98,20 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 			)
 		}
 	}
+	// An explicit handoff lease is conservative evidence that an agent task
+	// may still occupy the checkout. The durable lease table, not the
+	// published projection, is authoritative; only an owner release ends it.
+	held, err := resolver.store.HeldOccupancyForWorktree(ctx, request.WorktreeID)
+	if err != nil {
+		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
+			http.StatusServiceUnavailable, "WORKSPACE_STATE_UNAVAILABLE", "Workspace state is temporarily unavailable.",
+		)
+	}
+	if len(held) > 0 {
+		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
+			http.StatusConflict, "WORKTREE_OCCUPIED", "An agent task still holds this worktree. Release the handoff before archiving it.",
+		)
+	}
 	return workspacecontrol.ArchiveManagedRequest{
 		RepositoryID: target.repositoryID, WorktreePath: target.path,
 	}, nil
@@ -101,7 +119,7 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 
 func (resolver managedWorkspaceResolver) ResolveAdopt(
 	_ context.Context,
-	request contractv1.AdoptWorktreeRequest,
+	request contractv2.AdoptWorktreeRequest,
 ) (workspacecontrol.AdoptManagedRequest, error) {
 	target, found := resolver.worktrees[request.WorktreeID]
 	if !found {
@@ -119,20 +137,40 @@ func (resolver managedWorkspaceResolver) ResolveAdopt(
 	}, nil
 }
 
+func (resolver managedWorkspaceResolver) ResolvePrepare(
+	_ context.Context,
+	request contractv2.PrepareWorktreeRequest,
+) (string, error) {
+	if resolver.configurationPath != "" {
+		desired, err := configuration.LoadFile(resolver.configurationPath)
+		if err != nil || desired.Digest != resolver.acceptedConfigurationDigest {
+			return "", workspaceActionError(
+				http.StatusConflict, "CONFIGURATION_NOT_ACCEPTED", "Validate and accept the current private configuration before preparing new work.",
+			)
+		}
+	}
+	if _, found := resolver.worktrees[request.WorktreeID]; !found {
+		return "", workspaceActionError(
+			http.StatusNotFound, "WORKTREE_NOT_FOUND", "The requested worktree is not available.",
+		)
+	}
+	return request.WorktreeID, nil
+}
+
 func newManagedWorkspaceManager(
 	paths applicationPaths,
 	discovered repositoryInventory,
 ) (*workspacecontrol.ManagedManager, error) {
 	repositories := make([]workspacecontrol.ManagedRepository, 0, len(discovered.Repositories))
 	for _, repository := range discovered.Repositories {
-		configuration := discovered.Configurations[repository.ID]
-		managedRoot := configuration.Workspace.ManagedRoot
+		profile := discovered.Profiles[repository.ID]
+		managedRoot := profile.Git.ManagedWorktreesRoot
+		defaultBase := profile.Git.DefaultBase
 		if managedRoot == "" {
 			managedRoot = filepath.Join(
 				filepath.Dir(repository.RootPath), filepath.Base(repository.RootPath)+"-worktrees",
 			)
 		}
-		defaultBase := configuration.Workspace.DefaultBase
 		if defaultBase == "" {
 			defaultBase = "origin/main"
 		}
@@ -143,7 +181,7 @@ func newManagedWorkspaceManager(
 	}
 	return workspacecontrol.NewManagedManager(workspacecontrol.ManagedConfig{
 		GitExecutable: configuredGitExecutable(),
-		OwnershipRoot: filepath.Join(paths.directory, "runtime", "managed-workspaces"),
+		OwnershipRoot: filepath.Join(paths.runtimeRoot(), "managed-workspaces"),
 		Repositories:  repositories,
 	})
 }
@@ -167,8 +205,8 @@ func annotateWorkspaceInventory(
 			if manager.Owns(repository.ID, worktree.Path) {
 				ownership = "managed"
 			}
-			worktree.Workspace = &contractv1.WorkspaceStatus{
-				Ownership: ownership, State: "unprepared", Toolchains: []contractv1.WorkspaceToolchain{},
+			worktree.Workspace = &contractv2.WorkspaceStatus{
+				Ownership: ownership, State: "unprepared", Toolchains: []contractv2.WorkspaceToolchain{},
 			}
 		}
 	}
@@ -176,7 +214,7 @@ func annotateWorkspaceInventory(
 }
 
 func workspaceActionError(status int, code string, message string) error {
-	return &daemon.ActionError{Status: status, Contract: contractv1.ContractError{
+	return &daemon.ActionError{Status: status, Contract: contractv2.ContractError{
 		Code: code, Message: message,
 	}}
 }

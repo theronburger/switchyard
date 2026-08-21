@@ -1,0 +1,41 @@
+name: Prepare release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Maintain release PR
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the release automation token
+        # GITHUB_TOKEN cannot start other workflows: a release pull request it
+        # opens gets no CI checks, and a tag it pushes never triggers
+        # release.yml. RELEASE_PLEASE_TOKEN is a fine-grained token scoped to
+        # this repository with Contents and Pull requests read/write; see
+        # docs/RELEASING.md. Fail here rather than silently degrade.
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
+            echo "RELEASE_PLEASE_TOKEN is not configured; see docs/RELEASING.md" >&2
+            exit 1
+          fi
+      - name: Create or update release PR
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+      # No publish job: the tag Release Please pushes with that token triggers
+      # release.yml on its own. Calling it here as well would publish twice.

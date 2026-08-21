@@ -28,7 +28,7 @@ func validateStartRequest(request StartRequest) error {
 		seenPorts[reservation.Key] = struct{}{}
 	}
 	if request.Intent != nil {
-		if request.Intent.Adapter == "" || len(request.Intent.ServiceIDs) == 0 {
+		if request.Intent.ProfileDigest == "" || len(request.Intent.ServiceIDs) == 0 {
 			return ErrInvalidRequest
 		}
 		seenServices := make(map[string]struct{}, len(request.Intent.ServiceIDs))
@@ -86,8 +86,20 @@ func validateExecutionPlan(
 		commandIDs[preparation.ID] = struct{}{}
 		commandRunDirectories = append(commandRunDirectories, preparation.RunDirectory)
 	}
-	if plan.Projection != nil && plan.Projection.ID == "" {
-		return ErrInvalidRequest
+	if plan.Projection != nil {
+		if plan.Projection.ID == "" {
+			return ErrInvalidRequest
+		}
+		seenArtifacts := make(map[string]struct{}, len(plan.Projection.ArtifactIDs))
+		for _, artifactID := range plan.Projection.ArtifactIDs {
+			if artifactID == "" {
+				return ErrInvalidRequest
+			}
+			if _, duplicate := seenArtifacts[artifactID]; duplicate {
+				return ErrInvalidRequest
+			}
+			seenArtifacts[artifactID] = struct{}{}
+		}
 	}
 	for _, goal := range plan.Infrastructure {
 		if !goal.Kind.Valid() || goal.Name == "" || goal.Identity.Validate() != nil ||
@@ -99,12 +111,16 @@ func validateExecutionPlan(
 	if len(plan.Initializations) != 0 && len(plan.Infrastructure) == 0 {
 		return ErrInvalidRequest
 	}
-	seenServices := make(map[string]struct{}, len(plan.Services))
+	services := flattenedServiceStages(plan)
+	if len(plan.Services) != 0 && len(plan.ServiceStages) != 0 {
+		return ErrInvalidRequest
+	}
+	seenServices := make(map[string]struct{}, len(services))
 	leaseKeys := make(map[portlease.Key]struct{}, len(leases))
 	for _, lease := range leases {
 		leaseKeys[lease.Key] = struct{}{}
 	}
-	for _, service := range plan.Services {
+	for _, service := range services {
 		if service.ID == "" || service.Process.EnvironmentID != environmentID ||
 			service.Process.ServiceID != service.ID || service.Process.RunID != runID ||
 			!filepath.IsAbs(service.Process.RunDirectory) {
@@ -133,7 +149,27 @@ func validateExecutionPlan(
 			seenServicePorts[key] = struct{}{}
 		}
 	}
+	for _, stage := range plan.ServiceStages {
+		if len(stage) == 0 {
+			return ErrInvalidRequest
+		}
+	}
 	return nil
+}
+
+func flattenedServiceStages(plan ExecutionPlan) []ServiceLaunch {
+	if len(plan.ServiceStages) == 0 {
+		return plan.Services
+	}
+	count := 0
+	for _, stage := range plan.ServiceStages {
+		count += len(stage)
+	}
+	services := make([]ServiceLaunch, 0, count)
+	for _, stage := range plan.ServiceStages {
+		services = append(services, stage...)
+	}
+	return services
 }
 
 func pathsOverlap(left, right string) bool {
@@ -367,7 +403,12 @@ func clonePreparation(preparation PreparationSpec) PreparationSpec {
 }
 
 func cloneGoals(goals []containerhost.Goal) []containerhost.Goal {
-	return append([]containerhost.Goal(nil), goals...)
+	cloned := append([]containerhost.Goal(nil), goals...)
+	for index := range cloned {
+		cloned[index].PortBindings = append([]containerhost.PortBinding(nil), goals[index].PortBindings...)
+		cloned[index].Environment = append([]string(nil), goals[index].Environment...)
+	}
+	return cloned
 }
 
 func cloneProjection(change *ProjectionChange) *ProjectionChange {

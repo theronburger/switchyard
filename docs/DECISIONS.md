@@ -6,11 +6,11 @@ Accepted decisions are durable until deliberately amended here. Open decisions a
 
 ### D-001: Personal public project
 
-Switchyard lives publicly in Theron's personal GitHub namespace. It is a personal project that locally operates a Marketplace checkout the user already controls.
+Switchyard lives publicly in Theron's personal GitHub namespace. It is a personal project that locally operates repositories the user already controls.
 
-### D-002: Marketplace-first, repository-open core
+### D-002: Generic product, private repository profiles
 
-Optimize deeply for Marketplace through a rich adapter. Keep the core vocabulary and control plane repository-neutral so future repositories require configuration or a small adapter rather than a rewrite. Do not build a general plugin marketplace before a second repository exists.
+Keep repository identity, commands, service catalogs, and values out of the product. Store schema-versioned profiles under Application Support so several repositories can be configured concurrently without writing configuration into their worktrees. Improve real repository performance by adding reusable, declarative primitives rather than repository branches in application code.
 
 ### D-003: Go control plane and Swift presentation
 
@@ -28,13 +28,13 @@ The app bundles, starts, upgrades, validates, and repairs the helper. Normal use
 
 For current-task reads, MCP requires the exact absolute workspace path and returns a worktree-scoped projection. A separate tool reads one exact environment and a deliberately global tool reads inventory; MCP process working directory and inventory ordering never imply context. Accepted environment mutations include a compact Forge-style context footer. Switchyard does not inject unsolicited chat messages, wake sleeping agents, or interrupt running agents.
 
-### D-007: Personal local Marketplace manifest
+### D-007: Private external configuration
 
-`.switchyard.yaml` is schema-versioned but untracked. The app adds it and owned runtime projections such as `.switchyard.env.cjs` to the shared local `.git/info/exclude`, never the public `.gitignore`.
+Configuration is schema-versioned and stored under Application Support, never in the consuming repository. Runtime artifacts are generated in Switchyard-owned private storage and projected only when an accepted profile explicitly requires them.
 
-### D-008: Existing Marketplace helper is untouched
+### D-008: Existing repository tooling is untouched
 
-Do not edit, wrap, replace, or require `scripts/start-changed.sh`. It remains available to colleagues. Switchyard implements its own adapter.
+Do not edit, wrap, or replace repository tooling. Switchyard invokes only the exact commands in an accepted private profile.
 
 ### D-009: Safety through positive ownership
 
@@ -105,6 +105,30 @@ Every accepted environment start captures the exact Git revision and working-tre
 ### D-023: Self-signed universal distribution
 
 The first public release uses a universal Homebrew Cask and signed Sparkle updates. The stable self-signed publisher identity is `Theron Burger Apps Release`; Switchyard has a distinct Ed25519 Sparkle key. Because no Apple Developer identity exists, the frontend alone carries the library-validation exception needed to load Sparkle, and the explicit installation flow removes quarantine only from `/Applications/Switchyard.app` after Homebrew installation. Release assets include checksums, a CycloneDX SBOM, and GitHub provenance attestations.
+
+### D-024: Private repository profiles supersede built-in adapters
+
+Repository behavior is accepted private configuration stored only under Switchyard's Application Support directory. One daemon manages multiple configured repositories concurrently. Product code, tests, fixtures, documentation, and bundled skills contain no consuming-repository identity or catalog. Repository-local manifests, projections, and ignore-file edits are removed.
+
+### D-025: Configuration acceptance authorizes compiled behavior
+
+The owner reviews and accepts one immutable configuration revision as a transaction. Its preview includes every resolved executable, argument shape, working directory, non-secret environment shape, private artifact digest, shell, interpreter, and generated wrapper. Routine execution of that accepted revision does not prompt again. A changed revision or executable fingerprint requires re-acceptance; explicitly high-risk targets and actions may still require per-run confirmation. MCP and unattended setup hooks can execute accepted behavior but cannot accept configuration.
+
+### D-026: Contract v2 names profiles, pins digests, and bounds state
+
+Switchyard 0.2.0 publishes contract v2. The public repository record carries `profileKey` instead of the legacy `adapter` field; no client-facing payload names an adapter. Contract v2 changed only where the product contract changed: every other v1 shape is carried forward and the handshake advertises only version 2.
+
+Pinned operation intent identifies the accepted repository-profile digest, not an adapter, and every environment result records that digest. A restarted daemon recovers the exact pinned payload from retained accepted configuration revisions even after later acceptances; a pinned digest without its payload fails boot closed.
+
+The 0.2.0 release is a clean cutover. Switchyard is single-user, so 0.1.x app state is deleted or archived and 0.2.0 installs fresh; the product carries no compatibility machinery for 0.1.x state, operations, or runtime ownership, and the former in-place state migration was retired.
+
+Durable state is bounded transactionally: one current snapshot row, 10,000 events, 500 terminal operations, 16 staged candidates, and 16 unreferenced configuration revisions, with every referenced or incomplete record retained regardless of age. Only live environment resources pin a revision; stopped results are history.
+
+### D-027: Clients declare exact versions; occupancy is explicit
+
+Every versioned daemon request declares the client's exact contract schema version in `X-Switchyard-Schema-Version`. A mismatch, an undeclared versioned request, or a request body from another contract generation is answered with HTTP 426 and the stable `UPGRADE_REQUIRED` error naming the daemon's version and which side is older; strict validation of exact-version bodies is unchanged. Go and Swift clients map that status, a mismatched handshake, and a well-formed descriptor from another generation to their upgrade-required state rather than to generic invalid or incompatible errors.
+
+Worktree occupancy is never inferred. The app records one explicit, conservative handoff lease, with a generic holder kind and bounded label, before it launches a task into a worktree: a refused lease prevents the launch, a failed launch releases the lease, and a lease that cannot be released after a failed launch is kept as protection and reported to the owner. Only an owner release ends a lease. Held leases are published on the worktree, survive daemon restarts and inventory rebuilds, and block archive (`WORKTREE_OCCUPIED`) at acceptance and again immediately before the Git mutation. Occupancy, operation lifecycle, configuration acceptance, and cleanup apply completion append audit events inside the transaction that performs the change. A background monitor may inform the app through the snapshot and event feed; it still never injects chat messages, wakes sleeping agents, or interrupts running agents.
 
 ## Open
 

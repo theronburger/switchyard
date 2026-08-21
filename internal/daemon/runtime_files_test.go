@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestLoadOrCreateTokenCreatesAndReusesPrivateToken(t *testing.T) {
@@ -58,7 +60,7 @@ func TestPublishRuntimeDescriptorIsPrivateAndContainsNoToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime", "endpoint.json")
 	startedAt := time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC)
 	descriptor := RuntimeDescriptor{
-		SchemaVersion:    1,
+		SchemaVersion:    contractv2.SchemaVersion,
 		Endpoint:         "http://127.0.0.1:32123",
 		DaemonInstanceID: "daemon_01",
 		DaemonVersion:    "0.1.0-dev",
@@ -99,12 +101,12 @@ func TestPublishRuntimeDescriptorRejectsIncompatibleDescriptors(t *testing.T) {
 		schemaVersion int
 		endpoint      string
 	}{
-		{name: "future schema", schemaVersion: 2, endpoint: "http://127.0.0.1:32123"},
-		{name: "wildcard", schemaVersion: 1, endpoint: "http://0.0.0.0:32123"},
-		{name: "other loopback", schemaVersion: 1, endpoint: "http://127.0.0.2:32123"},
-		{name: "IPv6 loopback", schemaVersion: 1, endpoint: "http://[::1]:32123"},
-		{name: "trailing path", schemaVersion: 1, endpoint: "http://127.0.0.1:32123/"},
-		{name: "missing port", schemaVersion: 1, endpoint: "http://127.0.0.1"},
+		{name: "future schema", schemaVersion: contractv2.SchemaVersion + 1, endpoint: "http://127.0.0.1:32123"},
+		{name: "wildcard", schemaVersion: contractv2.SchemaVersion, endpoint: "http://0.0.0.0:32123"},
+		{name: "other loopback", schemaVersion: contractv2.SchemaVersion, endpoint: "http://127.0.0.2:32123"},
+		{name: "IPv6 loopback", schemaVersion: contractv2.SchemaVersion, endpoint: "http://[::1]:32123"},
+		{name: "trailing path", schemaVersion: contractv2.SchemaVersion, endpoint: "http://127.0.0.1:32123/"},
+		{name: "missing port", schemaVersion: contractv2.SchemaVersion, endpoint: "http://127.0.0.1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := PublishRuntimeDescriptor(filepath.Join(t.TempDir(), "endpoint.json"), RuntimeDescriptor{

@@ -7,7 +7,7 @@ temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/switchyard-ci.XXXXXX")
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 
 cd "$repository_root"
-"$script_directory/check-version.sh"
+"$script_directory/release-checks.sh"
 unformatted_files=$(gofmt -l $(find cmd internal -name '*.go' -type f))
 if [ -n "$unformatted_files" ]; then
 	echo "gofmt required for:" >&2
@@ -18,7 +18,7 @@ go mod tidy -diff
 go vet ./...
 go test -race ./...
 swift test --package-path app
-swift run --package-path app SwitchyardContractCheck contracts/v1/fixtures/status.json
+swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
 swift build --package-path app -c release --product SwitchyardApp
 "$script_directory/build-binary.sh" "$temporary_directory/switchyard"
 "$temporary_directory/switchyard" version >/dev/null

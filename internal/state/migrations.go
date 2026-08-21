@@ -12,6 +12,9 @@ var ErrUnsupportedSchemaVersion = errors.New("state database schema is newer tha
 type migration struct {
 	version int
 	sql     string
+	// apply runs after sql inside the same transaction for data migrations
+	// that cannot be expressed as schema statements.
+	apply func(context.Context, *sql.Tx) error
 }
 
 var migrations = []migration{
@@ -128,6 +131,126 @@ ALTER TABLE operations ADD COLUMN phase TEXT NOT NULL DEFAULT '';
 ALTER TABLE operations ADD COLUMN run_id TEXT;
 `,
 	},
+	{
+		version: 6,
+		sql: `
+CREATE TABLE current_snapshot (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL,
+    payload_json BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+INSERT INTO current_snapshot(singleton, revision, payload_json, created_at)
+SELECT 1, snapshot_revisions.revision, snapshot_revisions.payload_json, snapshot_revisions.created_at
+FROM snapshot_head
+JOIN snapshot_revisions ON snapshot_revisions.revision = snapshot_head.revision
+WHERE snapshot_head.singleton = 1;
+
+DROP TABLE snapshot_head;
+DROP TABLE snapshot_revisions;
+`,
+	},
+	{
+		version: 7,
+		sql: `
+CREATE TABLE configuration_candidates (
+    digest TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    source_digest TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    payload_json BLOB NOT NULL,
+    repository_digests_json BLOB NOT NULL,
+    staged_at TEXT NOT NULL
+);
+
+CREATE TABLE configuration_revisions (
+    revision INTEGER PRIMARY KEY,
+    digest TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    source_digest TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    payload_json BLOB NOT NULL,
+    repository_digests_json BLOB NOT NULL,
+    accepted_at TEXT NOT NULL,
+    UNIQUE(digest)
+);
+
+CREATE TABLE configuration_head (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL REFERENCES configuration_revisions(revision)
+);
+`,
+	},
+	{
+		version: 8,
+		sql: `
+CREATE TABLE cleanup_plans (
+    revision INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    schema_version INTEGER NOT NULL,
+    plan_json BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+
+CREATE INDEX cleanup_plans_expiration
+    ON cleanup_plans(expires_at, consumed_at);
+`,
+	},
+	{
+		version: 9,
+		sql: `
+ALTER TABLE configuration_candidates
+    ADD COLUMN executable_digests_json BLOB NOT NULL DEFAULT '{}';
+
+ALTER TABLE configuration_revisions
+    ADD COLUMN executable_digests_json BLOB NOT NULL DEFAULT '{}';
+`,
+	},
+	// Version 10 rewrote 0.1.0 adapter-named state into the contract v2
+	// profile naming. Switchyard 0.2.0 is a clean cutover that installs a
+	// fresh database, so that data migration was retired; the version number
+	// stays reserved and a ledger that already recorded it remains valid.
+	{
+		// Cleanup apply is a claimed transaction: authorization for one plan
+		// revision is recorded atomically before any owned resource is
+		// mutated, every candidate outcome is journaled as it becomes final,
+		// and an interrupted apply survives restarts as an incomplete claim.
+		version: 11,
+		sql: `
+CREATE TABLE IF NOT EXISTS cleanup_applies (
+    plan_revision INTEGER PRIMARY KEY REFERENCES cleanup_plans(revision) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL UNIQUE,
+    claim_json BLOB NOT NULL,
+    claimed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+`,
+	},
+	{
+		// Explicit worktree occupancy leases: an owner-launched handoff is
+		// recorded only when a client acquires a lease and ends only when a
+		// client releases it. Held leases protect a worktree from archive.
+		version: 12,
+		sql: `
+CREATE TABLE occupancy_leases (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    worktree_id TEXT NOT NULL,
+    holder_kind TEXT NOT NULL,
+    holder_label TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('held', 'released')),
+    acquired_at TEXT NOT NULL,
+    released_at TEXT
+);
+
+CREATE INDEX occupancy_leases_worktree_state
+    ON occupancy_leases(worktree_id, state);
+`,
+	},
 }
 
 func (store *Store) migrate(ctx context.Context) error {
@@ -166,9 +289,17 @@ func (store *Store) applyMigration(ctx context.Context, nextMigration migration)
 		return fmt.Errorf("begin migration %d: %w", nextMigration.version, err)
 	}
 
-	if _, err := transaction.ExecContext(ctx, nextMigration.sql); err != nil {
-		_ = transaction.Rollback()
-		return fmt.Errorf("apply migration %d: %w", nextMigration.version, err)
+	if nextMigration.sql != "" {
+		if _, err := transaction.ExecContext(ctx, nextMigration.sql); err != nil {
+			_ = transaction.Rollback()
+			return fmt.Errorf("apply migration %d: %w", nextMigration.version, err)
+		}
+	}
+	if nextMigration.apply != nil {
+		if err := nextMigration.apply(ctx, transaction); err != nil {
+			_ = transaction.Rollback()
+			return fmt.Errorf("apply migration %d: %w", nextMigration.version, err)
+		}
 	}
 	if _, err := transaction.ExecContext(
 		ctx,

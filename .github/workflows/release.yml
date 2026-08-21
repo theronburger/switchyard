@@ -1,5 +1,10 @@
 name: Release
 
+# Triggered once per version tag. Release Please pushes that tag with the
+# RELEASE_PLEASE_TOKEN secret (a token that, unlike GITHUB_TOKEN, starts
+# workflows), so the tag push is the single entry point for both the automated
+# release and a deliberately hand-pushed tag. There is no reusable invocation
+# path: a second entry point would publish the same tag twice.
 on:
   push:
     tags: ["v*"]
@@ -11,7 +16,7 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -19,11 +24,14 @@ jobs:
     name: Sign and publish
     runs-on: macos-26
     environment: release
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          ref: ${{ github.ref }}
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -41,16 +49,29 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" ./...
           "$(go env GOPATH)/bin/gitleaks" git . --redact --exit-code 1 --no-banner
       - name: Validate release version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+        id: release_version
         run: |
           expected_tag="v$(tr -d '[:space:]' < VERSION)"
           test "$RELEASE_TAG" = "$expected_tag"
-          grep -Fq "## [$RELEASE_TAG]" CHANGELOG.md
-          git cat-file -t "$RELEASE_TAG" | grep -Fx tag
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          scripts/check-version.sh "${RELEASE_TAG#v}"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor HEAD origin/main
+          scripts/release-checks.sh
       - name: Run production checks
         run: scripts/ci.sh
+      - name: Enforce generic boundary on tracked sources
+        env:
+          SWITCHYARD_BOUNDARY_DENYLIST: ${{ secrets.SWITCHYARD_BOUNDARY_DENYLIST }}
+        run: scripts/check-generic-boundary.sh --require-denylist
+      - name: Validate rendered Homebrew Cask
+        run: scripts/validate-homebrew-cask.sh
+      - name: Prepare empty release output directory
+        # The publish steps name exact files, but the appcast generator scans a
+        # directory; start from nothing so no stale archive can be described.
+        run: |
+          rm -rf dist
+          mkdir dist
       - name: Import self-signed release identity
         env:
           SWITCHYARD_CERTIFICATE_BASE64: ${{ secrets.SWITCHYARD_CERTIFICATE_BASE64 }}
@@ -77,6 +98,10 @@ jobs:
         run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
       - name: Build self-signed universal release
         run: scripts/build-release.sh dist
+      - name: Enforce generic boundary on the built bundle
+        env:
+          SWITCHYARD_BOUNDARY_DENYLIST: ${{ secrets.SWITCHYARD_BOUNDARY_DENYLIST }}
+        run: scripts/check-generic-boundary.sh --require-denylist --bundle dist/Switchyard.app
       - name: Verify signed application and update key
         env:
           SWITCHYARD_SIGNING_IDENTITY: ${{ secrets.SWITCHYARD_SIGNING_IDENTITY }}
@@ -144,6 +169,16 @@ jobs:
         run: |
           test -n "$SPARKLE_PRIVATE_KEY"
           version=$(tr -d '[:space:]' < VERSION)
+          archive="switchyard_${version}_macos_universal.zip"
+          sbom="switchyard_${version}_macos_universal.sbom.cdx.json"
+          test -f "dist/$archive"
+          test -f "dist/$sbom"
+          # generate_appcast describes every archive in the directory it is
+          # given; feed it a directory holding only this release's archive.
+          appcast_input="$RUNNER_TEMP/appcast-input"
+          rm -rf "$appcast_input"
+          mkdir -p "$appcast_input"
+          cp "dist/$archive" "$appcast_input/$archive"
           printf '%s' "$SPARKLE_PRIVATE_KEY" | \
             app/.build/artifacts/sparkle/Sparkle/bin/generate_appcast \
               --ed-key-file - \
@@ -151,45 +186,91 @@ jobs:
               --link "https://github.com/theronburger/switchyard" \
               --full-release-notes-url "https://github.com/theronburger/switchyard/releases/tag/v$version" \
               -o dist/appcast.xml \
-              dist
+              "$appcast_input"
           xmllint --noout dist/appcast.xml
-          grep -Fq '<!-- sparkle-signatures:' dist/appcast.xml
           grep -Fq 'sparkle:edSignature=' dist/appcast.xml
+          minimum_system=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/Switchyard.app/Contents/Info.plist)
+          public_key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' dist/Switchyard.app/Contents/Info.plist)
+          scripts/verify-appcast.sh dist/appcast.xml "$version" "$archive" "$minimum_system" \
+            --archive "dist/$archive" --public-key "$public_key"
           (
             cd dist
-            shasum -a 256 *.zip *.sbom.cdx.json appcast.xml > checksums.txt
+            shasum -a 256 "$archive" "$sbom" appcast.xml > checksums.txt
           )
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4.2.2
         with:
           subject-path: |
-            dist/*.zip
-            dist/*.sbom.cdx.json
+            dist/switchyard_${{ steps.release_version.outputs.version }}_macos_universal.zip
+            dist/switchyard_${{ steps.release_version.outputs.version }}_macos_universal.sbom.cdx.json
             dist/appcast.xml
             dist/checksums.txt
-      - name: Publish GitHub release
+      - name: Upload assets to the draft release
+        # The release stays a draft here: nothing is "latest" and the appcast
+        # URL that SUFeedURL follows is not armed until the uploaded bytes
+        # have been downloaded back and verified.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/*.zip \
-            dist/*.sbom.cdx.json \
-            dist/appcast.xml \
-            dist/checksums.txt \
-            --verify-tag \
-            --generate-notes \
-            --title "Switchyard $(tr -d '[:space:]' < VERSION)"
-      - name: Verify published release assets
+          version=$(tr -d '[:space:]' < VERSION)
+          archive="dist/switchyard_${version}_macos_universal.zip"
+          sbom="dist/switchyard_${version}_macos_universal.sbom.cdx.json"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = "true"
+            gh release upload "$RELEASE_TAG" \
+              "$archive" \
+              "$sbom" \
+              dist/appcast.xml \
+              dist/checksums.txt \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              "$archive" \
+              "$sbom" \
+              dist/appcast.xml \
+              dist/checksums.txt \
+              --draft \
+              --verify-tag \
+              --generate-notes \
+              --title "Switchyard $version"
+          fi
+      - name: Verify uploaded assets before publication
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          archive="switchyard_${version}_macos_universal.zip"
           published_directory="$RUNNER_TEMP/published-release"
+          rm -rf "$published_directory"
           mkdir -p "$published_directory"
-          gh release download "$GITHUB_REF_NAME" --dir "$published_directory"
+          gh release download "$RELEASE_TAG" --dir "$published_directory"
           (
             cd "$published_directory"
             shasum -a 256 -c checksums.txt
+            test "$(wc -l < checksums.txt | tr -d ' ')" -eq 3
           )
+          cmp "dist/$archive" "$published_directory/$archive"
+          cmp dist/appcast.xml "$published_directory/appcast.xml"
+          minimum_system=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/Switchyard.app/Contents/Info.plist)
+          public_key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' dist/Switchyard.app/Contents/Info.plist)
+          scripts/verify-appcast.sh "$published_directory/appcast.xml" "$version" "$archive" "$minimum_system" \
+            --archive "$published_directory/$archive" --public-key "$public_key"
+          unpacked="$RUNNER_TEMP/published-unpacked"
+          rm -rf "$unpacked"
+          mkdir -p "$unpacked"
+          ditto -x -k "$published_directory/$archive" "$unpacked"
+          codesign --verify --deep --strict --verbose=2 "$unpacked/Switchyard.app"
+      - name: Publish release and arm the appcast
+        # Only now does the release leave draft and become "latest", which is
+        # the moment releases/latest/download/appcast.xml starts serving it.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$RELEASE_TAG" \
+            --draft=false \
+            --latest \
+            --verify-tag \
+            --title "Switchyard $(tr -d '[:space:]' < VERSION)"
       - name: Update Homebrew Cask
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,17 +290,7 @@ jobs:
           git clone git@github.com:theronburger/homebrew-tap.git "$tap_directory"
           mkdir -p "$tap_directory/Casks"
           cask_path="$tap_directory/Casks/switchyard.rb"
-          current_version=$(sed -n 's/^  version "\([^"]*\)"/\1/p' "$cask_path" 2>/dev/null || true)
-          if [ -e "$cask_path" ]; then
-            if [ -z "$current_version" ]; then
-              echo "Refusing to replace an existing Cask with an unreadable version" >&2
-              exit 1
-            fi
-            if ! ruby -e 'require "rubygems"; exit(Gem::Version.new(ARGV[0]) > Gem::Version.new(ARGV[1]) ? 0 : 1)' "$version" "$current_version"; then
-              echo "Refusing to replace Homebrew Cask $current_version with non-newer release $version" >&2
-              exit 1
-            fi
-          fi
+          scripts/homebrew-cask-version-guard.sh "$version" "$cask_path"
           scripts/render-homebrew-cask.sh "$version" "$archive_sha" > "$cask_path"
           ruby -c "$cask_path"
           brew style "$cask_path"

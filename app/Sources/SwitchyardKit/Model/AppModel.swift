@@ -5,6 +5,7 @@ public enum SidebarSelection: Hashable, Sendable {
     case overview
     case environment(String)
     case worktree(repositoryId: String, worktreeId: String)
+    case repository(String)
     case connectionDoctor
 }
 
@@ -80,6 +81,97 @@ public enum WorkspaceActionState: Sendable, Equatable {
     }
 }
 
+public enum CleanupActionState: Sendable, Equatable {
+    case idle
+    case planning
+    case review(CleanupPlan)
+    case applying(CleanupPlan)
+    case completed(CleanupResult)
+    case failed(String)
+}
+
+public enum ConfigurationActionState: Sendable, Equatable {
+    case idle
+    case loading
+    case loaded(ConfigurationStatus)
+    case validating(ConfigurationStatus?)
+    case accepting(ConfigurationStatus)
+    case editing(ConfigurationStatus?)
+    case failed(message: String, last: ConfigurationStatus?)
+
+    public var status: ConfigurationStatus? {
+        switch self {
+        case .idle, .loading: return nil
+        case .loaded(let status), .accepting(let status): return status
+        case .validating(let status), .editing(let status), .failed(_, let status): return status
+        }
+    }
+
+    public var isBusy: Bool {
+        switch self {
+        case .loading, .validating, .accepting, .editing: return true
+        case .idle, .loaded, .failed: return false
+        }
+    }
+
+    public var failureMessage: String? {
+        guard case .failed(let message, _) = self else { return nil }
+        return message
+    }
+}
+
+public enum AgentHandoffState: Sendable, Equatable {
+    case idle
+    case preparing(worktreeId: String, receipt: MutationReceipt?)
+    case failed(worktreeId: String, String)
+
+    public var isActive: Bool {
+        if case .preparing = self { return true }
+        return false
+    }
+}
+
+/// Outcome of a transactional agent handoff: the lease is acquired before the
+/// task is opened, so a worktree is never handed to a task unprotected, and a
+/// failed launch releases the lease it no longer needs.
+public enum AgentHandoffOutcome: Sendable, Equatable {
+    /// The lease is held and the task was opened.
+    case launched(OccupancyLease)
+    /// Fixture builds have no daemon to protect; the task was opened with no lease.
+    case launchedWithoutLease
+    /// The daemon refused or could not record the lease. Nothing was launched.
+    case leaseRefused(String)
+    /// The launch failed and the lease it would have protected was released.
+    case launchFailed(String)
+    /// The launch failed and the lease could not be released. It still holds
+    /// and protects the worktree until the owner releases it.
+    case launchFailedLeaseHeld(String, OccupancyLease)
+
+    public var failureMessage: String? {
+        switch self {
+        case .launched, .launchedWithoutLease: nil
+        case .leaseRefused(let message), .launchFailed(let message), .launchFailedLeaseHeld(let message, _): message
+        }
+    }
+}
+
+/// Progress of recording or releasing an explicit handoff lease. A recording
+/// failure stops the handoff before any launch; a release failure is reported
+/// so the owner can retry it from the worktree's handoff section.
+public enum OccupancyActionState: Sendable, Equatable {
+    case idle
+    case recording(worktreeId: String)
+    case releasing(worktreeId: String, leaseId: String)
+    case failed(worktreeId: String, String)
+
+    public var isActive: Bool {
+        switch self {
+        case .recording, .releasing: return true
+        case .idle, .failed: return false
+        }
+    }
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -100,6 +192,10 @@ public final class AppModel {
     public private(set) var lifecycleState: DaemonLifecycleState = .idle
     public private(set) var environmentActionState: EnvironmentActionState = .idle
     public private(set) var workspaceActionState: WorkspaceActionState = .idle
+    public private(set) var cleanupActionState: CleanupActionState = .idle
+    public private(set) var configurationState: ConfigurationActionState = .idle
+    public private(set) var agentHandoffState: AgentHandoffState = .idle
+    public private(set) var occupancyActionState: OccupancyActionState = .idle
     public private(set) var scenario: FixtureScenario
     public let isFixtureMode: Bool
     public var selection: SidebarSelection?
@@ -107,10 +203,15 @@ public final class AppModel {
     @ObservationIgnored private let liveController: (any DaemonLifecycleControlling)?
     @ObservationIgnored private let environmentActions: (any EnvironmentActionSubmitting)?
     @ObservationIgnored private let workspaceActions: (any WorkspaceActionSubmitting)?
+    @ObservationIgnored private let occupancyActions: (any OccupancyActionSubmitting)?
+    @ObservationIgnored private let cleanupActions: (any CleanupActionSubmitting)?
+    @ObservationIgnored private let configurationActions: (any ConfigurationActionSubmitting)?
     @ObservationIgnored private let agentConnections: (any AgentConnectionManaging)?
     @ObservationIgnored private var fixtureProvider: (any StatusProviding)?
+    @ObservationIgnored private var operationStatus: (any StatusProviding)?
     @ObservationIgnored private let canonicalFixtureURL: URL?
     @ObservationIgnored private let pollingInterval: Duration
+    @ObservationIgnored private let operationPollingInterval: Duration
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
     @ObservationIgnored private var environmentActionMonitor: Task<Void, Never>?
     @ObservationIgnored private var workspaceActionMonitor: Task<Void, Never>?
@@ -177,29 +278,49 @@ public final class AppModel {
         liveController: any DaemonLifecycleControlling = DaemonLifecycleController(),
         environmentActions: any EnvironmentActionSubmitting = LiveEnvironmentActionClient(),
         workspaceActions: any WorkspaceActionSubmitting = LiveWorkspaceActionClient(),
-        agentConnections: any AgentConnectionManaging = AgentConnectionManager(),
-        pollingInterval: Duration = .seconds(5)
+        occupancyActions: (any OccupancyActionSubmitting)? = LiveOccupancyActionClient(),
+        cleanupActions: any CleanupActionSubmitting = LiveCleanupActionClient(),
+        configurationActions: (any ConfigurationActionSubmitting)? = LiveConfigurationActionClient(),
+        agentConnections: (any AgentConnectionManaging)? = AgentConnectionManager(),
+        operationStatus: (any StatusProviding)? = LiveStatusReader(),
+        pollingInterval: Duration = .seconds(5),
+        operationPollingInterval: Duration = .seconds(1)
     ) {
         self.scenario = .canonical
         self.isFixtureMode = false
         self.liveController = liveController
         self.environmentActions = environmentActions
         self.workspaceActions = workspaceActions
+        self.occupancyActions = occupancyActions
+        self.cleanupActions = cleanupActions
+        self.configurationActions = configurationActions
         self.agentConnections = agentConnections
+        self.operationStatus = operationStatus
         self.canonicalFixtureURL = nil
         self.pollingInterval = pollingInterval
+        self.operationPollingInterval = operationPollingInterval
     }
 
-    public init(scenario: FixtureScenario, canonicalFixtureURL: URL? = nil) {
+    public init(
+        scenario: FixtureScenario,
+        canonicalFixtureURL: URL? = nil,
+        configurationActions: (any ConfigurationActionSubmitting)? = nil
+    ) {
         self.scenario = scenario
         self.isFixtureMode = true
         self.liveController = nil
         self.environmentActions = nil
         self.workspaceActions = nil
+        self.occupancyActions = nil
+        self.cleanupActions = nil
+        self.configurationActions = configurationActions ?? FixtureConfigurationActionClient(scenario: scenario)
         self.agentConnections = nil
         self.canonicalFixtureURL = canonicalFixtureURL
         self.pollingInterval = .seconds(5)
-        self.fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        self.operationPollingInterval = .seconds(1)
+        let fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        self.fixtureProvider = fixtureProvider
+        self.operationStatus = fixtureProvider
     }
 
     public convenience init(
@@ -208,7 +329,33 @@ public final class AppModel {
     ) {
         switch configuration {
         case .live:
-            self.init(liveController: DaemonLifecycleController(), pollingInterval: pollingInterval)
+            let channel = SwitchyardChannel.resolve()
+            let paths = LaunchAgentPaths.standard(channel: channel)
+            let location = DaemonEndpointLocation.standard(channel: channel)
+            let serviceManager = LaunchAgentServiceManager(paths: paths, channel: channel)
+            let connectionFactory = RuntimeConnectionFactory(location: location)
+            let lifecycle = DaemonLifecycleController(
+                serviceManager: serviceManager,
+                connectionFactory: connectionFactory,
+                doctor: LiveConnectionDoctor(
+                    serviceManager: serviceManager,
+                    connectionFactory: connectionFactory
+                )
+            )
+            let agentConnections: (any AgentConnectionManaging)? = channel.permitsAgentRepair
+                ? AgentConnectionManager()
+                : nil
+            self.init(
+                liveController: lifecycle,
+                environmentActions: LiveEnvironmentActionClient(connectionFactory: connectionFactory),
+                workspaceActions: LiveWorkspaceActionClient(connectionFactory: connectionFactory),
+                occupancyActions: LiveOccupancyActionClient(connectionFactory: connectionFactory),
+                cleanupActions: LiveCleanupActionClient(connectionFactory: connectionFactory),
+                configurationActions: LiveConfigurationActionClient(connectionFactory: connectionFactory),
+                agentConnections: agentConnections,
+                operationStatus: LiveStatusReader(connectionFactory: connectionFactory),
+                pollingInterval: pollingInterval
+            )
         case .fixture(let scenario):
             self.init(scenario: scenario)
         }
@@ -217,7 +364,10 @@ public final class AppModel {
     public func select(scenario: FixtureScenario) async {
         guard isFixtureMode, scenario != self.scenario else { return }
         self.scenario = scenario
-        fixtureProvider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        let provider = FixtureStatusProvider(scenario: scenario, canonicalURL: canonicalFixtureURL)
+        fixtureProvider = provider
+        operationStatus = provider
+        configurationState = .idle
         await refresh()
     }
 
@@ -254,6 +404,9 @@ public final class AppModel {
         }
         if agentConnectionReport == nil, let agentConnections {
             agentConnectionReport = await agentConnections.inspect()
+        }
+        if case .idle = configurationState, lifecycleState.isOperational || isFixtureMode {
+            await refreshConfiguration()
         }
         if !routedInitialConnectionSetup {
             routedInitialConnectionSetup = true
@@ -499,6 +652,363 @@ public final class AppModel {
         workspaceActionState = .idle
     }
 
+    public func planCleanup(scope: CleanupScope = .global) async {
+        guard !isFixtureMode, lifecycleState.isOperational, let cleanupActions else { return }
+        cleanupActionState = .planning
+        do {
+            cleanupActionState = .review(try await cleanupActions.planCleanup(CleanupPlanRequest(scope: scope)))
+        } catch {
+            cleanupActionState = .failed(Self.actionFailureMessage(error))
+        }
+    }
+
+    public func applyCleanup(candidateIds: Set<String>) async {
+        guard case .review(let plan) = cleanupActionState, let cleanupActions else { return }
+        cleanupActionState = .applying(plan)
+        do {
+            let result = try await cleanupActions.applyCleanup(CleanupApplyRequest(
+                planId: plan.id,
+                expectedRevision: plan.revision,
+                candidateIds: candidateIds.sorted()
+            ))
+            cleanupActionState = .completed(result)
+            await refresh()
+        } catch {
+            cleanupActionState = .failed(Self.actionFailureMessage(error))
+        }
+    }
+
+    public func dismissCleanup() {
+        cleanupActionState = .idle
+    }
+
+    // MARK: - Private configuration (D-025)
+
+    /// Whether the daemon can answer configuration reads right now. Fixture
+    /// builds answer from scenario data so the surfaces stay renderable.
+    public var canReadConfiguration: Bool {
+        configurationActions != nil && (isFixtureMode || lifecycleState.isOperational)
+    }
+
+    public var canMutateConfiguration: Bool {
+        canReadConfiguration && !configurationState.isBusy
+    }
+
+    public var configurationPresentation: ConfigurationAcceptancePresentation? {
+        configurationState.status.map(ConfigurationAcceptancePresentation.init(status:))
+    }
+
+    /// Profile keys the daemon currently publishes (the status contract's
+    /// `profileKey` field is the repository key).
+    public var publishedProfileKeys: Set<String> {
+        Set(snapshot?.repositories.map(\.profileKey) ?? [])
+    }
+
+    /// Profile keys that appear in the desired file, the accepted revision,
+    /// or a staged candidate. Add Repository refuses to reuse any of them.
+    public var configuredRepositoryKeys: Set<String> {
+        var keys = publishedProfileKeys
+        if let candidate = configurationState.status?.candidate {
+            keys.formUnion(candidate.repositoryDigests.keys)
+        }
+        if let desired = configurationState.status?.desired {
+            keys.formUnion(desired.repositories.map(\.key))
+        }
+        return keys
+    }
+
+    /// The generic desired-file entry for a published repository, matched by
+    /// profile key. Nil when the desired file is absent, unreadable, or no
+    /// longer contains the entry.
+    public func desiredEntry(for repository: Repository) -> ConfigurationRepositoryEntry? {
+        desiredEntry(key: repository.profileKey)
+    }
+
+    public func desiredEntry(key: String) -> ConfigurationRepositoryEntry? {
+        configurationState.status?.desired?.repositories.first { $0.key == key }
+    }
+
+    /// Whether the daemon can edit the desired file right now: it must have
+    /// published a desired view that is either absent or readable.
+    public var canEditRepositoryConfiguration: Bool {
+        guard canMutateConfiguration, let desired = configurationState.status?.desired else { return false }
+        return !desired.present || desired.problem == nil
+    }
+
+    public func acceptanceState(for repository: Repository) -> RepositoryAcceptanceState {
+        configurationPresentation?.repositoryState(profileKey: repository.profileKey, isPublished: true) ?? .unknown
+    }
+
+    public func refreshConfiguration() async {
+        guard canReadConfiguration, let configurationActions else { return }
+        if case .idle = configurationState { configurationState = .loading }
+        do {
+            configurationState = .loaded(try await configurationActions.configuration())
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: configurationState.status)
+        }
+    }
+
+    /// Validates the desired private configuration file against the exact
+    /// accepted revision the app last observed.
+    public func validateConfiguration() async {
+        guard canMutateConfiguration, let configurationActions else { return }
+        let expectedRevision = configurationState.status?.acceptedRevision ?? 0
+        configurationState = .validating(configurationState.status)
+        do {
+            configurationState = .loaded(try await configurationActions.validateConfiguration(
+                ConfigurationValidationRequest(expectedRevision: expectedRevision)
+            ))
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: configurationState.status)
+        }
+    }
+
+    /// Accepts exactly the candidate digest shown to the owner at the exact
+    /// expected revision. Any drift is rejected by the daemon's CAS.
+    public func acceptConfiguration(candidateDigest: String) async {
+        guard canMutateConfiguration, let configurationActions,
+              let status = configurationState.status,
+              status.state == .pending,
+              let candidate = status.candidate,
+              candidate.digest == candidateDigest else { return }
+        configurationState = .accepting(status)
+        do {
+            configurationState = .loaded(try await configurationActions.acceptConfiguration(
+                ConfigurationAcceptanceRequest(expectedRevision: status.acceptedRevision, digest: candidate.digest)
+            ))
+            await refresh()
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: status)
+        }
+    }
+
+    /// Adds or updates one generic repository entry through the daemon. The
+    /// request carries the exact accepted revision and desired-file digest the
+    /// app last observed, so a concurrent manual edit is refused rather than
+    /// overwritten. Success leaves a staged candidate awaiting acceptance.
+    @discardableResult
+    public func saveRepositoryConfiguration(_ draft: RepositoryConfigurationDraft) async -> Bool {
+        await mutateRepositoryConfiguration(.upsert, key: draft.normalized.key, entry: draft.normalized.entry)
+    }
+
+    @discardableResult
+    public func setRepositoryEnabled(key: String, enabled: Bool) async -> Bool {
+        guard let current = desiredEntry(key: key) else {
+            configurationState = .failed(
+                message: "configuration.yaml no longer contains an entry for \(key). Reload the configuration state and try again.",
+                last: configurationState.status
+            )
+            return false
+        }
+        let entry = ConfigurationRepositoryEntry(
+            key: current.key, enabled: enabled, displayName: current.displayName, root: current.root,
+            remote: current.remote, defaultBase: current.defaultBase, managedWorktreesRoot: current.managedWorktreesRoot
+        )
+        return await mutateRepositoryConfiguration(.upsert, key: key, entry: entry)
+    }
+
+    @discardableResult
+    public func removeRepositoryConfiguration(key: String) async -> Bool {
+        await mutateRepositoryConfiguration(.remove, key: key, entry: nil)
+    }
+
+    private func mutateRepositoryConfiguration(
+        _ operation: ConfigurationRepositoryMutationRequest.Operation,
+        key: String,
+        entry: ConfigurationRepositoryEntry?
+    ) async -> Bool {
+        guard canEditRepositoryConfiguration, let configurationActions, let status = configurationState.status else { return false }
+        configurationState = .editing(status)
+        do {
+            configurationState = .loaded(try await configurationActions.mutateRepositoryConfiguration(
+                ConfigurationRepositoryMutationRequest(
+                    expectedRevision: status.acceptedRevision,
+                    expectedSourceDigest: status.desired?.sourceDigest,
+                    operation: operation,
+                    key: key,
+                    entry: entry
+                )
+            ))
+            return true
+        } catch {
+            configurationState = .failed(message: Self.actionFailureMessage(error), last: status)
+            return false
+        }
+    }
+
+    public func dismissConfigurationFailure() {
+        guard case .failed(_, let last) = configurationState else { return }
+        configurationState = last.map(ConfigurationActionState.loaded) ?? .idle
+    }
+
+    // MARK: - Agent handoff
+
+    /// Whether a worktree is ready for an agent handoff without preparation.
+    public func worktreeIsPrepared(_ worktree: Worktree) -> Bool {
+        worktree.workspace?.state == .ready
+    }
+
+    public var canPrepareWorktree: Bool {
+        !isFixtureMode && lifecycleState.isOperational && !agentHandoffState.isActive && !workspaceActionState.isActive
+    }
+
+    /// Prepares the exact worktree through the daemon and waits for the
+    /// operation to finish. Returns `true` when the worktree is ready for a
+    /// handoff; fixture builds and already-prepared worktrees skip the daemon.
+    @discardableResult
+    public func prepareWorktreeForHandoff(_ worktree: Worktree) async -> Bool {
+        if worktreeIsPrepared(worktree) || isFixtureMode {
+            agentHandoffState = .idle
+            return true
+        }
+        guard canPrepareWorktree, let workspaceActions else { return false }
+        agentHandoffState = .preparing(worktreeId: worktree.id, receipt: nil)
+        do {
+            let receipt = try await workspaceActions.prepareWorktree(PrepareWorktreeRequest(
+                requestId: "app_\(UUID().uuidString.lowercased())",
+                idempotencyKey: "workspace_prepare_\(UUID().uuidString.lowercased())",
+                worktreeId: worktree.id
+            ))
+            agentHandoffState = .preparing(worktreeId: worktree.id, receipt: receipt)
+            try await waitForOperation(receipt)
+            agentHandoffState = .idle
+            return true
+        } catch {
+            agentHandoffState = .failed(worktreeId: worktree.id, Self.actionFailureMessage(error))
+            return false
+        }
+    }
+
+    public func reportAgentHandoffFailure(worktreeId: String, message: String) {
+        agentHandoffState = .failed(worktreeId: worktreeId, message)
+    }
+
+    // MARK: - Occupancy leases
+
+    /// Generic holder kind for tasks the app launches into a worktree. It
+    /// names the category of holder, never the host product or a person.
+    public static let agentTaskHolderKind = "agent-task"
+
+    public var canRecordOccupancy: Bool {
+        !isFixtureMode && lifecycleState.isOperational && occupancyActions != nil && !occupancyActionState.isActive
+    }
+
+    /// Records an explicit, conservative handoff lease for a task the app is
+    /// about to launch into `worktree`. `handOffWorktree` is the transactional
+    /// entry point: it acquires through this method before launching and
+    /// releases again if the launch fails. The lease is a statement about
+    /// something the app does, not a guess about what an agent host is doing.
+    /// Returns the lease, or `nil` when the daemon refused or is unavailable;
+    /// the failure is published in `occupancyActionState`.
+    @discardableResult
+    public func recordAgentHandoff(for worktree: Worktree, holderLabel: String) async -> OccupancyLease? {
+        guard canRecordOccupancy, let occupancyActions else { return nil }
+        occupancyActionState = .recording(worktreeId: worktree.id)
+        do {
+            let lease = try await occupancyActions.acquireOccupancy(AcquireOccupancyRequest(
+                requestId: "app_\(UUID().uuidString.lowercased())",
+                worktreeId: worktree.id,
+                holderKind: Self.agentTaskHolderKind,
+                holderLabel: holderLabel
+            ))
+            occupancyActionState = .idle
+            await refresh()
+            return lease
+        } catch {
+            occupancyActionState = .failed(worktreeId: worktree.id, Self.actionFailureMessage(error))
+            return nil
+        }
+    }
+
+    /// Ends a handoff lease on the owner's explicit request. Only a release
+    /// ends a lease; the app never expires one on its own.
+    @discardableResult
+    public func releaseOccupancy(_ lease: OccupancyLease) async -> Bool {
+        guard canRecordOccupancy, let occupancyActions else { return false }
+        occupancyActionState = .releasing(worktreeId: lease.worktreeId, leaseId: lease.id)
+        do {
+            _ = try await occupancyActions.releaseOccupancy(ReleaseOccupancyRequest(
+                requestId: "app_\(UUID().uuidString.lowercased())",
+                worktreeId: lease.worktreeId,
+                leaseId: lease.id
+            ))
+            occupancyActionState = .idle
+            await refresh()
+            return true
+        } catch {
+            occupancyActionState = .failed(worktreeId: lease.worktreeId, Self.actionFailureMessage(error))
+            return false
+        }
+    }
+
+    /// Hands `worktree` to a task transactionally. The conservative lease is
+    /// recorded first so the worktree is protected before anything else can
+    /// observe the task; a refused lease means no launch. When `launch` throws,
+    /// the lease is released again because it no longer describes anything the
+    /// app did. When that rollback also fails, the lease is deliberately kept:
+    /// a stray protective lease is recoverable through the owner's Release
+    /// control, whereas an unprotected handoff is not. Fixture builds have no
+    /// daemon and launch without a lease.
+    public func handOffWorktree(
+        _ worktree: Worktree,
+        holderLabel: String,
+        launch: @Sendable () async throws -> Void
+    ) async -> AgentHandoffOutcome {
+        if isFixtureMode {
+            do {
+                try await launch()
+                return .launchedWithoutLease
+            } catch {
+                return .launchFailed(Self.launchFailureMessage(error))
+            }
+        }
+        guard let lease = await recordAgentHandoff(for: worktree, holderLabel: holderLabel) else {
+            let reason: String
+            if case .failed(_, let message) = occupancyActionState {
+                reason = message
+            } else {
+                reason = "Switchyard is not connected to its helper."
+            }
+            dismissOccupancyFailure()
+            return .leaseRefused("The task was not started because its handoff lease could not be recorded. \(reason)")
+        }
+        do {
+            try await launch()
+            return .launched(lease)
+        } catch {
+            let launchMessage = Self.launchFailureMessage(error)
+            if await releaseOccupancy(lease) {
+                return .launchFailed(launchMessage)
+            }
+            let releaseMessage: String
+            if case .failed(_, let message) = occupancyActionState {
+                releaseMessage = message
+            } else {
+                releaseMessage = "The helper did not confirm the release."
+            }
+            return .launchFailedLeaseHeld(
+                "\(launchMessage) The handoff lease recorded for this worktree could not be released (\(releaseMessage)). "
+                    + "It still protects the worktree from archive; release it from the worktree's Handed off section once you confirm no task is using it.",
+                lease
+            )
+        }
+    }
+
+    private static func launchFailureMessage(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? "The task could not be opened in this worktree."
+    }
+
+    public func dismissOccupancyFailure() {
+        guard !occupancyActionState.isActive else { return }
+        occupancyActionState = .idle
+    }
+
+    public func dismissAgentHandoff() {
+        guard !agentHandoffState.isActive else { return }
+        agentHandoffState = .idle
+    }
+
     private func monitorWorkspaceAction(_ kind: WorkspaceActionKind, receipt: MutationReceipt) {
         workspaceActionMonitor?.cancel()
         workspaceActionMonitor = Task { [weak self] in
@@ -535,10 +1045,21 @@ public final class AppModel {
         }
     }
 
+    /// Maximum number of status polls one accepted operation may take before
+    /// the app reports a timeout (900 × the one-second default is 15 minutes).
+    static let maximumOperationPolls = 900
+
+    /// Waits for an accepted operation by polling status only.
+    ///
+    /// This deliberately does not call `refresh()`: a full lifecycle refresh
+    /// inspects the LaunchAgent and may install, kickstart, or reload the
+    /// daemon, which must never happen while the daemon is executing an
+    /// operation the app just submitted. Lifecycle, doctor, and connection
+    /// state are left to the scheduled polling task.
     private func waitForOperation(_ receipt: MutationReceipt) async throws {
-        for _ in 0..<900 {
+        for _ in 0..<Self.maximumOperationPolls {
             try Task.checkCancellation()
-            await refresh()
+            await pollOperationStatus()
             if let operation = snapshot?.operations.first(where: { $0.id == receipt.operationId }) {
                 switch operation.state {
                 case .succeeded:
@@ -560,9 +1081,19 @@ public final class AppModel {
                     break
                 }
             }
-            try await Task.sleep(for: .seconds(1))
+            try await Task.sleep(for: operationPollingInterval)
         }
         throw EnvironmentWorkflowError.timedOut
+    }
+
+    /// Reads one status snapshot without touching lifecycle state. A failed
+    /// read keeps the previous snapshot so a transient error during an
+    /// operation never flips the app into a repair path mid-operation.
+    private func pollOperationStatus() async {
+        guard let operationStatus else { return }
+        guard let loaded = try? await operationStatus.loadStatus() else { return }
+        snapshot = loaded
+        lastRefreshedAt = Date()
     }
 
     private func refreshFixture(using provider: any StatusProviding) async {
@@ -600,6 +1131,9 @@ public final class AppModel {
             selection = nil
         }
         if case .worktree(_, let id) = selection, snapshot?.worktree(withId: id) == nil {
+            selection = nil
+        }
+        if case .repository(let id) = selection, snapshot?.repository(withId: id) == nil {
             selection = nil
         }
     }

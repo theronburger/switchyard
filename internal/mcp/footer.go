@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 const (
@@ -13,9 +13,9 @@ const (
 )
 
 func BuildEnvironmentContext(
-	snapshot contractv1.StatusSnapshot,
+	snapshot contractv2.StatusSnapshot,
 	environmentID string,
-) (*contractv1.EnvironmentContext, error) {
+) (*contractv2.EnvironmentContext, error) {
 	if environmentID == "" {
 		return nil, nil
 	}
@@ -24,12 +24,12 @@ func BuildEnvironmentContext(
 	if !found {
 		return nil, fmt.Errorf("environment %q was not found", environmentID)
 	}
-	alerts := make(map[string]contractv1.Alert, len(snapshot.Alerts))
+	alerts := make(map[string]contractv2.Alert, len(snapshot.Alerts))
 	for _, alert := range snapshot.Alerts {
 		alerts[alert.ID] = alert
 	}
 
-	attention := make([]contractv1.AttentionItem, 0, min(len(environment.AttentionAlertIDs), maximumAttentionItems))
+	attention := make([]contractv2.AttentionItem, 0, min(len(environment.AttentionAlertIDs), maximumAttentionItems))
 	for _, alertID := range environment.AttentionAlertIDs {
 		alert, exists := alerts[alertID]
 		if !exists {
@@ -38,7 +38,7 @@ func BuildEnvironmentContext(
 		if len(attention) == maximumAttentionItems {
 			continue
 		}
-		attention = append(attention, contractv1.AttentionItem{
+		attention = append(attention, contractv2.AttentionItem{
 			Severity: alert.Severity,
 			Code:     alert.Code,
 			Summary:  alert.Summary,
@@ -69,7 +69,7 @@ func BuildEnvironmentContext(
 		}
 	}
 
-	return &contractv1.EnvironmentContext{
+	return &contractv2.EnvironmentContext{
 		Revision:       environment.Revision,
 		EnvironmentID:  environment.ID,
 		RunID:          runID,
@@ -88,9 +88,9 @@ func BuildEnvironmentContext(
 }
 
 func pullRequestContext(
-	repositories []contractv1.Repository,
-	environment contractv1.Environment,
-) *contractv1.PullRequestContext {
+	repositories []contractv2.Repository,
+	environment contractv2.Environment,
+) *contractv2.PullRequestContext {
 	for _, repository := range repositories {
 		if repository.ID != environment.RepositoryID {
 			continue
@@ -101,7 +101,7 @@ func pullRequestContext(
 				continue
 			}
 			pullRequest := worktree.PullRequest.PullRequest
-			return &contractv1.PullRequestContext{
+			return &contractv2.PullRequestContext{
 				Number: pullRequest.Number, URL: pullRequest.URL, State: pullRequest.State,
 				Draft: pullRequest.Draft, Mergeable: pullRequest.Mergeable,
 				ReviewDecision: pullRequest.ReviewDecision, ChecksState: pullRequest.Checks.State,
@@ -113,11 +113,11 @@ func pullRequestContext(
 	return nil
 }
 
-func environmentByID(environments []contractv1.Environment, id string) (contractv1.Environment, bool) {
+func environmentByID(environments []contractv2.Environment, id string) (contractv2.Environment, bool) {
 	for _, environment := range environments {
 		if environment.ID == id {
 			return environment, true
 		}
 	}
-	return contractv1.Environment{}, false
+	return contractv2.Environment{}, false
 }

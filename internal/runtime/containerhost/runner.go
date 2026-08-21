@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
+	"github.com/theronburger/switchyard/internal/runtime/helperenv"
 )
 
 const maximumCommandOutput = 64 * 1024 * 1024
@@ -52,6 +54,7 @@ func (OSRunner) Run(ctx context.Context, command Command) ([]byte, error) {
 
 	stdout := &boundedBuffer{limit: maximumCommandOutput}
 	process := exec.CommandContext(ctx, command.Executable, command.Arguments...)
+	process.Env = helperenv.Sanitized()
 	process.Stdout = stdout
 	process.Stderr = io.Discard
 	err := process.Run()

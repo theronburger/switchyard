@@ -98,6 +98,22 @@ func TestManagedManagerRefusesUnpushedAndForeignWorktrees(t *testing.T) {
 		t.Fatalf("unpushed archive error: %v", err)
 	}
 
+	// A configured upstream whose ref no longer exists (remote branch deleted
+	// and pruned) must not read as "pushed": Git names the upstream but emits
+	// no ahead/behind line, so the start-revision comparison must still apply.
+	runManagedGit(t, repository, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing-remote"))
+	runManagedGit(t, created.WorktreePath, "config", "branch.feature/unpushed.remote", "origin")
+	runManagedGit(t, created.WorktreePath, "config", "branch.feature/unpushed.merge", "refs/heads/feature/unpushed")
+	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{
+		RepositoryID: "repository_01", WorktreePath: created.WorktreePath,
+	})
+	if !errors.Is(err, ErrManagedUnpushed) {
+		t.Fatalf("archive with a vanished upstream ref must refuse unpushed work: %v", err)
+	}
+	if _, err := os.Stat(created.WorktreePath); err != nil {
+		t.Fatalf("unpushed worktree was removed: %v", err)
+	}
+
 	foreignPath := filepath.Join(managedRoot, "foreign")
 	runManagedGit(t, repository, "worktree", "add", "-b", "feature/foreign", foreignPath, "main")
 	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{
@@ -176,6 +192,108 @@ func TestManagedManagerAdoptsOnlyCleanPushedLinkedWorktrees(t *testing.T) {
 		RepositoryID: "repository_01", WorktreePath: worktreePath,
 	}); err != nil {
 		t.Fatalf("archive adopted worktree: %v", err)
+	}
+}
+
+// Adoption is the generic repair for an ownership record that is corrupt or
+// never reached ready. It must re-verify the worktree completely, overwrite
+// only a plain owner-only record file, and never overwrite a readable record
+// that claims a different worktree identity.
+func TestManagedManagerAdoptionRepairsInvalidOwnershipRecords(t *testing.T) {
+	repository := initializeManagedTestRepository(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runManagedGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	runManagedGit(t, repository, "remote", "add", "origin", remote)
+	runManagedGit(t, repository, "push", "-u", "origin", "main")
+	managedRoot := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(managedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(managedRoot, "repairable")
+	runManagedGit(t, repository, "worktree", "add", "-b", "feature/repairable", worktreePath, "main")
+	runManagedGit(t, worktreePath, "push", "-u", "origin", "HEAD")
+	manager, err := NewManagedManager(ManagedConfig{
+		GitExecutable: testGitExecutable, OwnershipRoot: filepath.Join(t.TempDir(), "ownership"),
+		Repositories: []ManagedRepository{{
+			ID: "repository_01", Root: repository, ManagedRoot: managedRoot, DefaultBase: "main",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordPath := manager.recordPath(worktreePath)
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// A corrupt record is repaired by a fully verified re-adoption.
+	if err := os.WriteFile(recordPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Owns("repository_01", worktreePath) {
+		t.Fatal("corrupt record was trusted as ownership")
+	}
+	adopted, err := manager.Adopt(context.Background(), AdoptManagedRequest{RepositoryID: "repository_01", WorktreePath: worktreePath})
+	if err != nil || adopted.State != "ready" || !manager.Owns("repository_01", worktreePath) {
+		t.Fatalf("repair through adoption: result=%+v err=%v", adopted, err)
+	}
+
+	// A record for this worktree that never reached ready is repaired too.
+	record, err := readManagedRecord(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.State = "failed"
+	if err := writeManagedRecord(recordPath, record, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Adopt(context.Background(), AdoptManagedRequest{RepositoryID: "repository_01", WorktreePath: worktreePath}); err != nil || !manager.Owns("repository_01", worktreePath) {
+		t.Fatalf("repair of a failed record: %v", err)
+	}
+
+	// A readable record that claims another worktree is a conflict, not a
+	// repair target; it survives untouched.
+	record.WorktreePath = filepath.Join(managedRoot, "elsewhere")
+	record.State = "ready"
+	if err := writeManagedRecord(recordPath, record, true); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Adopt(context.Background(), AdoptManagedRequest{RepositoryID: "repository_01", WorktreePath: worktreePath}); !errors.Is(err, ErrManagedExists) {
+		t.Fatalf("conflicting record adoption error: %v", err)
+	}
+	after, err := os.ReadFile(recordPath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("conflicting record was rewritten: %v", err)
+	}
+
+	// A world-readable or foreign record file is never overwritten.
+	if err := os.WriteFile(recordPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(recordPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Adopt(context.Background(), AdoptManagedRequest{RepositoryID: "repository_01", WorktreePath: worktreePath}); !errors.Is(err, ErrManagedRecord) {
+		t.Fatalf("wide record adoption error: %v", err)
+	}
+	if contents, err := os.ReadFile(recordPath); err != nil || string(contents) != "{not json" {
+		t.Fatalf("wide record was rewritten: %q %v", contents, err)
+	}
+
+	// A dirty worktree is still refused even when its record needs repair.
+	if err := os.Chmod(recordPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeManagedTestFile(t, worktreePath, "dirty.txt", "dirty\n")
+	if _, err := manager.Adopt(context.Background(), AdoptManagedRequest{RepositoryID: "repository_01", WorktreePath: worktreePath}); !errors.Is(err, ErrManagedDirty) {
+		t.Fatalf("dirty repair adoption error: %v", err)
+	}
+	if manager.Owns("repository_01", worktreePath) {
+		t.Fatal("dirty worktree was re-owned without verification")
 	}
 }
 

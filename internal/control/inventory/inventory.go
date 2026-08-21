@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 type Inventory struct {
@@ -13,7 +13,7 @@ type Inventory struct {
 }
 
 type DiscoveryResult struct {
-	Repository   *contractv1.Repository
+	Repository   *contractv2.Repository
 	ControlPaths RepositoryControlPaths
 	Alerts       []Alert
 	Errors       []DiscoveryError
@@ -37,7 +37,7 @@ func (inventory Inventory) DiscoverRepository(
 ) DiscoveryResult {
 	if repositoryRoot == "" {
 		return DiscoveryResult{Errors: []DiscoveryError{newDiscoveryError(
-			ErrorAdapterObservationInvalid,
+			ErrorProfileObservationInvalid,
 			"repository",
 			"",
 		)}}
@@ -72,7 +72,7 @@ func (inventory Inventory) DiscoverRepository(
 	}
 	if !valid && len(result.Errors) == 0 {
 		result.Errors = append(result.Errors, newDiscoveryError(
-			ErrorAdapterObservationInvalid,
+			ErrorProfileObservationInvalid,
 			"repository",
 			repositoryIdentity,
 		))
@@ -84,7 +84,7 @@ func (inventory Inventory) DiscoverRepository(
 		severity, summary, known := alertDetails(observedAlert.Code)
 		if !known {
 			result.Errors = append(result.Errors, newDiscoveryError(
-				ErrorAdapterObservationInvalid,
+				ErrorProfileObservationInvalid,
 				"repository",
 				repositoryIdentity,
 			))
@@ -127,8 +127,8 @@ func observedResource(
 func newDiscoveryError(code ErrorCode, resourceKind string, resourceID string) DiscoveryError {
 	message, retryable, known := errorDetails(code)
 	if !known {
-		message, retryable, _ = errorDetails(ErrorAdapterObservationInvalid)
-		code = ErrorAdapterObservationInvalid
+		message, retryable, _ = errorDetails(ErrorProfileObservationInvalid)
+		code = ErrorProfileObservationInvalid
 	}
 	return DiscoveryError{
 		Code:         code,

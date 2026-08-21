@@ -447,9 +447,10 @@ func (host *fakeProcesses) Reconcile(context.Context, string) (processhost.Obser
 }
 
 type fakeReadiness struct {
-	err     error
-	entered chan<- struct{}
-	block   <-chan struct{}
+	err       error
+	healthErr error
+	entered   chan<- struct{}
+	block     <-chan struct{}
 }
 
 type staticPlanner struct {
@@ -532,6 +533,15 @@ func cloneExecutionPlan(plan ExecutionPlan) ExecutionPlan {
 			[]string(nil), plan.Services[index].Process.Environment...,
 		)
 	}
+	copy.ServiceStages = make([][]ServiceLaunch, len(plan.ServiceStages))
+	for stageIndex, stage := range plan.ServiceStages {
+		copy.ServiceStages[stageIndex] = append([]ServiceLaunch(nil), stage...)
+		for serviceIndex := range copy.ServiceStages[stageIndex] {
+			copy.ServiceStages[stageIndex][serviceIndex].PortKeys = append([]portlease.Key(nil), stage[serviceIndex].PortKeys...)
+			copy.ServiceStages[stageIndex][serviceIndex].Process.Arguments = append([]string(nil), stage[serviceIndex].Process.Arguments...)
+			copy.ServiceStages[stageIndex][serviceIndex].Process.Environment = append([]string(nil), stage[serviceIndex].Process.Environment...)
+		}
+	}
 	return copy
 }
 
@@ -552,7 +562,10 @@ func (readiness *fakeReadiness) WaitReady(ctx context.Context, _ ReadinessTarget
 	return nil
 }
 
-func (*fakeReadiness) CheckHealth(context.Context, ReadinessTarget) (HealthReport, error) {
+func (readiness *fakeReadiness) CheckHealth(context.Context, ReadinessTarget) (HealthReport, error) {
+	if readiness.healthErr != nil {
+		return HealthReport{}, readiness.healthErr
+	}
 	return HealthReport{Readiness: "ready", Health: "healthy"}, nil
 }
 
@@ -565,7 +578,7 @@ func fullStartRequest(t *testing.T, operationID, environmentID, runID string) St
 			Key:            portlease.Key{EnvironmentID: environmentID, ServiceID: serviceID, Purpose: "http"},
 			PreferredPorts: []int{7000},
 		}},
-		Intent: &PlanIntent{Adapter: "test", ServiceIDs: []string{serviceID}},
+		Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{serviceID}},
 	}
 }
 

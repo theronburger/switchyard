@@ -21,6 +21,29 @@ public struct DaemonStatusProvider: StatusProviding {
     }
 }
 
+/// Status-only reader used while the app waits for an accepted operation.
+///
+/// It connects to the endpoint the daemon has already published, performs the
+/// exact-version handshake, and reads status. It never inspects the
+/// LaunchAgent, installs or kickstarts the daemon, runs the doctor, or
+/// repairs anything; an unreachable daemon is reported as an error and left
+/// for the next scheduled lifecycle refresh.
+public struct LiveStatusReader: StatusProviding {
+    private let connectionFactory: any RuntimeConnectionEstablishing
+
+    public init(connectionFactory: any RuntimeConnectionEstablishing = RuntimeConnectionFactory()) {
+        self.connectionFactory = connectionFactory
+    }
+
+    public var sourceDescription: String { "daemon" }
+
+    public func loadStatus() async throws -> StatusSnapshot {
+        let connection = try connectionFactory.connect()
+        _ = try await connection.client.handshake()
+        return try await connection.client.status()
+    }
+}
+
 /// Development scenarios the fixture-driven app can render.
 public enum FixtureScenario: String, CaseIterable, Sendable, Identifiable {
     case canonical
@@ -40,7 +63,7 @@ public enum FixtureScenario: String, CaseIterable, Sendable, Identifiable {
     public var blurb: String {
         switch self {
         case .canonical:
-            return "The frozen contract fixture: one Marketplace worktree with a degraded environment."
+            return "The frozen contract fixture: one configured repository worktree with a degraded environment."
         case .empty:
             return "A healthy daemon that has not discovered any repositories yet."
         case .failure:
@@ -94,14 +117,14 @@ public struct FixtureStatusProvider: StatusProviding {
         }
     }
 
-    /// Finds `contracts/v1/fixtures/status.json` for development builds:
+    /// Finds `contracts/v2/fixtures/status.json` for development builds:
     /// an explicit environment override first, then a walk up from the
     /// current directory, then a walk up from this source file.
     public static func locateCanonicalFixture(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) throws -> URL {
-        let relativePath = "contracts/v1/fixtures/status.json"
+        let relativePath = "contracts/v2/fixtures/status.json"
         var searched: [String] = []
 
         if let override = environment["SWITCHYARD_STATUS_FIXTURE"] {
@@ -136,7 +159,7 @@ public struct FixtureStatusProvider: StatusProviding {
     /// discovered yet.
     public static let emptyStatusJSON = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "snapshotRevision": 0,
       "generatedAt": "2026-08-14T08:00:00Z",
       "daemon": {

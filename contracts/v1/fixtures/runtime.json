@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 1,
-  "endpoint": "http://127.0.0.1:49152",
-  "daemonInstanceId": "daemon_01J5EYX37NFK6E7K5M0RMWN9G8",
-  "daemonVersion": "0.1.0-dev",
-  "pid": 4242,
-  "processStartedAt": "2026-08-14T09:00:00Z",
-  "generatedAt": "2026-08-14T09:00:01Z"
-}

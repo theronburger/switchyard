@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	contractv1 "github.com/theronburger/switchyard/internal/contract/v1"
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestDoctorReportsStructuredPassingChecks(t *testing.T) {
@@ -55,7 +55,7 @@ func TestDoctorReportsUnknownDaemonWithoutLeakingSecrets(t *testing.T) {
 			SchemaVersion:           RuntimeDescriptorSchemaVersion,
 			DaemonInstanceID:        "daemon_foreign",
 			DaemonVersion:           snapshot.Daemon.Version,
-			SupportedSchemaVersions: []int{contractv1.SchemaVersion},
+			SupportedSchemaVersions: []int{contractv2.SchemaVersion},
 		})
 	}))
 	defer server.Close()
@@ -105,7 +105,7 @@ func TestDoctorSkipsDaemonChecksWhenRuntimeFilesAreMissing(t *testing.T) {
 	}
 }
 
-func healthyDaemonServer(t *testing.T, token string, snapshot contractv1.StatusSnapshot) *httptest.Server {
+func healthyDaemonServer(t *testing.T, token string, snapshot contractv2.StatusSnapshot) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer "+token {
@@ -119,7 +119,7 @@ func healthyDaemonServer(t *testing.T, token string, snapshot contractv1.StatusS
 				SchemaVersion:           RuntimeDescriptorSchemaVersion,
 				DaemonInstanceID:        snapshot.Daemon.InstanceID,
 				DaemonVersion:           snapshot.Daemon.Version,
-				SupportedSchemaVersions: []int{contractv1.SchemaVersion},
+				SupportedSchemaVersions: []int{contractv2.SchemaVersion},
 			})
 		case "/v1/status":
 			writeTestJSON(t, response, snapshot)

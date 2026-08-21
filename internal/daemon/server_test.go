@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	contractv2 "github.com/theronburger/switchyard/internal/contract/v2"
 )
 
 func TestLoopbackServerServesAndShutsDown(t *testing.T) {
@@ -28,6 +30,7 @@ func TestLoopbackServerServesAndShutsDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set(contractv2.SchemaVersionHeader, "2")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)

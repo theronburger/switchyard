@@ -16,6 +16,10 @@ var (
 	ErrForeignOwnership  = errors.New("environment contains a foreign or unverifiable resource")
 	ErrProtectedInfra    = errors.New("container infrastructure is protected from mutation")
 	ErrProcessNotRunning = errors.New("environment process is not running after readiness")
+	// ErrReadinessTimedOut is returned by a ReadinessChecker when a service's
+	// own readiness timeout elapses. It is deliberately not
+	// context.DeadlineExceeded: the operation failed, it was not cancelled.
+	ErrReadinessTimedOut = errors.New("service readiness timed out")
 )
 
 type OperationKind string
@@ -55,7 +59,8 @@ const (
 )
 
 type ProjectionRequest struct {
-	ID string
+	ID          string
+	ArtifactIDs []string
 }
 
 type ProjectionChange struct {
@@ -129,12 +134,12 @@ type ServiceLaunch struct {
 }
 
 // PlanIntent is the small, persistence-safe input to deterministic late
-// binding. Adapter-specific planners retain repository paths and other local
+// binding. ProfileKey-specific planners retain repository paths and other local
 // details; the coordinator persists only this intent and assigned leases.
 type PlanIntent struct {
-	Adapter    string
-	TargetID   string
-	ServiceIDs []string
+	ProfileDigest string
+	TargetID      string
+	ServiceIDs    []string
 }
 
 // SourceSnapshot is the repository state captured immediately before an
@@ -160,6 +165,9 @@ type ExecutionPlan struct {
 	Infrastructure  []containerhost.Goal
 	Initializations []PreparationSpec
 	Services        []ServiceLaunch
+	// ServiceStages is the dependency-ordered form used by compiled profiles.
+	// Services remains the compatibility form for already-persisted v1 plans.
+	ServiceStages [][]ServiceLaunch
 }
 
 type ServiceResult struct {
@@ -189,9 +197,14 @@ type StopRequest struct {
 }
 
 type EnvironmentResult struct {
-	EnvironmentID  string
-	RunID          string
-	TargetID       string
+	EnvironmentID string
+	RunID         string
+	TargetID      string
+	// ProfileDigest is the accepted repository-profile digest the run was
+	// pinned to. It lets a restarted daemon recover the exact payload even
+	// after later configuration acceptances. Results persisted before the
+	// digest was recorded leave it empty and resolve to the current profile.
+	ProfileDigest  string
 	State          domain.EnvironmentState
 	Ports          []portlease.Lease
 	Projection     *ProjectionChange
