@@ -6,7 +6,7 @@ run:
 linters:
   default: standard
   exclusions:
-    # Marketplace-prefixed errors are user-facing diagnostics surfaced by the
+    # Switchyard-prefixed errors are user-facing diagnostics surfaced by the
     # app and CLI, so preserve the product name at the beginning of sentences.
     rules:
       - linters: [staticcheck]

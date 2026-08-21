@@ -446,7 +446,7 @@ func TestEnvironmentActionServiceHoldsWorktreeKeyUntilStartPublishes(t *testing.
 		Workspace: noOpWorkspaceEnsurer(),
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: sequentialIDs("environment"), Keys: keys,
 	})

@@ -291,7 +291,7 @@ func TestApplicationStartBuildsIdempotentMutation(t *testing.T) {
 		NewRequestID: func() (string, error) { return "request_test", nil },
 	}
 	code := application.Run(context.Background(), []string{
-		"start", "worktree_01", "organizer", "nonprofit-service",
+		"start", "worktree_01", "storefront", "billing-service",
 		"--target", "demo", "--confirm-target", "demo", "--expected-revision", "19", "--idempotency-key", "retry-key", "--json",
 	})
 	if code != ExitSuccess {

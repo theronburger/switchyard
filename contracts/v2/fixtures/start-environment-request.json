@@ -5,7 +5,7 @@
   "worktreeId": "worktree_3mq4ceuv27jtsjlk5anfdiykpt",
   "targetId": "testing",
   "serviceIds": [
-    "organizer",
-    "nonprofit-service"
+    "storefront",
+    "billing-service"
   ]
 }

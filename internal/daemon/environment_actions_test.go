@@ -163,7 +163,7 @@ func TestEnvironmentActionServiceEnsuresWorkspaceBeforeEnvironment(t *testing.T)
 		}},
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: func(prefix string) (string, error) {
 			if prefix == "operation" {
@@ -212,7 +212,7 @@ func TestEnvironmentActionServiceDoesNotStartEnvironmentWhenWorkspaceFails(t *te
 		}},
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01", WorktreeID: "worktree_01",
-			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: func(prefix string) (string, error) {
 			if prefix == "operation" {
@@ -426,10 +426,10 @@ func newTestActionService(
 		Resolver: fakeActionResolver{start: EnvironmentStartResolution{
 			EnvironmentID: "environment_01",
 			Ports: []portlease.Reservation{{
-				Key:            portlease.Key{EnvironmentID: "environment_01", ServiceID: "organizer", Purpose: "http"},
+				Key:            portlease.Key{EnvironmentID: "environment_01", ServiceID: "storefront", Purpose: "http"},
 				PreferredPorts: []int{7005},
 			}},
-			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"organizer"}},
+			Intent: environmentcontrol.PlanIntent{ProfileDigest: "sample", ServiceIDs: []string{"storefront"}},
 		}},
 		NewID: func(string) (string, error) {
 			identifier := identifiers[index]
@@ -448,6 +448,6 @@ func validActionStartRequest() contractv2.StartEnvironmentRequest {
 		MutationRequest: contractv2.MutationRequest{
 			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_01", IdempotencyKey: "idempotency_" + "01",
 		},
-		WorktreeID: "worktree_01", ServiceIDs: []string{"organizer"},
+		WorktreeID: "worktree_01", ServiceIDs: []string{"storefront"},
 	}
 }

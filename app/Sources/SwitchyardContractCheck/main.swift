@@ -403,7 +403,7 @@ runner.check("mutation fixtures decode across the Swift boundary") {
     try expect(start.worktreeId.hasPrefix("worktree_"), "start worktree id did not decode")
     try expect(start.targetId == "testing", "start target did not decode")
     try expect(start.confirmedTargetId == nil, "safe fixture unexpectedly requires confirmation")
-    try expect(start.serviceIds == ["organizer", "nonprofit-service"], "start service selection changed")
+    try expect(start.serviceIds == ["storefront", "billing-service"], "start service selection changed")
 
     let stop = try decoder.decode(
         StopEnvironmentRequest.self,
@@ -518,12 +518,12 @@ runner.check("Swift mutation requests encode canonical non-null service arrays")
         worktreeId: "worktree_test",
         targetId: "demo",
         confirmedTargetId: "demo",
-        serviceIds: ["organizer"]
+        serviceIds: ["storefront"]
     )
     let encoded = try JSONEncoder().encode(request)
     let value = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     try expect(value?["schemaVersion"] as? Int == contractSchemaVersion, "encoded schema changed")
-    try expect(value?["serviceIds"] as? [String] == ["organizer"], "services did not encode as an array")
+    try expect(value?["serviceIds"] as? [String] == ["storefront"], "services did not encode as an array")
     try expect(value?["targetId"] as? String == "demo", "target did not encode")
     try expect(value?["confirmedTargetId"] as? String == "demo", "target confirmation did not encode")
     try expect(value?["expectedEnvironmentRevision"] == nil, "nil revision did not stay omitted")
@@ -544,7 +544,7 @@ runner.check("canonical fixture decodes with expected fields") {
         repository.runtime?.targets.filter(\.warnOnStart).map(\.id) == ["demo", "production"],
         "warn-on-start target policy did not decode"
     )
-    try expect(repository.runtime?.services.count == 18, "repository service catalog did not decode")
+    try expect(repository.runtime?.services.count == 8, "repository service catalog did not decode")
     try expect(repository.worktrees.count == 1, "expected one worktree")
     try expect(!repository.worktrees[0].git.isClean, "canonical worktree should report fixture changes")
     try expect(repository.worktrees[0].git.hasTrackedChanges, "canonical tracked-change state did not decode")
@@ -569,30 +569,30 @@ runner.check("canonical fixture decodes with expected fields") {
     try expect(environment.observedState == .running, "observed state did not decode")
     try expect(environment.services.count == 2, "expected two services")
 
-    guard let organizer = environment.services.first(where: { $0.id == "organizer" }) else {
-        throw CheckError("organizer service is missing")
+    guard let storefront = environment.services.first(where: { $0.id == "storefront" }) else {
+        throw CheckError("storefront service is missing")
     }
-    try expect(organizer.run?.cpuPercent == 8.2, "organizer run cpu did not decode")
-    try expect(organizer.run?.processCount == 7, "organizer run process count did not decode")
+    try expect(storefront.run?.cpuPercent == 8.2, "storefront run cpu did not decode")
+    try expect(storefront.run?.processCount == 7, "storefront run process count did not decode")
     try expect(
-        organizer.run?.sourceRevision == "0123456789abcdef0123456789abcdef01234567",
-        "organizer source revision did not decode"
+        storefront.run?.sourceRevision == "0123456789abcdef0123456789abcdef01234567",
+        "storefront source revision did not decode"
     )
-    try expect(organizer.run?.sourceHasTrackedChanges == true, "organizer source dirty state did not decode")
+    try expect(storefront.run?.sourceHasTrackedChanges == true, "storefront source dirty state did not decode")
 
-    guard let nonprofit = environment.services.first(where: { $0.id == "nonprofit-service" }) else {
-        throw CheckError("nonprofit service is missing")
+    guard let billing = environment.services.first(where: { $0.id == "billing-service" }) else {
+        throw CheckError("billing service is missing")
     }
-    try expect(nonprofit.observedState == .exited, "nonprofit observed state did not decode")
-    try expect(nonprofit.health == .unhealthy, "nonprofit health did not decode")
-    try expect(nonprofit.run?.restartCount == 2, "nonprofit restart count did not decode")
+    try expect(billing.observedState == .exited, "billing observed state did not decode")
+    try expect(billing.health == .unhealthy, "billing health did not decode")
+    try expect(billing.run?.restartCount == 2, "billing restart count did not decode")
 
     try expect(environment.portLeases.count == 3, "expected three port leases")
-    try expect(environment.portLease(withId: "port_organizer_http")?.port == 7005, "organizer port did not decode")
-    try expect(environment.portLeases(for: nonprofit).count == 2, "nonprofit port leases did not resolve")
+    try expect(environment.portLease(withId: "port_storefront_http")?.port == 7005, "storefront port did not decode")
+    try expect(environment.portLeases(for: billing).count == 2, "billing port leases did not resolve")
     try expect(environment.infrastructureLeases.first?.ownership == "owned", "infrastructure ownership did not decode")
     try expect(environment.urls.count == 2, "expected two URLs")
-    try expect(environment.sortedURLs.first?.service == "nonprofit-service", "URL ordering is not deterministic")
+    try expect(environment.sortedURLs.first?.service == "billing-service", "URL ordering is not deterministic")
     try expect(environment.resources.memoryBytes == 1_400_000_000, "aggregate memory did not decode")
 
     guard let worktreeChanges = snapshot.repositories.first?.worktrees.first?.changes else {
@@ -600,11 +600,11 @@ runner.check("canonical fixture decodes with expected fields") {
     }
     try expect(worktreeChanges.committed.additions == 2_031, "committed additions did not decode")
     try expect(worktreeChanges.uncommitted.deletions == 3, "uncommitted deletions did not decode")
-    try expect(worktreeChanges.service("organizer")?.committed.files == 11, "service attribution did not decode")
+    try expect(worktreeChanges.service("storefront")?.committed.files == 11, "service attribution did not decode")
     try expect(worktreeChanges.sharedCommitted.additions == 30, "shared changes did not decode")
 
     try expect(snapshot.operations.first?.state == .succeeded, "operation state did not decode")
-    try expect(snapshot.operations.first?.runId == organizer.run?.id, "operation run identity did not decode")
+    try expect(snapshot.operations.first?.runId == storefront.run?.id, "operation run identity did not decode")
     try expect(snapshot.alerts.first?.code == "SERVICE_EXITED", "alert code did not decode")
     try expect(snapshot.alerts.first?.severity == .error, "alert severity did not decode")
 }
@@ -733,7 +733,7 @@ runner.check("environment context footer decodes with caps") {
       "desiredState": "running",
       "observedState": "running",
       "health": "degraded",
-      "urls": {"organizer": "http://127.0.0.1:7005"},
+      "urls": {"storefront": "http://127.0.0.1:7005"},
       "attentionCount": 5,
       "attention": [
         {"severity": "error", "code": "SERVICE_CRASHED", "summary": "one"},
@@ -1727,7 +1727,7 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
         try expect(body?["worktreeId"] as? String == "worktree_app", "worktree was not encoded")
         try expect(body?["targetId"] as? String == "production", "target was not encoded")
         try expect(body?["confirmedTargetId"] as? String == "production", "target confirmation was not encoded")
-        try expect(body?["serviceIds"] as? [String] == ["organizer", "nonprofit-service"], "services were not encoded")
+        try expect(body?["serviceIds"] as? [String] == ["storefront", "billing-service"], "services were not encoded")
         return (Data(receipt.utf8), httpResponse(for: request, status: 202))
     }
     let client = try DaemonClient(descriptor: sampleDescriptor, token: token, transport: transport)
@@ -1737,7 +1737,7 @@ await runner.checkAsync("daemon client submits authenticated environment mutatio
         worktreeId: "worktree_app",
         targetId: "production",
         confirmedTargetId: "production",
-        serviceIds: ["organizer", "nonprofit-service"]
+        serviceIds: ["storefront", "billing-service"]
     ))
     try expect(result.operationId == "operation_app_start", "mutation receipt did not decode")
 }
@@ -1893,7 +1893,7 @@ await runner.checkAsync("live environment actions handshake before mutation") {
         requestId: requestId,
         idempotencyKey: "start_verified",
         worktreeId: "worktree_verified",
-        serviceIds: ["organizer"]
+        serviceIds: ["storefront"]
     ))
     try expect(paths.values == ["/handshake", "/v1/environments"], "mutation did not verify the live daemon first")
 }
@@ -2541,7 +2541,7 @@ await runner.checkAsync("live app model keeps start and stop transitions scoped 
         worktreeId: snapshot.repositories[0].worktrees[0].id,
         targetId: "demo",
         confirmedTargetId: "demo",
-        serviceIds: ["organizer", "nonprofit-service"]
+        serviceIds: ["storefront", "billing-service"]
     )
     guard case .accepted(let start) = model.environmentActionState else {
         throw CheckError("accepted start receipt was not exposed")
@@ -2554,7 +2554,7 @@ await runner.checkAsync("live app model keeps start and stop transitions scoped 
     try expect(starts.count == 1, "start action was not submitted once")
     try expect(starts[0].targetId == "demo", "selected target changed")
     try expect(starts[0].confirmedTargetId == "demo", "selected target confirmation changed")
-    try expect(starts[0].serviceIds == ["organizer", "nonprofit-service"], "selected services changed")
+    try expect(starts[0].serviceIds == ["storefront", "billing-service"], "selected services changed")
 
     guard let environment = snapshot.environments.first else { throw CheckError("fixture environment missing") }
     let stopModel = AppModel(
@@ -2624,7 +2624,7 @@ await runner.checkAsync("live app model rejects an old healthy run as start comp
     await model.refresh()
     await model.startEnvironment(
         worktreeId: snapshot.repositories[0].worktrees[0].id,
-        serviceIds: ["organizer", "nonprofit-service"]
+        serviceIds: ["storefront", "billing-service"]
     )
     for _ in 0..<50 {
         if case .failed = model.environmentActionState { break }

@@ -38,7 +38,7 @@ func TestMonitorTransitionsFromStartingThroughUnhealthyAndRecovery(t *testing.T)
 	}}
 	monitor := newTestMonitor(t, prober)
 	spec := ServiceSpec{
-		EnvironmentID: "env-1", ServiceID: "organizer", RunID: "run-1", FailureThreshold: 3,
+		EnvironmentID: "env-1", ServiceID: "storefront", RunID: "run-1", FailureThreshold: 3,
 		Readiness: []ProbeSpec{{ID: "ready", Kind: ProbeKindTCP}},
 	}
 	var runtime ServiceRuntimeState

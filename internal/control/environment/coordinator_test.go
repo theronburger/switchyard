@@ -320,10 +320,10 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		ports := newFakePorts(7092, nil)
 		exitCode := 2
 		failure := safeTestOperationError{private: "secret@example.invalid", failure: OperationFailure{
-			Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.",
-			ResourceKind: "service", ResourceID: "nonprofit-service", Retryable: false,
+			Code: "SERVICE_PREPARATION_FAILED", Message: "billing-service preparation failed.",
+			ResourceKind: "service", ResourceID: "billing-service", Retryable: false,
 			Diagnostic:   "src/example.ts:4:2: TS2304: Cannot find name 'Missing'.",
-			LogReference: "run_test/preparations/nonprofit-service/command-0",
+			LogReference: "run_test/preparations/billing-service/command-0",
 			NextAction:   "fix_service_build", ExitCode: &exitCode,
 		}}
 		coordinator, err := NewCoordinator(Config{
@@ -340,7 +340,7 @@ func TestPreparationFailureAndCancellationAreDurablyRedacted(t *testing.T) {
 		_, err = coordinator.Start(context.Background(), StartRequest{
 			OperationID: "op_structured_failure", EnvironmentID: "env_structured_failure",
 			RunID:  "run_structured_failure",
-			Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"nonprofit-service"}},
+			Intent: &PlanIntent{ProfileDigest: "test", ServiceIDs: []string{"billing-service"}},
 		})
 		if !errors.Is(err, failure) {
 			t.Fatalf("structured preparation failure: %v", err)

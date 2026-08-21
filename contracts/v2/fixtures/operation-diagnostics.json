@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "operationId": "operation_01J5EZB0N30N1AM9NZDW48XDB3",
   "environmentId": "environment_daad7f2bc132",
-  "logReference": "runs/run_01J5EZ6XDJQ3RT09H42TJFWCNR/organizer",
+  "logReference": "runs/run_01J5EZ6XDJQ3RT09H42TJFWCNR/storefront",
   "excerpts": [
     {
       "stream": "stdout",

@@ -62,7 +62,7 @@ func TestClientStartsAndStopsEnvironmentAfterHandshake(t *testing.T) {
 		MutationRequest: contractv2.MutationRequest{
 			SchemaVersion: contractv2.SchemaVersion, RequestID: "request_start", IdempotencyKey: "start:key",
 		},
-		WorktreeID: "worktree_01", ServiceIDs: []string{"organizer", "nonprofit-service"},
+		WorktreeID: "worktree_01", ServiceIDs: []string{"storefront", "billing-service"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,7 @@ func validStartMutation() contractv2.StartEnvironmentRequest {
 		MutationRequest: contractv2.MutationRequest{
 			SchemaVersion: contractv2.SchemaVersion, RequestID: "request", IdempotencyKey: "key",
 		},
-		WorktreeID: "worktree", ServiceIDs: []string{"organizer"},
+		WorktreeID: "worktree", ServiceIDs: []string{"storefront"},
 	}
 }
 

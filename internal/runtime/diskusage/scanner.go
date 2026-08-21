@@ -13,8 +13,6 @@ type category uint8
 
 const (
 	categoryOther category = iota
-	categoryOrganizer
-	categoryApp
 	categoryNodeModules
 )
 
@@ -320,33 +318,17 @@ func (scanner *Scanner) moveCategoryUsage(state *scanState, from, to category, e
 }
 
 func (*Scanner) categoryUsage(categories *Categories, selected category) *Usage {
-	switch selected {
-	case categoryNodeModules:
+	if selected == categoryNodeModules {
 		return &categories.NodeModules
-	case categoryApp:
-		return &categories.App
-	case categoryOrganizer:
-		return &categories.Organizer
-	default:
-		return &categories.Other
 	}
+	return &categories.Other
 }
 
 func childCategory(parent category, name string) category {
 	if parent == categoryNodeModules || name == "node_modules" {
 		return categoryNodeModules
 	}
-	if parent == categoryApp || parent == categoryOrganizer {
-		return parent
-	}
-	switch name {
-	case "app":
-		return categoryApp
-	case "organizer":
-		return categoryOrganizer
-	default:
-		return categoryOther
-	}
+	return categoryOther
 }
 
 func validEntryName(name string) bool {

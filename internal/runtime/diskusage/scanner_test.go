@@ -106,10 +106,10 @@ func TestScannerAggregatesCategoriesAndDeduplicatesHardLinks(t *testing.T) {
 	t.Parallel()
 	root := "/worktree"
 	walker := newFakeWalker(root)
-	walker.addDirectory(root, directory("organizer"), directory("app"), file("other.txt", 400, 4, 1))
-	walker.addDirectory(filepath.Join(root, "organizer"), file("code.js", 300, 3, 1), hardlink("shared-first", 50, 9))
-	walker.addDirectory(filepath.Join(root, "app"), file("main.js", 100, 1, 1), directory("node_modules"), hardlink("shared-second", 50, 9))
-	walker.addDirectory(filepath.Join(root, "app", "node_modules"), file("package.js", 200, 2, 1))
+	walker.addDirectory(root, directory("web"), directory("api"), file("other.txt", 400, 4, 1))
+	walker.addDirectory(filepath.Join(root, "web"), file("code.js", 300, 3, 1), hardlink("shared-first", 50, 9))
+	walker.addDirectory(filepath.Join(root, "api"), file("main.js", 100, 1, 1), directory("node_modules"), hardlink("shared-second", 50, 9))
+	walker.addDirectory(filepath.Join(root, "api", "node_modules"), file("package.js", 200, 2, 1))
 
 	report, err := scanWith(t, walker, Limits{}).Scan(context.Background(), root)
 	if err != nil {
@@ -124,13 +124,7 @@ func TestScannerAggregatesCategoriesAndDeduplicatesHardLinks(t *testing.T) {
 	if report.Categories.NodeModules.LogicalBytes != 200 || report.Categories.NodeModules.Files != 1 {
 		t.Fatalf("node_modules usage: %+v", report.Categories.NodeModules)
 	}
-	if report.Categories.App.LogicalBytes != 150 || report.Categories.App.Files != 2 {
-		t.Fatalf("app usage: %+v", report.Categories.App)
-	}
-	if report.Categories.Organizer.LogicalBytes != 300 || report.Categories.Organizer.Files != 1 {
-		t.Fatalf("organizer usage: %+v", report.Categories.Organizer)
-	}
-	if report.Categories.Other.LogicalBytes != 400 || report.Categories.Other.Files != 1 {
+	if report.Categories.Other.LogicalBytes != 850 || report.Categories.Other.Files != 4 {
 		t.Fatalf("other usage: %+v", report.Categories.Other)
 	}
 	if report.HardLinksDeduplicated != 1 || report.EntriesVisited != 10 {
@@ -382,15 +376,19 @@ func TestOSWalkerDoesNotFollowExternalSymlinkAndDeduplicatesHardLink(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.HardLinksDeduplicated != 1 || report.Categories.App.Files != 1 || report.Total.Symlinks != 1 {
+	if report.HardLinksDeduplicated != 1 || report.Categories.Other.Files != 1 || report.Total.Symlinks != 1 {
 		t.Fatalf("OS scan did not enforce identities: %+v", report)
 	}
-	appInfo, err := os.Lstat(filepath.Join(root, "app"))
-	if err != nil {
-		t.Fatal(err)
+	var nonFileBytes uint64
+	for _, path := range []string{root, filepath.Join(root, "app"), filepath.Join(root, "external-link")} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonFileBytes += nonnegativeSize(info.Size())
 	}
-	if report.Categories.App.LogicalBytes != nonnegativeSize(appInfo.Size())+8 {
-		t.Fatalf("hard-linked file bytes were counted more than once: %+v", report.Categories.App)
+	if report.Categories.Other.LogicalBytes != nonFileBytes+8 {
+		t.Fatalf("hard-linked file bytes were counted more than once: %+v", report.Categories.Other)
 	}
 }
 

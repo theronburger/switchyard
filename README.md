@@ -12,9 +12,9 @@
 Switchyard turns configured Git worktrees into small, isolated local environments without port collisions, cross-worktree state leaks, unexplained process forests, or terminal setup. A native SwiftUI app, human CLI, Codex, and Claude Code all use the same Go daemon—the sole owner of runtime state, ports, processes, Docker resources, health, and cleanup.
 
 <p align="center">
-  <img src="assets/switchyard-command-center-v1.png" alt="Switchyard command center showing a fictional worktree and environment" width="900">
+  <img src="assets/switchyard-command-center-v1.png" alt="Switchyard command center showing a fictional worktree environment" width="900">
   <br>
-  <sub>The command center with synthetic fixture data. No real repository path, pull request, account, or environment is shown.</sub>
+  <sub>The command center environment view rendered from the synthetic contract fixture. No real repository, path, pull request, account, or environment is shown.</sub>
 </p>
 
 ## Requirements

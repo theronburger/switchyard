@@ -27,8 +27,6 @@ struct StartEnvironmentOptions {
     func normalizedServices(current: Set<String>) -> Set<String> {
         let retained = current.intersection(availableServiceIDs)
         if !retained.isEmpty { return retained }
-        let preferred = ["organizer", "nonprofit-service"].filter(availableServiceIDs.contains)
-        if !preferred.isEmpty { return Set(preferred) }
         return Set(availableServiceIDs.sorted().prefix(1))
     }
 }

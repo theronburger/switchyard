@@ -449,11 +449,11 @@ func TestEnvironmentJournalPublishesPhaseAndSafeStructuredFailure(t *testing.T) 
 	}
 	exitCode := 2
 	failureDetail := &environmentcontrol.OperationFailure{
-		Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.", Retryable: false,
-		ResourceKind: "service", ResourceID: "nonprofit-service",
-		Phase: environmentcontrol.PhasePreparingServices, Step: "nonprofit-service.prepare.0",
+		Code: "SERVICE_PREPARATION_FAILED", Message: "billing-service preparation failed.", Retryable: false,
+		ResourceKind: "service", ResourceID: "billing-service",
+		Phase: environmentcontrol.PhasePreparingServices, Step: "billing-service.prepare.0",
 		Diagnostic:   "src/utils/importFoundation.ts:43:43: TS2304: Cannot find name 'ManagedImportIndexDefinition'.",
-		LogReference: "run_test/preparations/nonprofit-service/command-0",
+		LogReference: "run_test/preparations/billing-service/command-0",
 		NextAction:   "fix_service_build", ExitCode: &exitCode,
 	}
 	if !validOperationFailure(*failureDetail) {
@@ -480,7 +480,7 @@ func TestEnvironmentJournalPublishesPhaseAndSafeStructuredFailure(t *testing.T) 
 	}
 	if public.Error.Code != "SERVICE_PREPARATION_FAILED" || public.Error.Retryable ||
 		public.Error.Phase != string(environmentcontrol.PhasePreparingServices) ||
-		public.Error.ResourceID != "nonprofit-service" || public.Error.ExitCode == nil || *public.Error.ExitCode != 2 ||
+		public.Error.ResourceID != "billing-service" || public.Error.ExitCode == nil || *public.Error.ExitCode != 2 ||
 		public.Error.Diagnostic != record.FailureDetail.Diagnostic || public.Error.LogReference != record.FailureDetail.LogReference {
 		t.Fatalf("public structured failure: %+v", public.Error)
 	}

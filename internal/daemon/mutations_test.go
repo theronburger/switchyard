@@ -175,7 +175,7 @@ func TestEnvironmentMutationsReturnAcceptedReceipts(t *testing.T) {
 		"requestId":      "request_start",
 		"idempotencyKey": "start:test",
 		"worktreeId":     "worktree_test",
-		"serviceIds":     []string{"organizer", "nonprofit-service"},
+		"serviceIds":     []string{"storefront", "billing-service"},
 	})
 	if start.Code != http.StatusAccepted {
 		t.Fatalf("start status=%d body=%s", start.Code, start.Body.String())
@@ -207,7 +207,7 @@ func TestEnvironmentMutationsRejectRequestsBeforeBackend(t *testing.T) {
 		},
 	}
 	handler := newMutationTestHandler(t, backend)
-	valid := `{"schemaVersion":2,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}`
+	valid := `{"schemaVersion":2,"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["storefront"]}`
 	tests := []struct {
 		name        string
 		method      string
@@ -317,7 +317,7 @@ func TestEnvironmentMutationErrorsAreStableAndRedacted(t *testing.T) {
 			}
 			response := serveMutation(t, newMutationTestHandler(t, backend), "/v1/environments", map[string]any{
 				"schemaVersion": contractv2.SchemaVersion, "requestId": "request", "idempotencyKey": "key",
-				"worktreeId": "worktree", "serviceIds": []string{"organizer"},
+				"worktreeId": "worktree", "serviceIds": []string{"storefront"},
 			})
 			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())

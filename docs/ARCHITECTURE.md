@@ -152,12 +152,12 @@ Illustrative shape:
     "environmentId": "env_01J5EXAMPLE",
     "health": "degraded",
     "urls": {
-      "organizer": "http://localhost:7005"
+      "storefront": "http://localhost:7005"
     },
     "attention": [
       {
         "code": "SERVICE_CRASHED",
-        "summary": "nonprofit-service exited with status 1"
+        "summary": "billing-service exited with status 1"
       }
     ]
   }

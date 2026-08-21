@@ -262,7 +262,7 @@ func hangingHTTPPort(t *testing.T) (int, func()) {
 }
 
 func ExampleProbeResult() {
-	result := ProbeResult{ProbeID: "organizer-ready", Kind: ProbeKindHTTP, Code: ResultOK, Success: true, Status: 204}
+	result := ProbeResult{ProbeID: "storefront-ready", Kind: ProbeKindHTTP, Code: ResultOK, Success: true, Status: 204}
 	fmt.Println(result.Code, result.Success)
 	// Output: ok true
 }

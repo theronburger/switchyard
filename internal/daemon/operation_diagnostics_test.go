@@ -23,7 +23,7 @@ func (store diagnosticOperationStore) ReadOperation(context.Context, string) (co
 
 func TestOperationDiagnosticsReaderReturnsBoundedRedactedOwnedLogs(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
-	logReference := "run_01/preparations/nonprofit-service/command-0"
+	logReference := "run_01/preparations/billing-service/command-0"
 	logDirectory := filepath.Join(runtimeRoot, "environments", "env_01", "runs", filepath.FromSlash(logReference))
 	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
 		t.Fatal(err)

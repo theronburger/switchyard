@@ -101,7 +101,7 @@ func TestServerInitializesListsToolsAndReturnsExactWorktreeContext(t *testing.T)
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/sample/services/nonprofit"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"switchyard_context","arguments":{"worktreePath":"/Developer/sample/services/billing"}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, stubServerBackend{snapshot: snapshot}, input)
 	if len(responses) != 3 {
@@ -426,7 +426,7 @@ func TestServerSubmitsThinStartAndReturnsStateFooter(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","targetId":"production","confirmedTargetId":"production","serviceIds":["organizer","nonprofit-service"]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request_start","idempotencyKey":"agent:retry","worktreeId":"worktree_test","targetId":"production","confirmedTargetId":"production","serviceIds":["storefront","billing-service"]}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, backend, input)
 	var called struct {
@@ -550,7 +550,7 @@ func TestServerRedactsActionBackendErrors(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["organizer"]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"switchyard_start","arguments":{"requestId":"request","idempotencyKey":"key","worktreeId":"worktree","serviceIds":["storefront"]}}}`,
 	}, "\n") + "\n"
 	responses := runServer(t, backend, input)
 	if bytes.Contains(bytes.Join(responses, nil), []byte(secret)) ||
@@ -604,11 +604,11 @@ func decodeResponse(t *testing.T, contents []byte, destination any) {
 func TestActionToolErrorPreservesSafeContractDetails(t *testing.T) {
 	exitCode := 2
 	contractError := contractv2.ContractError{
-		Code: "SERVICE_PREPARATION_FAILED", Message: "nonprofit-service preparation failed.",
-		Retryable: false, ResourceKind: "service", ResourceID: "nonprofit-service",
-		Phase: "preparing-services", Step: "nonprofit-service.prepare.0",
+		Code: "SERVICE_PREPARATION_FAILED", Message: "billing-service preparation failed.",
+		Retryable: false, ResourceKind: "service", ResourceID: "billing-service",
+		Phase: "preparing-services", Step: "billing-service.prepare.0",
 		Diagnostic:   "src/example.ts:4:2: TS2304: Cannot find name 'Missing'.",
-		LogReference: "run_test/preparations/nonprofit-service/command-0",
+		LogReference: "run_test/preparations/billing-service/command-0",
 		NextAction:   "fix_service_build", ExitCode: &exitCode,
 	}
 	result := actionToolError(&apiclient.CodedError{
@@ -664,7 +664,7 @@ func serverSnapshot() contractv2.StatusSnapshot {
 				ID: "env_test", RepositoryID: "repository_test", WorktreeID: "worktree_test", Revision: 17,
 				DesiredState: "running", ObservedState: "running", Health: "degraded",
 				Services: []contractv2.Service{}, PortLeases: []contractv2.PortLease{}, InfrastructureLeases: []contractv2.InfrastructureLease{},
-				URLs: map[string]string{"organizer": "http://127.0.0.1:7005"}, AttentionAlertIDs: []string{"alert_test"},
+				URLs: map[string]string{"storefront": "http://127.0.0.1:7005"}, AttentionAlertIDs: []string{"alert_test"},
 			},
 			{
 				ID: "env_foreign", RepositoryID: "repository_test", WorktreeID: "worktree_foreign", Revision: 3,

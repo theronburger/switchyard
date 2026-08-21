@@ -31,22 +31,12 @@
         "services": [
           {"id": "api", "displayName": "API", "kind": "api", "available": true},
           {"id": "app", "displayName": "App", "kind": "web", "available": true},
-          {"id": "auth-service", "displayName": "Auth Service", "kind": "api", "available": true},
-          {"id": "company-service", "displayName": "Company Service", "kind": "api", "available": true},
-          {"id": "donation-batch-service", "displayName": "Donation Batch Service", "kind": "api", "available": true},
-          {"id": "donation-service", "displayName": "Donation Service", "kind": "api", "available": true},
-          {"id": "email-service", "displayName": "Email Service", "kind": "api", "available": true},
-          {"id": "graph-service", "displayName": "Graph Service", "kind": "api", "available": true},
-          {"id": "logged-time-service", "displayName": "Logged Time Service", "kind": "api", "available": true},
-          {"id": "nonprofit-service", "displayName": "Nonprofit Service", "kind": "api", "available": true},
-          {"id": "notification-service", "displayName": "Notification Service", "kind": "api", "available": true},
-          {"id": "opportunity-service", "displayName": "Opportunity Service", "kind": "api", "available": true},
-          {"id": "organizer", "displayName": "Organizer", "kind": "web", "available": true},
-          {"id": "payroll-service", "displayName": "Payroll Service", "kind": "api", "available": true},
-          {"id": "report-service", "displayName": "Report Service", "kind": "api", "available": true},
-          {"id": "slack-service", "displayName": "Slack Service", "kind": "api", "available": true},
-          {"id": "time-off-service", "displayName": "Time Off Service", "kind": "api", "available": true},
-          {"id": "wallet", "displayName": "Wallet", "kind": "api", "available": true}
+          {"id": "billing-service", "displayName": "Billing Service", "kind": "api", "available": true},
+          {"id": "mailer-service", "displayName": "Mailer Service", "kind": "api", "available": true},
+          {"id": "reporting-service", "displayName": "Reporting Service", "kind": "api", "available": true},
+          {"id": "search-service", "displayName": "Search Service", "kind": "api", "available": true},
+          {"id": "storefront", "displayName": "Storefront", "kind": "web", "available": true},
+          {"id": "worker-service", "displayName": "Worker Service", "kind": "api", "available": true}
         ]
       },
       "worktrees": [
@@ -71,12 +61,12 @@
             "sharedUncommitted": { "additions": 0, "deletions": 0, "files": 0 },
             "services": [
               {
-                "serviceId": "nonprofit-service",
+                "serviceId": "billing-service",
                 "committed": { "additions": 1500, "deletions": 55, "files": 30 },
                 "uncommitted": { "additions": 12, "deletions": 3, "files": 2 }
               },
               {
-                "serviceId": "organizer",
+                "serviceId": "storefront",
                 "committed": { "additions": 501, "deletions": 1, "files": 11 },
                 "uncommitted": { "additions": 0, "deletions": 0, "files": 0 }
               }
@@ -165,13 +155,13 @@
       "health": "degraded",
       "services": [
         {
-          "id": "organizer",
-          "displayName": "Organizer",
+          "id": "storefront",
+          "displayName": "Storefront",
           "kind": "web",
           "desiredState": "running",
           "observedState": "running",
           "health": "healthy",
-          "portLeaseIds": ["port_organizer_http"],
+          "portLeaseIds": ["port_storefront_http"],
           "run": {
             "id": "run_01J5EZ6XDJQ3RT09H42TJFWCNR",
             "startedAt": "2026-08-14T09:55:00Z",
@@ -186,13 +176,13 @@
           }
         },
         {
-          "id": "nonprofit-service",
-          "displayName": "Nonprofit Service",
+          "id": "billing-service",
+          "displayName": "Billing Service",
           "kind": "api",
           "desiredState": "running",
           "observedState": "exited",
           "health": "unhealthy",
-          "portLeaseIds": ["port_nonprofit_http", "port_nonprofit_lambda"],
+          "portLeaseIds": ["port_billing_http", "port_billing_lambda"],
           "run": {
             "id": "run_01J5EZ6XDJQ3RT09H42TJFWCNR",
             "startedAt": "2026-08-14T09:55:05Z",
@@ -209,8 +199,8 @@
       ],
       "portLeases": [
         {
-          "id": "port_organizer_http",
-          "serviceId": "organizer",
+          "id": "port_storefront_http",
+          "serviceId": "storefront",
           "purpose": "http",
           "host": "127.0.0.1",
           "port": 7005,
@@ -218,8 +208,8 @@
           "acquiredAt": "2026-08-14T09:54:00Z"
         },
         {
-          "id": "port_nonprofit_http",
-          "serviceId": "nonprofit-service",
+          "id": "port_billing_http",
+          "serviceId": "billing-service",
           "purpose": "http",
           "host": "127.0.0.1",
           "port": 7019,
@@ -227,8 +217,8 @@
           "acquiredAt": "2026-08-14T09:54:00Z"
         },
         {
-          "id": "port_nonprofit_lambda",
-          "serviceId": "nonprofit-service",
+          "id": "port_billing_lambda",
+          "serviceId": "billing-service",
           "purpose": "lambda",
           "host": "127.0.0.1",
           "port": 8019,
@@ -239,7 +229,7 @@
       "infrastructureLeases": [
         {
           "id": "infra_elasticmq",
-          "serviceId": "nonprofit-service",
+          "serviceId": "billing-service",
           "displayName": "ElasticMQ",
           "kind": "container",
           "scope": "environment",
@@ -248,8 +238,8 @@
         }
       ],
       "urls": {
-        "organizer": "http://127.0.0.1:7005",
-        "nonprofit-service": "http://127.0.0.1:7019"
+        "storefront": "http://127.0.0.1:7005",
+        "billing-service": "http://127.0.0.1:7019"
       },
       "resources": {
         "cpuPercent": 8.2,
@@ -275,10 +265,10 @@
     {
       "id": "alert_01J5EZ9SS6BPE3YAP6WFNWAFET",
       "environmentId": "env_01J5EZ5VXM3B4RYQ6WP8QH8T4A",
-      "serviceId": "nonprofit-service",
+      "serviceId": "billing-service",
       "severity": "error",
       "code": "SERVICE_EXITED",
-      "summary": "Nonprofit service exited with status 1",
+      "summary": "Billing service exited with status 1",
       "status": "active",
       "firstSeenAt": "2026-08-14T09:58:00Z",
       "lastSeenAt": "2026-08-14T09:58:00Z",

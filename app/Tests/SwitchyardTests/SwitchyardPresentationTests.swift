@@ -15,13 +15,13 @@ struct SwitchyardPresentationTests {
         #expect(options.defaultTargetId == "testing")
         #expect(options.targets.map(\.id) == ["development", "testing", "demo", "production"])
         #expect(options.targets.filter(\.warnOnStart).map(\.id) == ["demo", "production"])
-        #expect(options.services.count == 18)
+        #expect(options.services.count == 8)
         #expect(options.availableServiceIDs == Set(options.services.map(\.id)))
         #expect(options.services.allSatisfy { $0.available })
         #expect(options.normalizedTarget(current: "", preferred: nil) == "testing")
         #expect(options.normalizedTarget(current: "testing", preferred: "production") == "testing")
         #expect(options.normalizedTarget(current: "", preferred: "production") == "production")
-        #expect(options.normalizedServices(current: []) == Set(["organizer", "nonprofit-service"]))
+        #expect(options.normalizedServices(current: []) == Set(["api"]))
 
         let unavailable = RuntimeService(
             id: "future-service",
@@ -452,7 +452,7 @@ struct SwitchyardPresentationTests {
                     worktree: worktree,
                     target: target,
                     services: repository.runtime?.services ?? [],
-                    selectedServiceIDs: .constant(Set(["organizer", "nonprofit-service"]))
+                    selectedServiceIDs: .constant(Set(["storefront", "billing-service"]))
                 )),
                 size: CGSize(width: 460, height: 560),
                 appearance: .dark)

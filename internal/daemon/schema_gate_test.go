@@ -124,27 +124,27 @@ func TestMutationBodiesFromAnotherContractGenerationAreUpgradeRequired(t *testin
 	}{
 		{
 			name: "v1 start body with unknown field", path: "/v1/environments",
-			body:       `{"schemaVersion":1,"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","adapter":"legacy","serviceIds":["organizer"]}`,
+			body:       `{"schemaVersion":1,"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","adapter":"legacy","serviceIds":["storefront"]}`,
 			wantStatus: http.StatusUpgradeRequired, wantCode: contractv2.UpgradeRequiredCode,
 		},
 		{
 			name: "v3 start body", path: "/v1/environments",
-			body:       `{"schemaVersion":3,"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["organizer"]}`,
+			body:       `{"schemaVersion":3,"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["storefront"]}`,
 			wantStatus: http.StatusUpgradeRequired, wantCode: contractv2.UpgradeRequiredCode,
 		},
 		{
 			name: "missing schema version stays invalid", path: "/v1/environments",
-			body:       `{"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["organizer"]}`,
+			body:       `{"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["storefront"]}`,
 			wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST",
 		},
 		{
 			name: "zero schema version stays invalid", path: "/v1/environments",
-			body:       `{"schemaVersion":0,"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["organizer"]}`,
+			body:       `{"schemaVersion":0,"requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["storefront"]}`,
 			wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST",
 		},
 		{
 			name: "string schema version stays invalid", path: "/v1/environments",
-			body:       `{"schemaVersion":"2","requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["organizer"]}`,
+			body:       `{"schemaVersion":"2","requestId":"request_1","idempotencyKey":"start:1","worktreeId":"worktree_1","serviceIds":["storefront"]}`,
 			wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST",
 		},
 		{

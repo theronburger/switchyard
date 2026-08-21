@@ -322,7 +322,7 @@ func TestStartEnvironmentRequestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 			IdempotencyKey: "start:test",
 		},
 		WorktreeID: "worktree_test",
-		ServiceIDs: []string{"organizer"},
+		ServiceIDs: []string{"storefront"},
 	}
 
 	tests := []struct {
@@ -343,7 +343,7 @@ func TestStartEnvironmentRequestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 			request.ServiceIDs = nil
 		}},
 		{name: "duplicate services", mutate: func(request *StartEnvironmentRequest) {
-			request.ServiceIDs = []string{"organizer", "organizer"}
+			request.ServiceIDs = []string{"storefront", "storefront"}
 		}},
 		{name: "mismatched target confirmation", mutate: func(request *StartEnvironmentRequest) {
 			request.TargetID = "demo"
