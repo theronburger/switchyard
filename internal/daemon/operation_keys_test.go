@@ -190,9 +190,9 @@ func TestOperationKeysCancelledWaiterLeavesTheQueueWithoutHoldingKeys(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	archive := acquireAsync(keys, ctx, "worktree:a", "repository:r")
 	keys.queued(t, 1)
-	// The queued archive reserves nothing: a repository-only operation runs
-	// immediately even though it shares the repository key with the archive.
-	releaseCreate, err := keys.Acquire(context.Background(), "repository:r")
+	// The queued archive holds nothing: an operation on a disjoint key runs
+	// immediately while the archive waits.
+	releaseCreate, err := keys.Acquire(context.Background(), "worktree:b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +220,42 @@ func TestOperationKeysCancelledWaiterLeavesTheQueueWithoutHoldingKeys(t *testing
 		t.Fatal(err)
 	}
 	release()
+}
+
+func TestOperationKeysYoungerWaiterNeverOvertakesAnOlderWaiterOnASharedKey(t *testing.T) {
+	// Regression: repository-only waiters queued behind a blocked archive
+	// used to take the free repository key ahead of it, so a steady stream
+	// of them starved the archive indefinitely.
+	keys := NewOperationKeys()
+	releasePreparation, err := keys.Acquire(context.Background(), "worktree:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := acquireAsync(keys, context.Background(), "worktree:a", "repository:r")
+	keys.queued(t, 1)
+	// The repository key is free, but the older archive wants it.
+	repositoryOnly := acquireAsync(keys, context.Background(), "repository:r")
+	keys.queued(t, 2)
+	repositoryOnly.mustStayPending(t)
+	// A waiter disjoint from every queued waiter is not head-of-line blocked.
+	releaseOther, err := keys.Acquire(context.Background(), "worktree:b", "repository:other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys.queued(t, 2)
+	archive.mustStayPending(t)
+	repositoryOnly.mustStayPending(t)
+	releaseOther()
+
+	releasePreparation()
+	releaseArchive := archive.mustBeGranted(t)
+	keys.queued(t, 1)
+	repositoryOnly.mustStayPending(t)
+	releaseArchive()
+	repositoryOnly.mustBeGranted(t)()
+	if !keys.idle() {
+		t.Fatal("keys leaked")
+	}
 }
 
 func TestOperationKeysTwoWorktreeRepositoryWaitersWithRepositoryContentionConverge(t *testing.T) {
@@ -512,19 +548,19 @@ func TestWorkspaceActionServiceSerializesArchiveBehindPreparationOfTheSameWorktr
 		t.Fatal(err)
 	}
 	awaitEntered(t, gate, "preparation")
-	archive, err := service.ArchiveWorktree(context.Background(), archiveRequest("worktree_01", "archive:01"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The unrelated worktree shares no key with the running preparation and
+	// completes while it is still blocked on the gate.
 	unrelated, err := service.ArchiveWorktree(context.Background(), archiveRequest("worktree_02", "archive:02"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The unrelated worktree shares the repository key with the archive
-	// queued behind the preparation, but not with the preparation itself.
 	awaitState(t, store, unrelated.OperationID, string(domain.OperationSucceeded))
 	if otherArchives.Load() != 1 {
 		t.Fatalf("unrelated archive did not run concurrently: %d", otherArchives.Load())
+	}
+	archive, err := service.ArchiveWorktree(context.Background(), archiveRequest("worktree_01", "archive:01"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	assertStillPending(t, store, archive.OperationID, "archive")
 	if archives.Load() != 0 {

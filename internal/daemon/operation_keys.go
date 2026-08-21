@@ -17,12 +17,13 @@ import (
 // same worktree key.
 //
 // Keys are granted all-or-nothing under one mutex from a first-come queue:
-// an operation never holds one key while waiting for another, a queued
-// operation reserves nothing, and every release or cancellation re-scans the
-// queue oldest-first granting each waiter whose keys are all free. A queued
-// archive therefore never stalls an unrelated worktree through the shared
-// repository key, the oldest waiter gets first refusal whenever its keys
-// free up, and two operations that share no key never wait on each other.
+// an operation never holds one key while waiting for another, and every
+// release or cancellation re-scans the queue oldest-first granting each
+// waiter whose keys are neither held nor wanted by an older waiter still in
+// the queue. A later waiter therefore cannot overtake an earlier one on a
+// shared key, so a stream of repository-only operations cannot starve a
+// queued worktree+repository archive, while two operations that share no key
+// never wait on each other.
 type OperationKeys struct {
 	mutex   sync.Mutex
 	held    map[string]struct{}
@@ -100,16 +101,21 @@ func (keys *OperationKeys) releaser(ordered []string) func() {
 }
 
 // grantInOrder walks the queue from the oldest waiter and grants every waiter
-// whose keys are all free at that point. Callers hold keys.mutex.
+// whose keys are free and not reserved by an older waiter left in the queue.
+// Callers hold keys.mutex.
 func (keys *OperationKeys) grantInOrder() {
 	remaining := keys.waiters[:0]
+	reserved := make(map[string]struct{})
 	for _, waiter := range keys.waiters {
-		if keys.grantable(waiter) {
+		if keys.grantable(waiter, reserved) {
 			for _, name := range waiter.keys {
 				keys.held[name] = struct{}{}
 			}
 			close(waiter.granted)
 			continue
+		}
+		for _, name := range waiter.keys {
+			reserved[name] = struct{}{}
 		}
 		remaining = append(remaining, waiter)
 	}
@@ -119,9 +125,12 @@ func (keys *OperationKeys) grantInOrder() {
 	keys.waiters = remaining
 }
 
-func (keys *OperationKeys) grantable(waiter *operationKeyWaiter) bool {
+func (keys *OperationKeys) grantable(waiter *operationKeyWaiter, reserved map[string]struct{}) bool {
 	for _, name := range waiter.keys {
 		if _, held := keys.held[name]; held {
+			return false
+		}
+		if _, wanted := reserved[name]; wanted {
 			return false
 		}
 	}
