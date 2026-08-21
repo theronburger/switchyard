@@ -4,6 +4,13 @@ All notable changes are documented here. The project follows [Semantic Versionin
 
 Release Please generates each version section from Conventional Commits when it opens the release pull request. Do not add an Unreleased section; notes for non-conventional commits are added by editing the release pull request body before merge.
 
+## [0.2.1](https://github.com/theronburger/switchyard/compare/v0.2.0...v0.2.1) (2026-08-21)
+
+
+### Fixed
+
+* **daemon:** keep cancelled operations out of key queue ([#6](https://github.com/theronburger/switchyard/issues/6)) ([874af04](https://github.com/theronburger/switchyard/commit/874af04e7d5caba5a51bfd7619f9eebbb1f9258d))
+
 ## [0.2.0](https://github.com/theronburger/switchyard/compare/v0.1.0...v0.2.0) (2026-08-21)
 
 
