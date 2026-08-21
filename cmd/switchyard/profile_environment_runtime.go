@@ -46,8 +46,8 @@ type configuredActionResolver struct {
 }
 
 func buildConfiguredProfileRuntime(ctx context.Context, store *state.Store, paths applicationPaths, instanceID string, discovered repositoryInventory, restart func()) (*environmentRuntime, error) {
-	runtimeRoot := filepath.Join(paths.root, "runtime")
-	cacheRoot := filepath.Join(paths.root, "caches")
+	runtimeRoot := paths.runtimeRoot()
+	cacheRoot := paths.cacheRoot()
 	for _, directory := range []string{runtimeRoot, cacheRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return nil, err

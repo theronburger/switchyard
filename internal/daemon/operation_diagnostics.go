@@ -55,6 +55,11 @@ func NewOperationDiagnosticsReader(store OperationDiagnosticsStore, runtimeRoot 
 	return &OperationDiagnosticsReader{store: store, runtimeRoot: runtimeRoot}, nil
 }
 
+// RuntimeRoot is the tree the reader resolves log references beneath.
+func (reader *OperationDiagnosticsReader) RuntimeRoot() string {
+	return reader.runtimeRoot
+}
+
 func (reader *OperationDiagnosticsReader) ReadOperationDiagnostics(
 	ctx context.Context,
 	operationID string,

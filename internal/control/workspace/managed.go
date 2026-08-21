@@ -125,6 +125,11 @@ type ManagedManager struct {
 	now           func() time.Time
 }
 
+// OwnershipRoot is the directory holding managed-worktree ownership records.
+func (manager *ManagedManager) OwnershipRoot() string {
+	return manager.ownershipRoot
+}
+
 type CreateManagedRequest struct {
 	RepositoryID string
 	Branch       string

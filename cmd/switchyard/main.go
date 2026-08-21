@@ -106,6 +106,27 @@ type applicationPaths struct {
 	token             string
 }
 
+// runtimeRoot is the one owner-only tree under which every runner writes
+// process evidence, step run directories, action run directories, and
+// managed-worktree ownership records, and from which cleanup planning and
+// operation diagnostics read them. Writers and readers must never derive
+// this path independently.
+func (paths applicationPaths) runtimeRoot() string {
+	return filepath.Join(paths.root, "runtime")
+}
+
+func (paths applicationPaths) cacheRoot() string {
+	return filepath.Join(paths.root, "caches")
+}
+
+func newOperationDiagnosticsReader(store *state.Store, paths applicationPaths) (*daemon.OperationDiagnosticsReader, error) {
+	return daemon.NewOperationDiagnosticsReader(store, paths.runtimeRoot())
+}
+
+func newCleanupService(store *state.Store, journal *state.WorkspaceJournal, paths applicationPaths) *daemon.CleanupService {
+	return &daemon.CleanupService{Store: store, Workspaces: journal, RuntimeRoot: paths.runtimeRoot()}
+}
+
 func localPaths() (applicationPaths, error) {
 	configurationDirectory := os.Getenv(applicationSupportOverride)
 	if configurationDirectory == "" {
@@ -216,7 +237,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	operationDiagnostics, err := daemon.NewOperationDiagnosticsReader(store, filepath.Join(paths.directory, "runtime"))
+	operationDiagnostics, err := newOperationDiagnosticsReader(store, paths)
 	if err != nil {
 		return err
 	}
@@ -238,9 +259,7 @@ func runDaemon(parent context.Context, paths applicationPaths) error {
 			Store: store, Path: paths.configuration, CompilerVersion: version, Restart: restartDaemon,
 			References: store,
 		},
-		Cleanup: &daemon.CleanupService{
-			Store: store, Workspaces: cleanupJournal, RuntimeRoot: filepath.Join(paths.directory, "runtime"),
-		},
+		Cleanup:   newCleanupService(store, cleanupJournal, paths),
 		Occupancy: &daemon.OccupancyService{Store: store},
 	})
 	if err != nil {

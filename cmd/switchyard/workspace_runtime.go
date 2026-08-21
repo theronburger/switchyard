@@ -181,7 +181,7 @@ func newManagedWorkspaceManager(
 	}
 	return workspacecontrol.NewManagedManager(workspacecontrol.ManagedConfig{
 		GitExecutable: configuredGitExecutable(),
-		OwnershipRoot: filepath.Join(paths.directory, "runtime", "managed-workspaces"),
+		OwnershipRoot: filepath.Join(paths.runtimeRoot(), "managed-workspaces"),
 		Repositories:  repositories,
 	})
 }

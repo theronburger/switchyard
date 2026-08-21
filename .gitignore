@@ -5,3 +5,4 @@ build/
 DerivedData/
 dist/
 *.xcuserstate
+/switchyard
