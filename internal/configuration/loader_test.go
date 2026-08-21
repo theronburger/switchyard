@@ -17,8 +17,8 @@ machine:
     inheritedEnvironment: []
     shellDefault: deny
 secretProviders:
-  login-keychain:
-    kind: macos-keychain
+  key-session:
+    kind: key-session
 repositories:
   sample-one:
     enabled: true
@@ -291,5 +291,40 @@ func TestParseValidatesEnvironmentSources(t *testing.T) {
 	}
 	if _, err := Parse([]byte(withSources(many.String()))); err == nil {
 		t.Fatal("source count bound was not enforced")
+	}
+}
+
+// TestParseSecretProvidersFailClosed proves the accepted schema carries only
+// non-secret provider references: the sole accepted kind is key-session, any
+// other kind or malformed key is rejected, and no value reference can name a
+// secret, provider, profile, lease, or consumer capability. The canonical
+// payload of an accepted document therefore never contains a secret value.
+func TestParseSecretProvidersFailClosed(t *testing.T) {
+	rejected := map[string]string{
+		"other-kind":  strings.Replace(validConfiguration, "kind: key-session", "kind: macos-keychain", 1),
+		"empty-kind":  strings.Replace(validConfiguration, "kind: key-session", "kind: \"\"", 1),
+		"bad-key":     strings.Replace(validConfiguration, "  key-session:\n    kind: key-session", "  Login Keychain:\n    kind: key-session", 1),
+		"secret-data": strings.Replace(validConfiguration, "kind: key-session", "kind: key-session\n    secret: hunter2", 1),
+		"secret-value-ref": strings.Replace(validConfiguration, "targets:\n      local: {}",
+			"targets:\n      local:\n        environment:\n          API_TOKEN: { secret: { provider: key-session, profile: sample } }", 1),
+		"lease-value-ref": strings.Replace(validConfiguration, "targets:\n      local: {}",
+			"targets:\n      local:\n        environment:\n          API_TOKEN: { lease: lease_example }", 1),
+	}
+	for name, contents := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(contents)); err == nil {
+				t.Fatal("secret-bearing or unknown secret provider configuration was accepted")
+			}
+		})
+	}
+	loaded, err := Parse([]byte(validConfiguration))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Document.SecretProviders["key-session"].Kind != SecretProviderKindKeySession {
+		t.Fatalf("accepted provider kind = %q", loaded.Document.SecretProviders["key-session"].Kind)
+	}
+	if strings.Contains(string(loaded.CanonicalPayload), "hunter2") || strings.Contains(string(loaded.CanonicalPayload), "lease_") {
+		t.Fatal("canonical payload carries a secret or lease value")
 	}
 }

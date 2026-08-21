@@ -101,8 +101,8 @@ machine:
     shellDefault: deny
 
 secretProviders:
-  login-keychain:
-    kind: macos-keychain
+  key-session:
+    kind: key-session
 
 repositories:
   aurora-console:
@@ -147,7 +147,7 @@ The schema uses validated tagged unions instead of free-form interpolation:
 
 Every reference is resolved and containment-checked before a mutation is accepted. Executables become absolute regular executable files during compilation, not child launch. Ambient environment inheritance is empty by default.
 
-Personal overrides, local endpoints, target values, and secret references belong in private configuration or the configured secret provider. A profile may read bounded repository-owned inputs such as a tracked version file or package-manager declaration, but Switchyard does not use an ignored checkout-local file as its personal configuration store and never copies private values into a worktree.
+Personal overrides, local endpoints, target values, and secret references belong in private configuration or the configured secret provider. The only accepted provider kind is `key-session`; a provider declaration is a non-secret reference that authorizes nothing until the leased child-launch path exists (see `KEY_SESSION_SECRETS_BLOCKER.md`), and no value reference can name a secret yet. A profile may read bounded repository-owned inputs such as a tracked version file or package-manager declaration, but Switchyard does not use an ignored checkout-local file as its personal configuration store and never copies private values into a worktree.
 
 ## Workspace preparation
 

@@ -356,6 +356,9 @@ func validateDocument(document Document) error {
 	if len(document.Repositories) == 0 {
 		return errors.New("at least one repository is required")
 	}
+	if err := validateSecretProviders(document.SecretProviders); err != nil {
+		return err
+	}
 	seenRoots := make(map[string]string, len(document.Repositories))
 	for key, repository := range document.Repositories {
 		if !identifierPattern.MatchString(key) {
@@ -388,6 +391,33 @@ func validateDocument(document Document) error {
 		}
 		if err := validateRepositoryRuntime(key, repository); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// SecretProviderKindKeySession is the only accepted secret provider kind.
+// key-session is the sole path from macOS Keychain to a child process; no
+// other provider kind is compiled, so none is accepted.
+const SecretProviderKindKeySession = "key-session"
+
+// validateSecretProviders accepts only non-secret provider declarations. A
+// provider carries no secret, capability, lease, or profile value; it names a
+// kind the daemon can compile. The child-launch path for a key-session lease
+// is not implemented yet (see docs/KEY_SESSION_SECRETS_BLOCKER.md), and no
+// ValueRef can name a provider, so an accepted provider authorizes nothing
+// until that path exists. Unknown kinds fail closed rather than accept a
+// declaration that would silently do nothing.
+func validateSecretProviders(providers map[string]SecretProvider) error {
+	if len(providers) > 16 {
+		return errors.New("too many secret providers")
+	}
+	for key, provider := range providers {
+		if !identifierPattern.MatchString(key) {
+			return fmt.Errorf("secret provider key %q is invalid", key)
+		}
+		if provider.Kind != SecretProviderKindKeySession {
+			return fmt.Errorf("secret provider %q kind must be %q", key, SecretProviderKindKeySession)
 		}
 	}
 	return nil
