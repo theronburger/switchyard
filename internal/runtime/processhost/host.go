@@ -185,6 +185,24 @@ func (host *Host) Start(ctx context.Context, spec LaunchSpec) (Ownership, error)
 			clearLaunchIntent(intentPath),
 		)
 	}
+	// A very short-lived child can already be an unreaped zombie by the
+	// first inspection. Darwin still provides its PID, process group, and
+	// start time, but no longer exposes argv or an executable path from which
+	// to derive the command fingerprint. Because command.Start succeeded,
+	// exec failures have already been reported synchronously, and this exact
+	// child is still unreaped, bind that zombie to the launch fingerprint we
+	// persisted before fork. A live process must always be inspected fully.
+	if leader.Identity.CommandFingerprint == "" {
+		if leader.Status != "zombie" {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return Ownership{}, errors.Join(
+				errors.New("started process has no command fingerprint"),
+				clearLaunchIntent(intentPath),
+			)
+		}
+		leader.Identity.CommandFingerprint = intent.LaunchFingerprint
+	}
 
 	now = host.now().UTC()
 	intent.CandidateLeader = &leader.Identity
@@ -394,21 +412,15 @@ func (host *Host) groupSnapshots(ctx context.Context, ownership Ownership, own b
 }
 
 func (host *Host) stableGroupSnapshots(ctx context.Context, ownership Ownership, own bool) ([]ProcessSnapshot, error) {
-	if !own {
-		return stableOwnedGroup(ctx, host.inspector, ownership)
+	if own {
+		// The host's unreaped direct child pins the PID and PGID to this
+		// launch. Membership is allowed to change while that leader exits and
+		// its descendants are reparented; stopLocked lists the group again
+		// immediately before every signal. Requiring two identical snapshots
+		// here turns that expected transition into a false refusal.
+		return host.groupSnapshots(ctx, ownership, true)
 	}
-	first, err := host.groupSnapshots(ctx, ownership, own)
-	if err != nil {
-		return nil, err
-	}
-	second, err := host.groupSnapshots(ctx, ownership, own)
-	if err != nil {
-		return nil, err
-	}
-	if !sameSnapshotIdentities(first, second) {
-		return nil, ErrUnstableGroup
-	}
-	return second, nil
+	return stableOwnedGroup(ctx, host.inspector, ownership)
 }
 
 func (host *Host) persistStableMembership(ctx context.Context, ownershipPath string, ownership *Ownership, own bool) ([]ProcessSnapshot, error) {
