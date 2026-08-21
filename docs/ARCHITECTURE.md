@@ -110,7 +110,7 @@ Durable state is bounded and pinned:
 - accepted configuration revisions keep the head, the most recent 16 revisions, and every revision whose repository digest is pinned by a live (non-stopped) environment result or an incomplete environment operation; staged-but-unaccepted candidates keep the most recent 16;
 - every environment result and operation intent records the accepted repository-profile digest it was compiled from, so a restart after a later acceptance recovers the exact payload; a live result or incomplete operation whose pinned payload is no longer retained, or whose environment no longer belongs to an accepted profile, fails boot closed rather than silently re-reading the head. A stopped result is finished history: it pins nothing and never blocks boot, so archiving a worktree or disabling a repository after its environments have stopped keeps the daemon bootable.
 
-Repository identity in the public contract is the private `profileKey`; the adapter concept does not exist in contract v2 or in persisted 0.2.0 state. Migration 10 rewrites 0.1.0 state to the new names in place.
+Repository identity in the public contract is the private `profileKey`; the adapter concept does not exist in contract v2 or in persisted 0.2.0 state. Switchyard 0.2.0 is a clean cutover from 0.1.x: it opens a fresh `state-v2.sqlite` and carries no reader, importer, or migration for 0.1.x state, operations, or runtime ownership. A single-user install removes or archives the 0.1.x Application Support contents and starts fresh.
 
 Stable identity must not depend only on directory basename or branch name:
 

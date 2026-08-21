@@ -209,15 +209,10 @@ ALTER TABLE configuration_revisions
     ADD COLUMN executable_digests_json BLOB NOT NULL DEFAULT '{}';
 `,
 	},
-	{
-		// Contract v2 and record schema 2: the public repository field
-		// `adapter` becomes `profileKey`, pinned environment intent carries
-		// `ProfileDigest` instead of `Adapter`, and workspace results carry
-		// `ProfileKey`. Existing 0.1.0 state is rewritten in place so strict
-		// decoders never see the legacy shape.
-		version: 10,
-		apply:   migrateLegacyProfileNaming,
-	},
+	// Version 10 rewrote 0.1.0 adapter-named state into the contract v2
+	// profile naming. Switchyard 0.2.0 is a clean cutover that installs a
+	// fresh database, so that data migration was retired; the version number
+	// stays reserved and a ledger that already recorded it remains valid.
 	{
 		// Cleanup apply is a claimed transaction: authorization for one plan
 		// revision is recorded atomically before any owned resource is

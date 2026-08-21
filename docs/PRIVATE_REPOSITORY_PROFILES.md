@@ -55,12 +55,15 @@ The desired configuration lives outside every repository:
 ├── configuration.yaml
 ├── configuration-revisions/
 ├── daemon/
-│   └── state.sqlite
+│   └── state-v2.sqlite
 ├── runtime/
-│   └── repositories/<repository-key>/<worktree-id>/<run-id>/
-│       ├── artifacts/
-│       ├── logs/
-│       └── ownership/
+│   ├── repositories/<repository-key>/<worktree-id>/<run-id>/
+│   │   ├── artifacts/
+│   │   ├── logs/
+│   │   └── ownership/
+│   ├── actions/<repository-key>/<operation-id>/
+│   ├── preparation-runs/<launch>/
+│   └── managed-workspaces/
 └── caches/<cache-key>/
 ```
 
@@ -316,30 +319,23 @@ The 0.1.0 database retained every full status snapshot. That was unbounded and h
 
 The current schema stores the atomic snapshot in one row with a monotonic revision. Durable operations, ownership, configuration revisions, and event history remain separate and are bounded transactionally: 10,000 events, 500 terminal operations (current environment and workspace results and incomplete operations are always retained), and 16 unreferenced accepted configuration revisions (the head and every revision pinned by a live environment result or incomplete operation are always retained; stopped results pin nothing). Staged candidates keep the most recent 16. Unchanged observations do not create durable history merely to update a timestamp.
 
-Migration does not compact or rewrite the live database. It leaves `state.sqlite` byte-for-byte intact for rollback, creates `state-v2.sqlite`, and imports only supported durable repository/worktree identity and managed-worktree ownership. Filesystem ownership records moving from the legacy runtime root are imported only after Git identity is re-proven. Transient runs, historical snapshots, live environment state, and repository projections are not imported.
+The 0.2.0 daemon opens a fresh `state-v2.sqlite` and never reads, imports, or migrates a 0.1.x database, runtime root, or ownership record. Because Switchyard is single-user, the cutover deletes or archives the 0.1.x Application Support contents rather than carrying them forward.
 
-## Migration and release
+## Cutover and release
 
-The design is a breaking configuration, state, and composition change. It is the next `0.2.0` release, not an expansion of the unshipped `0.1.1` candidate.
+The design is a breaking configuration, state, and composition change. It ships as `0.2.0`, not as an expansion of the unshipped `0.1.1` candidate.
 
-Development and parity testing use an isolated Application Support root, token, logs, database, helper path, and development LaunchAgent label. The development daemon uses fixtures or synthetic repositories and cannot claim the same resources as the installed daemon. Building or opening a development app cannot inspect, replace, repair, or start the canonical helper. Nothing touches the installed daemon, LaunchAgent, CLI link, agent registrations, private configuration, or live state until a separate cutover is approved.
+Development and parity testing use an isolated Application Support root, token, logs, database, helper path, and development LaunchAgent label. The development daemon uses fixtures or synthetic repositories and cannot claim the same resources as the installed daemon. Building or opening a development app cannot inspect, replace, repair, or start the canonical helper.
 
-Cutover is a short explicit maintenance operation:
+Cutover is a clean install, not a migration. Switchyard is single-user, so no compatibility path for 0.1.x state, operations, or runtime ownership exists in the product:
 
 1. validate the complete private repository profile and a synthetic second repository;
-2. produce and review the private-profile import and legacy-footprint inventory;
-3. stop every legacy environment and complete rollback of every legacy repository projection; abort if any resource is active, incomplete, foreign, or unverifiable;
-4. back up the manual binary, LaunchAgent, CLI link, agent registrations, private state, and accepted configuration;
-5. stop the exact owned LaunchAgent;
-6. build and verify the new bounded database and configuration revision;
-7. install the Homebrew Cask without allowing ordinary app startup to auto-replace the legacy helper;
-8. bootstrap the exact versioned helper and require a successful handshake before repairing agent registrations;
-9. pass doctor, multi-repository inventory, prepare, start, stop, cleanup-plan, and agent-launch smoke tests;
-10. keep the rollback bundle until explicit acceptance.
+2. stop every 0.1.x environment and quit the 0.1.x app and daemon;
+3. delete or archive the 0.1.x Application Support directory, LaunchAgent, and helper; nothing inside a consuming repository is touched, and any 0.1.x files there remain for manual review;
+4. install the 0.2.0 Cask, let the app install and bootstrap its own helper, and require a successful handshake before repairing agent registrations;
+5. accept the private profile, then pass doctor, multi-repository inventory, prepare, start, stop, cleanup-plan, and agent-launch smoke tests.
 
-The repository-local legacy manifest is only a partial hint; it cannot reconstruct behavior that used to live in compiled code. Cutover therefore requires a complete private profile before import succeeds. A read-only legacy-footprint inventory then identifies exact known files and the exact owned marker block and produces manual removal instructions. Switchyard does not edit the checkout or `.git/info/exclude`, even during migration. Ambiguous or modified content remains protected for manual review. New runtime code does not read the legacy manifest during ordinary operation.
-
-Rollback stops only the new owned LaunchAgent, removes only paths proven by the migration receipt, restores the exact backed-up manual installation and state, and verifies its doctor result. It is automatic only before migration commit and before a v2 environment starts. Homebrew migration never happens during an ordinary development build. Normal Homebrew uninstall must prove that every helper, link, and plist it removes belongs to the Cask; it cannot delete a pre-existing manual installation that shares historical paths.
+Switchyard does not edit a checkout or `.git/info/exclude`, even during cutover. Normal Homebrew uninstall removes only Cask-owned paths.
 
 ## Implementation slices
 
@@ -347,9 +343,9 @@ Rollback stops only the new owned LaunchAgent, removes only paths proven by the 
 2. Run an isolated zero-footprint parity spike for every currently supported service and use it to inventory the required generic primitives.
 3. Amend accepted decisions and agent invariants; freeze the private schema with synthetic fixtures and the spike evidence.
 4. Add the strict private configuration loader, crash-consistent immutable revision store, CAS API, approval store, and fail-closed desired/accepted behavior.
-5. Add bounded snapshot storage and migration planning before adding more observers.
+5. Add bounded snapshot storage and cutover planning before adding more observers.
 6. Move generic Git discovery, source snapshots, diff accounting, command execution, preparation, and readiness out of repository-specific packages.
-7. Replace adapter fields with repository key plus configuration payload/digest in the core, contract v2, SQLite records, API, CLI, MCP, and Swift models. Persist concrete recovery behavior for start, readiness, rollback, stop, and cleanup. Done: contract v2 publishes `profileKey`, pinned intent and results carry `ProfileDigest`, migration 10 rewrites 0.1.0 state, and pinned payloads recover from retained revisions across restarts.
+7. Replace adapter fields with repository key plus configuration payload/digest in the core, contract v2, SQLite records, API, CLI, MCP, and Swift models. Persist concrete recovery behavior for start, readiness, rollback, stop, and cleanup. Done: contract v2 publishes `profileKey`, pinned intent and results carry `ProfileDigest`, 0.2.0 starts from a fresh database, and pinned payloads recover from retained revisions across restarts.
 8. Add the two-phase toolchain provision lifecycle and declarative workspace compiler while preserving the resilient `prepare --wait` behavior from the candidate branch.
 9. Add staged service launch/readiness barriers and compile declarative targets, services, ports, infrastructure, initialization, probes, and immutable private artifacts.
 10. Add the generic action operation/compiler/runner and the cleanup plan/apply domain across journal, contract, API, CLI, MCP, and Swift clients.
@@ -357,7 +353,7 @@ Rollback stops only the new owned LaunchAgent, removes only paths proven by the 
 12. Add configuration management, Add Repository, Review Cleanup, profile actions, and capability-tested agent-launch UI.
 13. Build the real private profile outside the source tree and prove full service parity plus simultaneous synthetic repositories.
 14. Delete repository-local configuration, exclusion, projection, and built-in catalog code; replace all product copy, fixtures, prompts, and skill text with synthetic terminology.
-15. Pass the zero-reference and zero-footprint gates, full safety suite, race suite, Swift checks, fresh-app visual verification, isolated migration rehearsal, and release dry run.
+15. Pass the zero-reference and zero-footprint gates, full safety suite, race suite, Swift checks, fresh-app visual verification, fresh-install rehearsal, and release dry run.
 
 ## Release gates
 
@@ -372,7 +368,5 @@ Rollback stops only the new owned LaunchAgent, removes only paths proven by the 
 - Service dependency stages enforce readiness barriers and reverse-order rollback.
 - Foreign processes, ports, containers, files, worktrees, and caches survive every cleanup test.
 - The database remains bounded under a multi-day accelerated observer test.
-- The installed manual version remains untouched throughout development; Homebrew cutover and rollback both pass from exact backups.
-- Opening a development or release-candidate app never auto-replaces a legacy helper before explicit migration confirmation.
-- The old `state.sqlite` remains byte-for-byte unchanged throughout the rollback window.
+- The installed 0.1.x version remains untouched throughout development; the cutover is a deliberate fresh install after the 0.1.x state is deleted or archived.
 - Every discoverable `sy` path resolves to the accepted release after cutover, and removal of an obsolete link requires exact ownership proof.
