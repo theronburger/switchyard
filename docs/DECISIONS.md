@@ -130,6 +130,14 @@ Every versioned daemon request declares the client's exact contract schema versi
 
 Worktree occupancy is never inferred. The app records one explicit, conservative handoff lease, with a generic holder kind and bounded label, before it launches a task into a worktree: a refused lease prevents the launch, a failed launch releases the lease, and a lease that cannot be released after a failed launch is kept as protection and reported to the owner. Only an owner release ends a lease. Held leases are published on the worktree, survive daemon restarts and inventory rebuilds, and block archive (`WORKTREE_OCCUPIED`) at acceptance and again immediately before the Git mutation. Occupancy, operation lifecycle, configuration acceptance, and cleanup apply completion append audit events inside the transaction that performs the change. A background monitor may inform the app through the snapshot and event feed; it still never injects chat messages, wakes sleeping agents, or interrupts running agents.
 
+### D-028: Agent hosts own task and worktree creation
+
+**Decision:** Switchyard no longer launches agent tasks or records app-created handoff leases. Codex creates each task and task worktree inside the owner's existing project. Its setup hook calls `sy prepare . --wait`, allowing Switchyard to discover and prepare that external worktree through the accepted generic profile. Switchyard finds existing Codex task IDs with a bounded, read-only app-server `thread/list` query filtered by the exact worktree `cwd`, and opens the selected task using `codex://threads/{id}`. `sy open .` provides the reverse navigation through the packaged `switchyard://worktrees/{id}` route.
+
+**Why:** A Switchyard-side “start task” action necessarily began with a worktree that already existed, while Codex's native task model creates one worktree per task. Treating Switchyard as the creator produced a second project container and the wrong lifecycle. Exact cross-navigation preserves each product's ownership boundary and requires no consuming-repository identity in Switchyard.
+
+**Supersedes:** D-027's app-launch and app-recorded-lease behavior. The generic daemon occupancy contract remains versioned independently; the native app does not use it for Codex discovery.
+
 ## Open
 
 There are no open release-blocking identity or installation decisions. The bundle identifier is `com.theronburger.switchyard`.

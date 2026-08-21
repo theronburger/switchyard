@@ -22,9 +22,6 @@ struct WorktreeDetailView: View {
                 serviceChanges
                 operations
                 workspaceReadiness
-                if !worktree.heldOccupancy.isEmpty || occupancyFailureMessage != nil {
-                    occupancySection
-                }
                 worktreeFacts
                 repositoryFacts
             }
@@ -46,11 +43,11 @@ struct WorktreeDetailView: View {
             Text("Switchyard will refuse if the worktree is dirty, has unpushed commits, or still has an active environment.")
         }
         .confirmationDialog(
-            "Adopt this existing worktree?",
+            "Take ownership of this external worktree?",
             isPresented: $confirmsAdopt,
             titleVisibility: .visible
         ) {
-            Button("Adopt worktree") {
+            Button("Take ownership") {
                 Task { await model.adoptWorktree(worktree) }
             }
             Button("Cancel", role: .cancel) {}
@@ -77,13 +74,14 @@ struct WorktreeDetailView: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
-                StartCodexTaskButton(model: model, worktree: worktree)
+                OpenCodexTaskButton(worktree: worktree)
+                    .id(worktree.id)
                 OpenInZedButton(worktree: worktree)
                 if worktree.workspace?.ownership == .adopted && !worktree.isPrimary {
                     Button {
                         confirmsAdopt = true
                     } label: {
-                        Label("Adopt", systemImage: "checkmark.seal")
+                        Label("Take Ownership", systemImage: "checkmark.seal")
                     }
                     .disabled(!model.canSubmitWorkspaceAction)
                 }
@@ -250,7 +248,7 @@ struct WorktreeDetailView: View {
                 }
             }
             if let workspace = worktree.workspace {
-                KeyValueRow(key: "Ownership", value: workspace.ownership.rawValue.capitalized)
+                KeyValueRow(key: "Ownership", value: workspaceOwnershipLabel(workspace.ownership))
                 if let preparedAt = workspace.preparedAtIfKnown {
                     KeyValueRow(key: "Prepared", value: Format.relative(preparedAt))
                 }
@@ -274,53 +272,12 @@ struct WorktreeDetailView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private var occupancyFailureMessage: String? {
-        guard case .failed(let worktreeId, let message) = model.occupancyActionState, worktreeId == worktree.id else { return nil }
-        return message
-    }
-
-    /// Held handoff leases. These are explicit records of tasks the app handed
-    /// this worktree; the app never infers them and only the owner ends them.
-    private var occupancySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Handed off", systemImage: "person.badge.clock")
-                    .font(.headline)
-                Spacer()
-                Text("Archive protected")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(worktree.heldOccupancy) { lease in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(lease.holderLabel)
-                            .font(.callout)
-                        Text("Since \(Format.relative(lease.acquiredAt)) · \(lease.holderKind)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Release") {
-                        Task { await model.releaseOccupancy(lease) }
-                    }
-                    .disabled(!model.canRecordOccupancy)
-                    .help("End this handoff. Only do this once the task no longer needs the worktree.")
-                }
-            }
-            if let occupancyFailureMessage {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(occupancyFailureMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                    Spacer()
-                    Button("Dismiss") { model.dismissOccupancyFailure() }
-                        .buttonStyle(.borderless)
-                }
-            }
+    private func workspaceOwnershipLabel(_ ownership: WorkspaceOwnership) -> String {
+        switch ownership {
+        case .adopted: "External"
+        case .managed: "Switchyard-managed"
+        case .unknown: "Unknown"
         }
-        .padding(16)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var repositoryFacts: some View {

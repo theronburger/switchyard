@@ -307,15 +307,13 @@ The app runs exactly `executable` + `arguments` + the validated issue key (no sh
 
 The portable foundation remains the generic MCP server plus its managed skill. Tools accept exact worktree paths or stable IDs and return bounded structured context. New cleanup tools use the same plan/apply contract. MCP contains no repository or lifecycle logic.
 
-The native app adds agent-launch actions on every worktree. For Codex, **Start Codex Task** first prepares the exact worktree, then uses the documented `codex://new` deep link with the absolute `path` and a bounded prefilled prompt. A capability spike against the installed app must verify the link before the UI promises task creation; the fallback opens the exact folder with `codex app PATH`. This avoids guessing a branch and avoids making Switchyard configuration part of the repository. Other agent hosts use capability-specific launchers behind the same app-facing interface.
+Codex owns Codex task creation and the task worktree. Its local-environment setup command may run `sy prepare . --wait`; Switchyard then discovers that exact external worktree and prepares it through the generic repository profile. Switchyard does not create a second worktree, create a Codex project, edit a consuming repository, or inject repository-specific configuration.
 
-A fire-and-forget launcher cannot prove that an agent still occupies a worktree. Switchyard records only an explicit conservative handoff lease for tasks it launches (`POST /v1/worktrees/{id}/occupancy` after the launch succeeded, holder kind `agent-task`) and requires owner release unless a host integration later provides authenticated lifecycle state. It never infers occupancy from a deep link, scans transcripts, or weakens archive protections: a held lease makes archive refuse with `WORKTREE_OCCUPIED`, and the app shows the handoff on the worktree with an explicit **Release** action.
+The native app provides bounded cross-navigation instead of task lifecycle ownership. On a worktree detail screen it asks the installed Codex app-server for unarchived tasks whose recorded `cwd` exactly equals the worktree path. When one exists, **Open Codex Task** opens `codex://threads/{id}` in the verified Codex application. Multiple exact matches are presented for owner selection. Switchyard does not read transcripts, stream turns, submit prompts, or write Codex state.
 
-Codex local-environment settings are project-scoped and stored by Codex under `.codex`. Switchyard therefore does not create or manage that file. A user may independently choose the one-line `sy prepare . --wait` setup hook, but the zero-footprint Switchyard flow is to create or select and prepare a worktree in Switchyard before launching the agent task.
+The reverse link is generic: `sy open .` resolves the current directory through the daemon's exact worktree selector and opens `switchyard://worktrees/{opaque-id}`. The packaged app registers that URL scheme, waits for its first snapshot on a cold launch, and selects the matching workspace. This command is suitable for a Codex project action because Codex runs actions with the task worktree as the working directory.
 
 MCP Apps UI is an optional later enhancement. Tools remain fully useful without embedded UI, and any UI uses the portable MCP Apps bridge rather than branching on a host product name.
-
-Direct Codex app-server integration is not required for this release. It is a separate product decision because it would make Switchyard a rich Codex client responsible for conversation history, approvals, and streamed agent events.
 
 ## Bounded state
 
@@ -337,7 +335,7 @@ Cutover is a clean install, not a migration. Switchyard is single-user, so no co
 2. stop every 0.1.x environment and quit the 0.1.x app and daemon;
 3. delete or archive the 0.1.x Application Support directory, LaunchAgent, and helper; nothing inside a consuming repository is touched, and any 0.1.x files there remain for manual review;
 4. install the 0.2.0 Cask, let the app install and bootstrap its own helper, and require a successful handshake before repairing agent registrations;
-5. accept the private profile, then pass doctor, multi-repository inventory, prepare, start, stop, cleanup-plan, and agent-launch smoke tests.
+5. accept the private profile, then pass doctor, multi-repository inventory, prepare, start, stop, cleanup-plan, and agent cross-navigation smoke tests.
 
 Switchyard does not edit a checkout or `.git/info/exclude`, even during cutover. Normal Homebrew uninstall removes only Cask-owned paths.
 

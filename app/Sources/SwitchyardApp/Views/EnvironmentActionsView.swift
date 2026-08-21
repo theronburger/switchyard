@@ -39,6 +39,7 @@ struct StartEnvironmentView: View {
     @State private var selectedServiceIds = Set<String>()
     @State private var showServicePicker = false
     @State private var showTargetConfirmation = false
+    private let initialWorktreeId: String?
     private let initialTargetId: String?
 
     init(
@@ -49,6 +50,7 @@ struct StartEnvironmentView: View {
     ) {
         self.model = model
         self.snapshot = snapshot
+        self.initialWorktreeId = initialWorktreeId
         self.initialTargetId = initialTargetId
         let orderedWorktrees = snapshot.repositories.flatMap { repository in
             repository.worktrees.map { worktree in
@@ -136,6 +138,9 @@ struct StartEnvironmentView: View {
         .onAppear(perform: configureSelection)
         .onChange(of: worktrees.map(\.id)) { _, _ in
             configureSelection()
+        }
+        .onChange(of: initialWorktreeId) { _, _ in
+            resetToInitialSelection()
         }
         .onChange(of: selectedWorktreeId) { _, _ in
             configureRuntimeSelection()
@@ -241,6 +246,14 @@ struct StartEnvironmentView: View {
             selectedWorktreeId = worktrees.first?.id ?? ""
         }
         configureRuntimeSelection()
+    }
+
+    private func resetToInitialSelection() {
+        let candidate = initialWorktreeId ?? worktrees.first?.id ?? ""
+        selectedWorktreeId = worktrees.contains(where: { $0.id == candidate }) ? candidate : (worktrees.first?.id ?? "")
+        let resetOptions = StartEnvironmentOptions(repository: selectedRepository)
+        selectedTargetId = resetOptions.normalizedTarget(current: "", preferred: initialTargetId)
+        selectedServiceIds = resetOptions.normalizedServices(current: [])
     }
 
     private func configureRuntimeSelection() {

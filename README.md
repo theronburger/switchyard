@@ -47,10 +47,12 @@ The installed CLI is current-worktree-first:
 ```bash
 sy status
 sy status --all
+sy prepare . --wait
+sy open .
 sy doctor
 ```
 
-`sy status` resolves the containing known worktree, even from a child directory. `--all` is the deliberate machine-wide inventory. Environment and worktree mutations are also available through the app and the installed MCP server.
+`sy status`, `sy prepare . --wait`, and `sy open .` resolve the containing known worktree, even from a child directory. `sy open .` opens that workspace in the native app. `--all` is the deliberate machine-wide inventory. Environment and worktree mutations are also available through the app and the installed MCP server.
 
 Repository behavior comes from private, schema-versioned profiles stored under Application Support. A profile declares preparation, services, readiness probes, infrastructure, artifacts, and bounded value sources. It can configure several repositories at once without adding Switchyard files to any repository.
 
@@ -59,6 +61,8 @@ Repository behavior comes from private, schema-versioned profiles stored under A
 Connection Doctor reports MCP and skill health independently for every detected Codex or Claude Code installation. **Repair** or **Repair All** registers the exact installed helper through the host CLI and installs the release's bundled `switchyard` skill.
 
 Standard installs use `~/.codex` and `~/.claude.json`; Switchyard does not redirect repairs into a custom `CLAUDE_CONFIG_DIR`. An explicit repair replaces the managed skill directory with the bundled release, including local edits inside that directory, but only when the directory carries Switchyard's ownership marker; a `switchyard` skill directory you authored yourself is reported and left untouched.
+
+Codex owns task creation and its one-worktree-per-task lifecycle. A Codex environment can prepare its new task worktree with `sy prepare . --wait`. Switchyard then offers **Open Codex Task** for exact-cwd matches, while a Codex action running `sy open .` jumps back to the same Switchyard workspace.
 
 ## Architecture and safety
 
