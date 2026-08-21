@@ -157,7 +157,6 @@ func NewDocument(entry RepositoryEntry) ([]byte, error) {
 				stringNode("shellDefault"), stringNode("deny"),
 			}},
 		}},
-		stringNode("secretProviders"), emptyMapNode(),
 		stringNode("repositories"), &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
 			stringNode(entry.Key), newRepositoryNode(entry),
 		}},
@@ -228,7 +227,7 @@ func newRepositoryNode(entry RepositoryEntry) *yaml.Node {
 			stringNode("managedWorktreesRoot"), stringNode(entry.ManagedWorktreesRoot),
 		}},
 	)
-	for _, section := range []string{"values", "toolchains", "caches", "environmentSources", "preparation", "targets"} {
+	for _, section := range []string{"values", "toolchains", "caches", "preparation", "targets"} {
 		node.Content = append(node.Content, stringNode(section), emptyMapNode())
 	}
 	node.Content = append(node.Content, stringNode("defaultTarget"), stringNode(""))

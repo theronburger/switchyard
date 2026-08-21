@@ -1,7 +1,6 @@
 package profile
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -18,14 +17,6 @@ import (
 )
 
 const maximumValueSourceBytes = 1024 * 1024
-
-var (
-	errValueSourceUnavailable = errors.New("value source is unavailable")
-	// errValueSourceMissing reports that a path segment does not exist. It is
-	// distinguishable so an optional environment source can tolerate an absent
-	// file without tolerating a symlink, a permission failure, or a missing root.
-	errValueSourceMissing = fmt.Errorf("%w: path does not exist", errValueSourceUnavailable)
-)
 
 // ReadValues resolves bounded repository-owned inputs without placing their
 // contents in configuration history, durable state, or diagnostics.
@@ -68,7 +59,7 @@ func readBoundedValueFile(root, relative string) ([]byte, error) {
 	}
 	rootDescriptor, err := unix.Open(root, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, errValueSourceUnavailable
+		return nil, errors.New("value source is unavailable")
 	}
 	defer func() { _ = unix.Close(rootDescriptor) }()
 	descriptor := rootDescriptor
@@ -83,10 +74,7 @@ func readBoundedValueFile(root, relative string) ([]byte, error) {
 			_ = unix.Close(descriptor)
 		}
 		if openErr != nil {
-			if errors.Is(openErr, unix.ENOENT) || errors.Is(openErr, unix.ENOTDIR) {
-				return nil, errValueSourceMissing
-			}
-			return nil, errValueSourceUnavailable
+			return nil, errors.New("value source is unavailable")
 		}
 		descriptor = next
 	}
@@ -107,8 +95,6 @@ func decodeValueSource(source configuration.ValueSource, contents []byte) (strin
 	switch source.Kind {
 	case "text-file":
 		return string(contents), nil
-	case "dotenv":
-		return dotenvValue(contents, source.Key)
 	case "json-pointer":
 		return structuredScalar(contents, source.Key, true)
 	case "yaml-scalar":
@@ -116,56 +102,6 @@ func decodeValueSource(source configuration.ValueSource, contents []byte) (strin
 	default:
 		return "", errors.New("value source kind is unsupported")
 	}
-}
-
-func dotenvValue(contents []byte, key string) (string, error) {
-	if key == "" {
-		return "", errors.New("dotenv key is required")
-	}
-	result := ""
-	found := false
-	scanner := bufio.NewScanner(bytes.NewReader(contents))
-	scanner.Buffer(make([]byte, 4096), maximumValueSourceBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(strings.TrimSuffix(scanner.Text(), "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		name, raw, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(name) != key {
-			continue
-		}
-		if found {
-			return "", errors.New("dotenv key is duplicated")
-		}
-		value, err := parseDotenvScalar(strings.TrimSpace(raw))
-		if err != nil {
-			return "", err
-		}
-		result, found = value, true
-	}
-	if err := scanner.Err(); err != nil {
-		return "", errors.New("dotenv source is invalid")
-	}
-	if !found {
-		return "", errors.New("dotenv key was not found")
-	}
-	return result, nil
-}
-
-func parseDotenvScalar(raw string) (string, error) {
-	if len(raw) >= 2 && raw[0] == '\'' && raw[len(raw)-1] == '\'' {
-		return raw[1 : len(raw)-1], nil
-	}
-	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
-		value, err := strconv.Unquote(raw)
-		if err != nil {
-			return "", errors.New("dotenv quoted value is invalid")
-		}
-		return value, nil
-	}
-	return raw, nil
 }
 
 func structuredScalar(contents []byte, pointer string, jsonSource bool) (string, error) {

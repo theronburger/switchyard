@@ -190,7 +190,6 @@ public struct RepositoryConfigurationDraft: Sendable, Equatable {
             values: {}
             toolchains: {}
             caches: {}
-            environmentSources: {}
             preparation: {}
             targets: {}
             defaultTarget: ""

@@ -43,7 +43,6 @@ func actionTestRegistrations(t *testing.T) (repositoryInventory, []profilecontro
 machine:
   ports: {first: 30000, last: 49999}
   execution: {inheritedEnvironment: [], shellDefault: deny}
-secretProviders: {}
 repositories:
   sample:
     enabled: true
@@ -53,7 +52,6 @@ repositories:
     values: {}
     toolchains: {}
     caches: {}
-    environmentSources: {}
     preparation: {}
     targets:
       local: {}

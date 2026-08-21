@@ -22,7 +22,6 @@ machine:
   execution:
     inheritedEnvironment: []
     shellDefault: deny
-secretProviders: {}
 repositories:
   sample-one:
     enabled: true
@@ -35,7 +34,6 @@ repositories:
     values: {}
     toolchains: {}
     caches: {}
-    environmentSources: {}
     preparation: {}
     targets:
       local: {displayName: Local}

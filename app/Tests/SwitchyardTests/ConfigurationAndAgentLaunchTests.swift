@@ -63,7 +63,7 @@ struct RepositoryConfigurationDraftTests {
         #expect(snippet.contains("displayName: \"Aurora \\\"Console\\\"\""))
         #expect(snippet.contains("root: \"/Users/example/Developer/aurora console\""))
         #expect(snippet.contains("managedWorktreesRoot: \"/Users/example/Developer/aurora-console-worktrees\""))
-        for section in ["values", "toolchains", "caches", "environmentSources", "preparation", "targets", "services", "infrastructure", "artifacts", "actions", "cleanup"] {
+        for section in ["values", "toolchains", "caches", "preparation", "targets", "services", "infrastructure", "artifacts", "actions", "cleanup"] {
             #expect(snippet.contains("\(section): {}"), "missing \(section)")
         }
         #expect(snippet.contains("defaultTarget: \"\""))

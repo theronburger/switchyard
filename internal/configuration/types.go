@@ -5,10 +5,9 @@ import "encoding/json"
 const SchemaVersion = 1
 
 type Document struct {
-	SchemaVersion   int                       `yaml:"schemaVersion" json:"schemaVersion"`
-	Machine         Machine                   `yaml:"machine" json:"machine"`
-	SecretProviders map[string]SecretProvider `yaml:"secretProviders" json:"secretProviders"`
-	Repositories    map[string]Repository     `yaml:"repositories" json:"repositories"`
+	SchemaVersion int                   `yaml:"schemaVersion" json:"schemaVersion"`
+	Machine       Machine               `yaml:"machine" json:"machine"`
+	Repositories  map[string]Repository `yaml:"repositories" json:"repositories"`
 }
 
 type Machine struct {
@@ -26,31 +25,26 @@ type MachineExecution struct {
 	ShellDefault         string   `yaml:"shellDefault" json:"shellDefault"`
 }
 
-type SecretProvider struct {
-	Kind string `yaml:"kind" json:"kind"`
-}
-
 // Repository contains only repository-neutral profile sections. Individual
 // sections are compiled into supported primitives before a revision can be
 // accepted; their data is retained here without attaching repository identity
 // or commands to product code.
 type Repository struct {
-	Enabled            bool                         `yaml:"enabled" json:"enabled"`
-	DisplayName        string                       `yaml:"displayName" json:"displayName"`
-	Root               string                       `yaml:"root" json:"root"`
-	Git                Git                          `yaml:"git" json:"git"`
-	Values             map[string]ValueSource       `yaml:"values" json:"values"`
-	Toolchains         map[string]Toolchain         `yaml:"toolchains" json:"toolchains"`
-	Caches             map[string]Cache             `yaml:"caches" json:"caches"`
-	EnvironmentSources map[string]EnvironmentSource `yaml:"environmentSources" json:"environmentSources"`
-	Preparation        Preparation                  `yaml:"preparation" json:"preparation"`
-	Targets            map[string]Target            `yaml:"targets" json:"targets"`
-	DefaultTarget      string                       `yaml:"defaultTarget" json:"defaultTarget"`
-	Services           map[string]Service           `yaml:"services" json:"services"`
-	Infrastructure     map[string]Infrastructure    `yaml:"infrastructure" json:"infrastructure"`
-	Artifacts          map[string]Artifact          `yaml:"artifacts" json:"artifacts"`
-	Actions            map[string]Action            `yaml:"actions" json:"actions"`
-	Cleanup            Cleanup                      `yaml:"cleanup" json:"cleanup"`
+	Enabled        bool                      `yaml:"enabled" json:"enabled"`
+	DisplayName    string                    `yaml:"displayName" json:"displayName"`
+	Root           string                    `yaml:"root" json:"root"`
+	Git            Git                       `yaml:"git" json:"git"`
+	Values         map[string]ValueSource    `yaml:"values" json:"values"`
+	Toolchains     map[string]Toolchain      `yaml:"toolchains" json:"toolchains"`
+	Caches         map[string]Cache          `yaml:"caches" json:"caches"`
+	Preparation    Preparation               `yaml:"preparation" json:"preparation"`
+	Targets        map[string]Target         `yaml:"targets" json:"targets"`
+	DefaultTarget  string                    `yaml:"defaultTarget" json:"defaultTarget"`
+	Services       map[string]Service        `yaml:"services" json:"services"`
+	Infrastructure map[string]Infrastructure `yaml:"infrastructure" json:"infrastructure"`
+	Artifacts      map[string]Artifact       `yaml:"artifacts" json:"artifacts"`
+	Actions        map[string]Action         `yaml:"actions" json:"actions"`
+	Cleanup        Cleanup                   `yaml:"cleanup" json:"cleanup"`
 }
 
 type ValueSource struct {
@@ -70,20 +64,6 @@ type Toolchain struct {
 
 type Cache struct {
 	Directory string `yaml:"directory" json:"directory"`
-}
-
-// EnvironmentSource declares one bounded repository-owned dotenv file whose
-// allowlisted entries are compiled into child process environments. The file
-// is parsed as data, never sourced as shell, and only the names in Allow may
-// cross into a child. Targets restricts the source to exact target IDs; an
-// empty list applies it to every target. Optional permits a missing file.
-type EnvironmentSource struct {
-	Kind     string   `yaml:"kind" json:"kind"`
-	Root     string   `yaml:"root" json:"root"`
-	Path     string   `yaml:"path" json:"path"`
-	Optional bool     `yaml:"optional" json:"optional"`
-	Targets  []string `yaml:"targets" json:"targets"`
-	Allow    []string `yaml:"allow" json:"allow"`
 }
 
 type Target struct {

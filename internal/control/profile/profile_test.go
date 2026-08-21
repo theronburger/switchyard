@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,39 @@ func TestProfilePlannerCompilesOnlyConfiguredBehavior(t *testing.T) {
 	}
 	if !foundHostHome {
 		t.Fatalf("explicit host home was not compiled: %v", service.Process.Environment)
+	}
+}
+
+func TestProfilePlannerNeverReadsRepositoryDotenvFiles(t *testing.T) {
+	registration := profileRegistration(t)
+	if err := os.WriteFile(filepath.Join(registration.WorktreeRoot, ".env.development"), []byte("SENTINEL_CREDENTIAL=must-not-cross\nPORT=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := registration.Profile.Targets["local"]
+	target.Environment["DEPLOYMENT_ENVIRONMENT"] = configuration.ValueRef{Literal: stringPointer("development")}
+	registration.Profile.Targets["local"] = target
+	registry, err := NewRegistry([]Registration{registration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := portlease.Lease{
+		Key:  portlease.Key{EnvironmentID: registration.EnvironmentID, ServiceID: "web", Purpose: "http"},
+		Host: "127.0.0.1", Port: 31001,
+	}
+	plan, err := NewPlanBuilder(registry).Build(environmentcontrol.PlanningRequest{
+		EnvironmentID: registration.EnvironmentID, RunID: "run_01",
+		Intent:        environmentcontrol.PlanIntent{ProfileDigest: registration.ProfileDigest, TargetID: "local", ServiceIDs: []string{"web"}},
+		AssignedPorts: []portlease.Lease{lease},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := plan.ServiceStages[0][0].Process.Environment
+	if slices.Contains(environment, "SENTINEL_CREDENTIAL=must-not-cross") {
+		t.Fatalf("repository dotenv value crossed into the plan: %v", environment)
+	}
+	if !slices.Contains(environment, "DEPLOYMENT_ENVIRONMENT=development") || !slices.Contains(environment, "PORT=31001") {
+		t.Fatalf("selector or leased port missing: %v", environment)
 	}
 }
 

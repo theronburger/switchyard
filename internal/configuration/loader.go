@@ -356,9 +356,6 @@ func validateDocument(document Document) error {
 	if len(document.Repositories) == 0 {
 		return errors.New("at least one repository is required")
 	}
-	if err := validateSecretProviders(document.SecretProviders); err != nil {
-		return err
-	}
 	seenRoots := make(map[string]string, len(document.Repositories))
 	for key, repository := range document.Repositories {
 		if !identifierPattern.MatchString(key) {
@@ -396,33 +393,6 @@ func validateDocument(document Document) error {
 	return nil
 }
 
-// SecretProviderKindKeySession is the only accepted secret provider kind.
-// key-session is the sole path from macOS Keychain to a child process; no
-// other provider kind is compiled, so none is accepted.
-const SecretProviderKindKeySession = "key-session"
-
-// validateSecretProviders accepts only non-secret provider declarations. A
-// provider carries no secret, capability, lease, or profile value; it names a
-// kind the daemon can compile. The child-launch path for a key-session lease
-// is not implemented yet (see docs/KEY_SESSION_SECRETS_BLOCKER.md), and no
-// ValueRef can name a provider, so an accepted provider authorizes nothing
-// until that path exists. Unknown kinds fail closed rather than accept a
-// declaration that would silently do nothing.
-func validateSecretProviders(providers map[string]SecretProvider) error {
-	if len(providers) > 16 {
-		return errors.New("too many secret providers")
-	}
-	for key, provider := range providers {
-		if !identifierPattern.MatchString(key) {
-			return fmt.Errorf("secret provider key %q is invalid", key)
-		}
-		if provider.Kind != SecretProviderKindKeySession {
-			return fmt.Errorf("secret provider %q kind must be %q", key, SecretProviderKindKeySession)
-		}
-	}
-	return nil
-}
-
 func validateRepositoryRuntime(repositoryKey string, repository Repository) error {
 	for id, target := range repository.Targets {
 		risk := target.Risk
@@ -440,16 +410,13 @@ func validateRepositoryRuntime(repositoryKey string, repository Repository) erro
 	}
 	for id, value := range repository.Values {
 		if !identifierPattern.MatchString(id) || value.Kind == "" ||
-			(value.Kind != "text-file" && value.Kind != "dotenv" && value.Kind != "json-pointer" && value.Kind != "yaml-scalar") ||
+			(value.Kind != "text-file" && value.Kind != "json-pointer" && value.Kind != "yaml-scalar") ||
 			(value.Root != "repository" && value.Root != "worktree") || !safeRelativePath(value.Path) ||
 			len(value.Key) > 512 || strings.ContainsRune(value.Key, 0) || len(value.TrimPrefix) > 4096 || strings.ContainsRune(value.TrimPrefix, 0) ||
 			(value.Kind == "text-file" && value.Key != "") || (value.Kind != "text-file" && value.Key == "") ||
 			((value.Kind == "json-pointer" || value.Kind == "yaml-scalar") && !strings.HasPrefix(value.Key, "/")) {
 			return fmt.Errorf("repository %q value %q is invalid", repositoryKey, id)
 		}
-	}
-	if err := validateEnvironmentSources(repositoryKey, repository); err != nil {
-		return err
 	}
 	for id, cache := range repository.Caches {
 		if !identifierPattern.MatchString(id) || (cache.Directory != "" && !safeRelativePath(cache.Directory)) {
@@ -658,119 +625,6 @@ func validateCommand(command Command, repository Repository, kind string) error 
 		}
 	}
 	return nil
-}
-
-// Environment source limits keep the compiled environment finite: a profile
-// may declare a bounded number of files, each allowlisting a bounded number of
-// variable names.
-const (
-	maximumEnvironmentSources         = 32
-	maximumEnvironmentSourceAllowList = 256
-)
-
-// validateEnvironmentSources checks every declared dotenv source and proves
-// statically that the sources applicable to any one target never allow the
-// same variable name, so runtime precedence between sources is never needed.
-func validateEnvironmentSources(repositoryKey string, repository Repository) error {
-	if len(repository.EnvironmentSources) > maximumEnvironmentSources {
-		return fmt.Errorf("repository %q declares more than %d environment sources", repositoryKey, maximumEnvironmentSources)
-	}
-	// claimed maps target ID -> variable name -> source ID. A source that
-	// applies to every target claims the name under every defined target, so
-	// any overlap is detected regardless of declaration order.
-	claimed := make(map[string]map[string]string, len(repository.Targets))
-	for _, targetID := range sortedTargetKeys(repository.Targets) {
-		claimed[targetID] = make(map[string]string)
-	}
-	for _, id := range sortedEnvironmentSourceKeys(repository.EnvironmentSources) {
-		source := repository.EnvironmentSources[id]
-		if !identifierPattern.MatchString(id) {
-			return fmt.Errorf("repository %q environment source %q has an invalid ID", repositoryKey, id)
-		}
-		if source.Kind != "dotenv" {
-			return fmt.Errorf("repository %q environment source %q kind is unsupported", repositoryKey, id)
-		}
-		if source.Root != "repository" && source.Root != "worktree" {
-			return fmt.Errorf("repository %q environment source %q root is invalid", repositoryKey, id)
-		}
-		if !safeRelativePath(source.Path) || source.Path == "." {
-			return fmt.Errorf("repository %q environment source %q path is invalid", repositoryKey, id)
-		}
-		if len(source.Allow) == 0 || len(source.Allow) > maximumEnvironmentSourceAllowList {
-			return fmt.Errorf("repository %q environment source %q must allow between 1 and %d names", repositoryKey, id, maximumEnvironmentSourceAllowList)
-		}
-		if len(source.Targets) > len(repository.Targets) {
-			return fmt.Errorf("repository %q environment source %q targets are invalid", repositoryKey, id)
-		}
-		applicable := sortedTargetKeys(repository.Targets)
-		if len(source.Targets) != 0 {
-			applicable = source.Targets
-		}
-		seenTargets := make(map[string]struct{}, len(source.Targets))
-		for _, targetID := range source.Targets {
-			if _, defined := repository.Targets[targetID]; !defined {
-				return fmt.Errorf("repository %q environment source %q target %q is not defined", repositoryKey, id, targetID)
-			}
-			if _, duplicate := seenTargets[targetID]; duplicate {
-				return fmt.Errorf("repository %q environment source %q target %q is duplicated", repositoryKey, id, targetID)
-			}
-			seenTargets[targetID] = struct{}{}
-		}
-		seenNames := make(map[string]struct{}, len(source.Allow))
-		for _, name := range source.Allow {
-			if !EnvironmentSourceNameAllowed(name) {
-				return fmt.Errorf("repository %q environment source %q allows an invalid name", repositoryKey, id)
-			}
-			if _, duplicate := seenNames[name]; duplicate {
-				return fmt.Errorf("repository %q environment source %q allows %q twice", repositoryKey, id, name)
-			}
-			seenNames[name] = struct{}{}
-			for _, targetID := range applicable {
-				if other, exists := claimed[targetID][name]; exists {
-					return fmt.Errorf("repository %q environment sources %q and %q both allow %q for target %q", repositoryKey, other, id, name, targetID)
-				}
-				claimed[targetID][name] = id
-			}
-		}
-	}
-	return nil
-}
-
-// EnvironmentSourceNameAllowed reports whether a dotenv entry name may be
-// compiled into a child environment. Trusted base values and dynamic-loader
-// hooks are never accepted from a repository-owned file.
-func EnvironmentSourceNameAllowed(name string) bool {
-	if !environmentNamePattern.MatchString(name) || len(name) > 256 {
-		return false
-	}
-	switch name {
-	case "PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "SHELL", "IFS", "PWD", "OLDPWD", "ENV", "BASH_ENV", "ZDOTDIR":
-		return false
-	}
-	for _, prefix := range []string{"DYLD_", "LD_", "SWITCHYARD_"} {
-		if strings.HasPrefix(name, prefix) {
-			return false
-		}
-	}
-	return true
-}
-
-func sortedEnvironmentSourceKeys(sources map[string]EnvironmentSource) []string {
-	keys := make([]string, 0, len(sources))
-	for key := range sources {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedTargetKeys(targets map[string]Target) []string {
-	keys := make([]string, 0, len(targets))
-	for key := range targets {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func validateValueEnvironment(environment map[string]ValueRef, _ string) error {

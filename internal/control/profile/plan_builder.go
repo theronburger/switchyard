@@ -47,12 +47,6 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	if err != nil {
 		return environmentcontrol.ExecutionPlan{}, err
 	}
-	// Allowlisted repository environment sources are read once per plan and
-	// sit directly above the trusted base, below the target and service layers.
-	sourceEnvironment, err := ReadEnvironmentSources(registration, targetID)
-	if err != nil {
-		return environmentcontrol.ExecutionPlan{}, err
-	}
 	leases := make(map[portlease.Key]portlease.Lease, len(request.AssignedPorts))
 	for _, lease := range request.AssignedPorts {
 		leases[lease.Key] = lease
@@ -78,7 +72,7 @@ func (builder PlanBuilder) Build(request environmentcontrol.PlanningRequest) (en
 	for _, serviceID := range serviceIDs {
 		service := profile.Services[serviceID]
 		resolvedEnvironment, err := resolveEnvironment(
-			registration, runRoot, serviceID, target.Environment, leases, sourceEnvironment,
+			registration, runRoot, serviceID, target.Environment, leases,
 			routeEnvironment, target.Environment, service.Environment, service.Command.Environment,
 		)
 		if err != nil {
@@ -305,7 +299,7 @@ func finiteCommand(registration Registration, runRoot, runID, serviceID, id stri
 	if err != nil {
 		return environmentcontrol.PreparationSpec{}, err
 	}
-	environment, err := resolveEnvironment(registration, runRoot, serviceID, targets, leases, nil, command.Environment)
+	environment, err := resolveEnvironment(registration, runRoot, serviceID, targets, leases, command.Environment)
 	if err != nil {
 		return environmentcontrol.PreparationSpec{}, err
 	}
@@ -334,19 +328,9 @@ func EnvironmentRunRoot(runtimeRoot, profileKey, worktreeID, environmentID strin
 	return filepath.Join(runtimeRoot, "repositories", profileKey, worktreeID, "environments", environmentID, "runs")
 }
 
-// resolveEnvironment compiles one child environment in documented precedence:
-// the trusted process base, then allowlisted repository environment sources,
-// then each configured layer in the order given (inherited and selected
-// target, service, command). A source entry can never replace a base value.
-func resolveEnvironment(registration Registration, runRoot, serviceID string, targets map[string]configuration.ValueRef, leases map[portlease.Key]portlease.Lease, sources map[string]string, layers ...map[string]configuration.ValueRef) ([]string, error) {
+func resolveEnvironment(registration Registration, runRoot, serviceID string, targets map[string]configuration.ValueRef, leases map[portlease.Key]portlease.Lease, layers ...map[string]configuration.ValueRef) ([]string, error) {
 	values := map[string]string{
 		"HOME": registration.HomeDirectory, "PATH": registration.ExecutablePath, "TMPDIR": registration.TemporaryDirectory,
-	}
-	for name, value := range sources {
-		if _, trusted := values[name]; trusted || !configuration.EnvironmentSourceNameAllowed(name) {
-			return nil, ErrProfileInvalid
-		}
-		values[name] = value
 	}
 	for _, layer := range layers {
 		keys := make([]string, 0, len(layer))

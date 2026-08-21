@@ -52,7 +52,6 @@ const testServiceConfiguration = `schemaVersion: 1
 machine:
   ports: {first: 30000, last: 49999}
   execution: {inheritedEnvironment: [], shellDefault: deny}
-secretProviders: {}
 repositories:
   sample:
     enabled: true
@@ -62,7 +61,6 @@ repositories:
     values: {}
     toolchains: {}
     caches: {}
-    environmentSources: {}
     preparation: {}
     targets: {local: {}}
     defaultTarget: local
@@ -387,7 +385,6 @@ func TestConfigurationRejectionNeverEchoesScalarValues(t *testing.T) {
 machine:
   ports: {first: 30000, last: 49999}
   execution: {inheritedEnvironment: [], shellDefault: deny}
-secretProviders: {}
 repositories:
   alpha:
     enabled: hunter2secret

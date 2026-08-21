@@ -3,7 +3,6 @@ package configuration
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -16,9 +15,6 @@ machine:
   execution:
     inheritedEnvironment: []
     shellDefault: deny
-secretProviders:
-  key-session:
-    kind: key-session
 repositories:
   sample-one:
     enabled: true
@@ -31,7 +27,6 @@ repositories:
     values: {}
     toolchains: {}
     caches: {}
-    environmentSources: {}
     preparation: {}
     targets:
       local: {}
@@ -117,6 +112,18 @@ func TestParseRejectsInvalidRepositoryReferences(t *testing.T) {
 	invalid := strings.Replace(validConfiguration, "defaultTarget: local", "defaultTarget: missing", 1)
 	if _, err := Parse([]byte(invalid)); err == nil {
 		t.Fatal("missing default target was accepted")
+	}
+}
+
+func TestParseRejectsDotenvValueExtraction(t *testing.T) {
+	configured := strings.Replace(validConfiguration, "values: {}", `values:
+      credential:
+        kind: dotenv
+        root: worktree
+        path: .env.development
+        key: API_KEY`, 1)
+	if _, err := Parse([]byte(configured)); err == nil {
+		t.Fatal("dotenv key extraction was accepted")
 	}
 }
 
@@ -222,109 +229,5 @@ func TestParseValidatesProfileActions(t *testing.T) {
 		if _, err := Parse([]byte(withActions(actions))); err == nil {
 			t.Fatalf("invalid action accepted:\n%s", actions)
 		}
-	}
-}
-
-func TestParseValidatesEnvironmentSources(t *testing.T) {
-	withSources := func(sources string) string {
-		return strings.Replace(strings.Replace(validConfiguration, "environmentSources: {}", "environmentSources:\n"+sources, 1),
-			"local: {}", "local: {}\n      staging: {}", 1)
-	}
-	valid := withSources(`      base:
-        kind: dotenv
-        root: worktree
-        path: .env
-        optional: true
-        allow: [APP_NAME, LOG_LEVEL]
-      staging:
-        kind: dotenv
-        root: repository
-        path: config/staging.env
-        targets: [staging]
-        allow: [LOG_FORMAT]`)
-	loaded, err := Parse([]byte(valid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := loaded.Document.Repositories["sample-one"].EnvironmentSources["base"]
-	if !source.Optional || len(source.Allow) != 2 || len(source.Targets) != 0 {
-		t.Fatalf("parsed source: %+v", source)
-	}
-	rejected := map[string]string{
-		"shell kind":     `      base: {kind: shell, root: worktree, path: .env, allow: [APP_NAME]}`,
-		"bad root":       `      base: {kind: dotenv, root: runtime, path: .env, allow: [APP_NAME]}`,
-		"absolute":       `      base: {kind: dotenv, root: worktree, path: /etc/environment, allow: [APP_NAME]}`,
-		"escape":         `      base: {kind: dotenv, root: worktree, path: ../other/.env, allow: [APP_NAME]}`,
-		"dot path":       `      base: {kind: dotenv, root: worktree, path: ., allow: [APP_NAME]}`,
-		"empty allow":    `      base: {kind: dotenv, root: worktree, path: .env, allow: []}`,
-		"bad ID":         `      Base: {kind: dotenv, root: worktree, path: .env, allow: [APP_NAME]}`,
-		"PATH":           `      base: {kind: dotenv, root: worktree, path: .env, allow: [PATH]}`,
-		"HOME":           `      base: {kind: dotenv, root: worktree, path: .env, allow: [HOME]}`,
-		"TMPDIR":         `      base: {kind: dotenv, root: worktree, path: .env, allow: [TMPDIR]}`,
-		"DYLD":           `      base: {kind: dotenv, root: worktree, path: .env, allow: [DYLD_INSERT_LIBRARIES]}`,
-		"LD":             `      base: {kind: dotenv, root: worktree, path: .env, allow: [LD_PRELOAD]}`,
-		"BASH_ENV":       `      base: {kind: dotenv, root: worktree, path: .env, allow: [BASH_ENV]}`,
-		"SWITCHYARD_":    `      base: {kind: dotenv, root: worktree, path: .env, allow: [SWITCHYARD_TOKEN]}`,
-		"bad name":       `      base: {kind: dotenv, root: worktree, path: .env, allow: [APP-NAME]}`,
-		"dup name":       `      base: {kind: dotenv, root: worktree, path: .env, allow: [APP_NAME, APP_NAME]}`,
-		"unknown target": `      base: {kind: dotenv, root: worktree, path: .env, targets: [production], allow: [APP_NAME]}`,
-		"dup target":     `      base: {kind: dotenv, root: worktree, path: .env, targets: [local, local], allow: [APP_NAME]}`,
-		"ambiguous everywhere": `      a: {kind: dotenv, root: worktree, path: a.env, allow: [APP_NAME]}
-      b: {kind: dotenv, root: worktree, path: b.env, allow: [APP_NAME]}`,
-		"ambiguous on one target": `      a: {kind: dotenv, root: worktree, path: a.env, allow: [APP_NAME]}
-      b: {kind: dotenv, root: worktree, path: b.env, targets: [staging], allow: [APP_NAME]}`,
-		"unknown field": `      base: {kind: dotenv, root: worktree, path: .env, allow: [APP_NAME], key: APP_NAME}`,
-	}
-	for name, sources := range rejected {
-		if _, err := Parse([]byte(withSources(sources))); err == nil {
-			t.Fatalf("%s was accepted", name)
-		}
-	}
-	disjoint := withSources(`      a: {kind: dotenv, root: worktree, path: a.env, targets: [local], allow: [APP_NAME]}
-      b: {kind: dotenv, root: worktree, path: b.env, targets: [staging], allow: [APP_NAME]}`)
-	if _, err := Parse([]byte(disjoint)); err != nil {
-		t.Fatalf("disjoint targets were rejected: %v", err)
-	}
-	var many strings.Builder
-	for index := 0; index <= 32; index++ {
-		many.WriteString("      s" + strconv.Itoa(index) + ": {kind: dotenv, root: worktree, path: .env, allow: [N" + strconv.Itoa(index) + "]}\n")
-	}
-	if _, err := Parse([]byte(withSources(many.String()))); err == nil {
-		t.Fatal("source count bound was not enforced")
-	}
-}
-
-// TestParseSecretProvidersFailClosed proves the accepted schema carries only
-// non-secret provider references: the sole accepted kind is key-session, any
-// other kind or malformed key is rejected, and no value reference can name a
-// secret, provider, profile, lease, or consumer capability. The canonical
-// payload of an accepted document therefore never contains a secret value.
-func TestParseSecretProvidersFailClosed(t *testing.T) {
-	rejected := map[string]string{
-		"other-kind":  strings.Replace(validConfiguration, "kind: key-session", "kind: macos-keychain", 1),
-		"empty-kind":  strings.Replace(validConfiguration, "kind: key-session", "kind: \"\"", 1),
-		"bad-key":     strings.Replace(validConfiguration, "  key-session:\n    kind: key-session", "  Login Keychain:\n    kind: key-session", 1),
-		"secret-data": strings.Replace(validConfiguration, "kind: key-session", "kind: key-session\n    secret: hunter2", 1),
-		"secret-value-ref": strings.Replace(validConfiguration, "targets:\n      local: {}",
-			"targets:\n      local:\n        environment:\n          API_TOKEN: { secret: { provider: key-session, profile: sample } }", 1),
-		"lease-value-ref": strings.Replace(validConfiguration, "targets:\n      local: {}",
-			"targets:\n      local:\n        environment:\n          API_TOKEN: { lease: lease_example }", 1),
-	}
-	for name, contents := range rejected {
-		t.Run(name, func(t *testing.T) {
-			if _, err := Parse([]byte(contents)); err == nil {
-				t.Fatal("secret-bearing or unknown secret provider configuration was accepted")
-			}
-		})
-	}
-	loaded, err := Parse([]byte(validConfiguration))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Document.SecretProviders["key-session"].Kind != SecretProviderKindKeySession {
-		t.Fatalf("accepted provider kind = %q", loaded.Document.SecretProviders["key-session"].Kind)
-	}
-	if strings.Contains(string(loaded.CanonicalPayload), "hunter2") || strings.Contains(string(loaded.CanonicalPayload), "lease_") {
-		t.Fatal("canonical payload carries a secret or lease value")
 	}
 }

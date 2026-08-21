@@ -41,7 +41,7 @@ The existing coordinators, journals, process ownership, port leasing, container 
 6. Commands are executable plus argv. There is no implicit shell. Accepting a configuration revision authorizes its compiled executable behavior as one reviewed transaction. The activation preview identifies exact executables, shells, interpreters, and generated wrappers; fingerprint drift or a changed revision requires re-acceptance. Per-run confirmation remains limited to explicitly high-risk targets and actions.
 7. The daemon remains the only runtime-state writer. Configuration mutations from the app or CLI use compare-and-swap through the daemon.
 8. Every workspace or environment operation is pinned to an immutable accepted configuration payload and digest. Reloading configuration cannot change a running process cluster in place, including after a daemon restart.
-9. Secret values are not stored in configuration, configuration history, SQLite, snapshots, logs, diagnostics, or agent context. Configuration contains secret references only.
+9. Repository credentials remain in repository-managed local environment files and are loaded by the repository's normal tooling. Switchyard does not read, copy, map, persist, or log those values.
 10. Cleanup is always inspectable plan then revision-checked apply. Foreign or unverifiable resources are report-only.
 
 These rules deliberately supersede the earlier built-in-adapter and repository-local-manifest decisions.
@@ -85,7 +85,7 @@ The app's **Add Repository**, **Edit**, **Enable**, **Disable**, and **Remove** 
 
 Manual edits enter through the same validation and acceptance path. Retention keeps the head, explicit rollback revisions, and every revision referenced by a durable resource. Unreferenced revisions expire under a bounded policy.
 
-Parsing and cross-reference validation are globally atomic, while activation diffs per-repository digests. Resolve/start acquires one immutable repository-profile snapshot before it persists an operation; reload cannot swap that snapshot between resolution and operation creation. Old pinned profiles coexist with the current profile until no durable resource references them. Global port-range or secret-provider changes are rejected or staged while incompatible active resources exist.
+Parsing and cross-reference validation are globally atomic, while activation diffs per-repository digests. Resolve/start acquires one immutable repository-profile snapshot before it persists an operation; reload cannot swap that snapshot between resolution and operation creation. Old pinned profiles coexist with the current profile until no durable resource references them. Global port-range changes are rejected or staged while incompatible active resources exist.
 
 ### Shape
 
@@ -99,10 +99,6 @@ machine:
   execution:
     inheritedEnvironment: []
     shellDefault: deny
-
-secretProviders:
-  key-session:
-    kind: key-session
 
 repositories:
   aurora-console:
@@ -118,7 +114,6 @@ repositories:
     values: {}
     toolchains: {}
     caches: {}
-    environmentSources: {}
     preparation: {}
     targets: {}
     defaultTarget: local
@@ -137,8 +132,8 @@ The schema uses validated tagged unions instead of free-form interpolation:
 
 - `ExecutableRef`: absolute executable, compile-time PATH lookup, or resolved toolchain.
 - `PathRef`: read-only primary checkout path, read-only worktree path, working directory, private runtime path, or private cache path.
-- `ValueRef`: literal, extracted value, target value, leased port, URL assembled from a port, toolchain property, cache path, private artifact path, or secret reference.
-- `ValueSource`: bounded text file, dotenv key, JSON pointer, or YAML scalar. Files are parsed as data and are never sourced as shell code.
+- `ValueRef`: literal, extracted non-secret metadata value, target value, leased port, URL assembled from a port, toolchain property, cache path, or private artifact path.
+- `ValueSource`: bounded non-secret metadata from a text file, JSON pointer, or YAML scalar. Repository credentials are not value sources.
 - `CommandSpec`: executable reference, argv, working directory, explicit environment, timeout, output cap, and declared effects.
 - `ProbeSpec`: process, TCP, HTTP, or exact-command probe.
 - `ArtifactSpec`: bounded private text or structured content with run, worktree, or repository lifetime.
@@ -147,7 +142,7 @@ The schema uses validated tagged unions instead of free-form interpolation:
 
 Every reference is resolved and containment-checked before a mutation is accepted. Executables become absolute regular executable files during compilation, not child launch. Ambient environment inheritance is empty by default.
 
-Personal overrides, local endpoints, target values, and secret references belong in private configuration or the configured secret provider. The only accepted provider kind is `key-session`; a provider declaration is a non-secret reference that authorizes nothing until the leased child-launch path exists (see `KEY_SESSION_SECRETS_BLOCKER.md`), and no value reference can name a secret yet. A profile may read bounded repository-owned inputs such as a tracked version file or package-manager declaration, but Switchyard does not use an ignored checkout-local file as its personal configuration store and never copies private values into a worktree.
+Target selectors, local endpoints, ports, and routes belong in private configuration. Repository credentials remain in the repository's existing local environment files and are loaded by its normal commands; Switchyard never enumerates or injects their keys. A profile may read bounded non-secret repository metadata such as a tracked version file or package-manager declaration, but Switchyard does not use an ignored checkout-local file as its personal configuration store and never copies private values into a worktree.
 
 ## Workspace preparation
 
@@ -240,32 +235,13 @@ The compiler maps targets, selected services, assigned leases, declared infrastr
 Targets are deterministic single-parent inheritance graphs. Environment precedence is:
 
 1. a small trusted process base;
-2. allowlisted repository environment sources;
-3. inherited target;
-4. selected target;
-5. service values;
-6. leases, routes, caches, and private artifact paths;
-7. secrets resolved immediately before spawn.
+2. inherited and selected target values, including the repository's environment selector;
+3. service command values;
+4. Switchyard-owned leases, routes, caches, and private artifact paths.
 
 Maps override explicitly. Lists replace unless the schema defines set semantics. Remote-write targets require confirmation on every start.
 
-An environment source is a bounded repository-owned dotenv file parsed as data, never sourced as shell. Only the explicitly allowlisted names reach a child, loader and trusted-base names (`PATH`, `HOME`, `TMPDIR`, `DYLD_*`, `LD_*`, `BASH_ENV`, `SWITCHYARD_*`, ...) are never accepted, and two sources that apply to the same target may not allow the same name, so no runtime ordering between sources exists. Values are read at plan compilation, held in memory for the launch, and never persisted or logged.
-
-```yaml
-environmentSources:
-  defaults:
-    kind: dotenv
-    root: worktree
-    path: .env
-    optional: true
-    allow: [APP_NAME, LOG_LEVEL]
-  staging:
-    kind: dotenv
-    root: repository
-    path: config/staging.env
-    targets: [staging]
-    allow: [LOG_FORMAT]
-```
+Switchyard invokes the repository's normal configured command. That command owns dotenv loading and selects its existing environment files from the target selector already present in the child environment. Switchyard never parses those files or compiles their entries into the child. Allocated ports and derived local URLs are present before repository tooling loads dotenv, so ordinary non-overriding dotenv behavior preserves the runtime values Switchyard owns.
 
 Services declare exact commands, dependencies, ports, published URLs, readiness, health, infrastructure, initialization, and private artifacts. Dependency and target graphs must be acyclic. The flat v1 `ExecutionPlan` must become ordered stages: each stage launches its independent services and passes a readiness barrier before dependants in the next stage may launch. Rollback and stop traverse the accepted concrete stages in reverse. Dependencies are not merely presentation or sort hints.
 
@@ -275,11 +251,11 @@ Mutable infrastructure remains environment-scoped in v1. Only immutable content-
 
 `ProjectionApplier` becomes `ArtifactMaterializer`. Its only writable root is the Switchyard private runtime directory. It cannot receive or derive a destination under a repository, worktree, or Git directory. Artifact paths include the repository-profile and content digests. Creation is no-follow, exclusive, owner-only, and single-link verified; content is never replaced in place.
 
-Environment values should be passed directly to child processes. When a tool needs a file, the profile declares a private artifact and passes its private absolute path in argv or environment. Active references protect immutable artifacts from cleanup, and every loaded or executed artifact digest participates in the command fingerprint.
+Switchyard-owned runtime values should be passed directly to child processes. When a tool needs a generated non-secret file, the profile declares a private artifact and passes its private absolute path in argv or environment. Active references protect immutable artifacts from cleanup, and every loaded or executed artifact digest participates in the command fingerprint.
 
 A profile can also declare a private wrapper artifact when a third-party tool cannot consume an external configuration directly. The configuration activation preview fingerprints behavior by repository key, repository-profile digest, executable identity, argv, wrapper and referenced artifact digests, working directory, and non-secret environment shape. Shells, interpreters, and generated wrappers are additionally labelled executable profile code. The owner accepts or revokes the complete configuration revision through the app or human CLI. Noninteractive MCP and setup hooks may execute an accepted revision, but cannot accept a pending or changed revision; they return `CONFIGURATION_NOT_ACCEPTED` without exposing the complete preview.
 
-Declared effects make plans and cleanup boundaries inspectable; they do not sandbox a command or prove ownership of what it writes. Secret-tainted values cannot enter argv, persisted plans, or persistent artifacts. Secrets are normally injected daemon-side into the child environment immediately before spawn and redacted from captured output. An unavoidable secret file is run-scoped, mode `0600`, excluded from accepted payloads and SQLite, resolved immediately before launch, and removed during stop and recovery.
+Declared effects make plans and cleanup boundaries inspectable; they do not sandbox a command or prove ownership of what it writes. Repository credentials never enter Switchyard argv, persisted plans, artifacts, configuration history, or diagnostics; the repository's normal loader keeps them outside the control-plane model.
 
 Before the breaking release, a parity spike must prove that every currently supported service can run without a Switchyard-owned file in its checkout. A failed parity case keeps the release incomplete; the boundary is not weakened.
 
