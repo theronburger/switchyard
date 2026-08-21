@@ -50,10 +50,293 @@ func TestOperationKeysSerializeOnlySharedKeys(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the waiter never acquired after release")
 	}
-	keys.mutex.Lock()
-	defer keys.mutex.Unlock()
-	if len(keys.locks) != 0 {
-		t.Fatalf("keys leaked: %d", len(keys.locks))
+	if !keys.idle() {
+		t.Fatal("keys leaked after every holder released")
+	}
+}
+
+// queued blocks until exactly count operations are waiting, so a test can
+// assert "still pending" against the queue rather than against a timer.
+func (keys *OperationKeys) queued(t *testing.T, count int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		keys.mutex.Lock()
+		waiting := len(keys.waiters)
+		keys.mutex.Unlock()
+		if waiting == count {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("never reached %d queued operations", count)
+}
+
+type keyAcquisition struct {
+	granted chan func()
+	failed  chan error
+}
+
+func acquireAsync(keys *OperationKeys, ctx context.Context, names ...string) keyAcquisition {
+	acquisition := keyAcquisition{granted: make(chan func(), 1), failed: make(chan error, 1)}
+	go func() {
+		release, err := keys.Acquire(ctx, names...)
+		if err != nil {
+			acquisition.failed <- err
+			return
+		}
+		acquisition.granted <- release
+	}()
+	return acquisition
+}
+
+func (acquisition keyAcquisition) mustStayPending(t *testing.T) {
+	t.Helper()
+	select {
+	case <-acquisition.granted:
+		t.Fatal("a conflicting operation was granted")
+	case err := <-acquisition.failed:
+		t.Fatalf("a pending operation failed: %v", err)
+	default:
+	}
+}
+
+func (acquisition keyAcquisition) mustBeGranted(t *testing.T) func() {
+	t.Helper()
+	select {
+	case release := <-acquisition.granted:
+		return release
+	case err := <-acquisition.failed:
+		t.Fatalf("acquisition failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("acquisition never granted")
+	}
+	return nil
+}
+
+func TestOperationKeysMutualExclusionUnderContention(t *testing.T) {
+	keys := NewOperationKeys()
+	var active, maxActive int32
+	var wg sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			names := []string{"worktree:a"}
+			if index%3 == 0 {
+				names = append(names, "repository:r")
+			}
+			release, err := keys.Acquire(context.Background(), names...)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			current := atomic.AddInt32(&active, 1)
+			for {
+				seen := atomic.LoadInt32(&maxActive)
+				if current <= seen || atomic.CompareAndSwapInt32(&maxActive, seen, current) {
+					break
+				}
+			}
+			time.Sleep(200 * time.Microsecond)
+			atomic.AddInt32(&active, -1)
+			release()
+		}(index)
+	}
+	wg.Wait()
+	if maxActive != 1 {
+		t.Fatalf("%d operations held worktree:a at once", maxActive)
+	}
+	if !keys.idle() {
+		t.Fatal("keys leaked")
+	}
+}
+
+func TestOperationKeysUnrelatedOperationsNeverWait(t *testing.T) {
+	keys := NewOperationKeys()
+	releasePreparation, err := keys.Acquire(context.Background(), "worktree:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := acquireAsync(keys, context.Background(), "worktree:a", "repository:r")
+	keys.queued(t, 1)
+	archive.mustStayPending(t)
+	// The archive holds nothing while it waits: a different worktree of the
+	// same repository and a different repository both proceed immediately.
+	releaseOther, err := keys.Acquire(context.Background(), "worktree:b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseForeign, err := keys.Acquire(context.Background(), "repository:other", "worktree:c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive.mustStayPending(t)
+	releaseOther()
+	releaseForeign()
+	releasePreparation()
+	archive.mustBeGranted(t)()
+	if !keys.idle() {
+		t.Fatal("keys leaked")
+	}
+}
+
+func TestOperationKeysCancelledWaiterLeavesTheQueueWithoutHoldingKeys(t *testing.T) {
+	keys := NewOperationKeys()
+	releaseHolder, err := keys.Acquire(context.Background(), "worktree:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	archive := acquireAsync(keys, ctx, "worktree:a", "repository:r")
+	keys.queued(t, 1)
+	// The queued archive reserves nothing: a repository-only operation runs
+	// immediately even though it shares the repository key with the archive.
+	releaseCreate, err := keys.Acquire(context.Background(), "repository:r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive.mustStayPending(t)
+	cancel()
+	select {
+	case err := <-archive.failed:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled waiter error: %v", err)
+		}
+	case <-archive.granted:
+		t.Fatal("a cancelled waiter was granted")
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation never returned")
+	}
+	keys.queued(t, 0)
+	releaseCreate()
+	releaseHolder()
+	if !keys.idle() {
+		t.Fatal("a cancelled waiter left a key held or queued")
+	}
+	// Nothing lingers from the cancelled waiter: both keys are free again.
+	release, err := keys.Acquire(context.Background(), "worktree:a", "repository:r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+
+func TestOperationKeysTwoWorktreeRepositoryWaitersWithRepositoryContentionConverge(t *testing.T) {
+	// Regression: the previous retry-loop design livelocked when two
+	// worktree+repository waiters competed with repository-only operations,
+	// each repeatedly taking one key, finding the other busy, and backing off.
+	keys := NewOperationKeys()
+	releaseA, err := keys.Acquire(context.Background(), "worktree:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseB, err := keys.Acquire(context.Background(), "worktree:b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseRepository, err := keys.Acquire(context.Background(), "repository:r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveA := acquireAsync(keys, context.Background(), "worktree:a", "repository:r")
+	keys.queued(t, 1)
+	archiveB := acquireAsync(keys, context.Background(), "worktree:b", "repository:r")
+	keys.queued(t, 2)
+	repositoryOnly := make([]keyAcquisition, 0, 8)
+	for index := 0; index < 8; index++ {
+		repositoryOnly = append(repositoryOnly, acquireAsync(keys, context.Background(), "repository:r"))
+		keys.queued(t, 3+index)
+	}
+	archiveA.mustStayPending(t)
+	archiveB.mustStayPending(t)
+	for _, acquisition := range repositoryOnly {
+		acquisition.mustStayPending(t)
+	}
+
+	// Freeing a worktree alone grants nothing: every waiter still needs the
+	// held repository key, and no waiter holds a worktree while it waits.
+	releaseA()
+	releaseB()
+	keys.queued(t, 10)
+	archiveA.mustStayPending(t)
+	archiveB.mustStayPending(t)
+
+	// Freeing the repository grants the oldest waiter whose keys are free:
+	// archive A, with both worktrees free, ahead of every later waiter.
+	releaseRepository()
+	releaseArchiveA := archiveA.mustBeGranted(t)
+	keys.queued(t, 9)
+	archiveB.mustStayPending(t)
+	releaseArchiveA()
+	releaseArchiveB := archiveB.mustBeGranted(t)
+	keys.queued(t, 8)
+	for _, acquisition := range repositoryOnly {
+		acquisition.mustStayPending(t)
+	}
+	releaseArchiveB()
+	// The repository-only operations then drain one at a time in queue order.
+	for index, acquisition := range repositoryOnly {
+		release := acquisition.mustBeGranted(t)
+		keys.queued(t, 7-index)
+		for _, later := range repositoryOnly[index+1:] {
+			later.mustStayPending(t)
+		}
+		release()
+	}
+	if !keys.idle() {
+		t.Fatal("keys leaked")
+	}
+}
+
+func TestOperationKeysRandomizedContentionTerminatesAndExcludes(t *testing.T) {
+	keys := NewOperationKeys()
+	holders := map[string]*int32{}
+	for _, name := range []string{"worktree:a", "worktree:b", "worktree:c", "repository:r"} {
+		holders[name] = new(int32)
+	}
+	shapes := [][]string{
+		{"worktree:a"}, {"worktree:b"}, {"worktree:c"}, {"repository:r"},
+		{"worktree:a", "repository:r"}, {"worktree:b", "repository:r"}, {"worktree:c", "repository:r"},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for worker := 0; worker < 16; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for round := 0; round < 200; round++ {
+				names := shapes[(worker+round)%len(shapes)]
+				attempt := ctx
+				attemptCancel := func() {}
+				if round%5 == 0 {
+					attempt, attemptCancel = context.WithTimeout(ctx, time.Duration(round%3)*time.Millisecond)
+				}
+				release, err := keys.Acquire(attempt, names...)
+				attemptCancel()
+				if err != nil {
+					if ctx.Err() != nil {
+						t.Error("contention did not converge before the deadline")
+						return
+					}
+					continue
+				}
+				for _, name := range names {
+					if atomic.AddInt32(holders[name], 1) != 1 {
+						t.Errorf("%s held by more than one operation", name)
+					}
+				}
+				for _, name := range names {
+					atomic.AddInt32(holders[name], -1)
+				}
+				release()
+			}
+		}(worker)
+	}
+	wg.Wait()
+	if !keys.idle() {
+		t.Fatal("keys leaked")
 	}
 }
 

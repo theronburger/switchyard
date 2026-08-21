@@ -8,26 +8,34 @@ import (
 
 // OperationKeys serializes the execution of operations that address the same
 // resource while leaving unrelated resources concurrent. Every operation
-// names the opaque keys it mutates; keys are acquired in sorted order so two
-// operations sharing several keys cannot deadlock, and an operation waiting
-// for a key stays pending rather than running alongside its conflict.
+// names the opaque keys it mutates, and an operation waiting for a key stays
+// pending rather than running alongside its conflict.
 //
 // One instance is shared by the workspace, environment, and profile-action
 // services so a worktree preparation, an archive, an environment start's
 // workspace ensure, and a worktree-scoped command action all contend for the
 // same worktree key.
+//
+// Keys are granted all-or-nothing under one mutex from a first-come queue:
+// an operation never holds one key while waiting for another, a queued
+// operation reserves nothing, and every release or cancellation re-scans the
+// queue oldest-first granting each waiter whose keys are all free. A queued
+// archive therefore never stalls an unrelated worktree through the shared
+// repository key, the oldest waiter gets first refusal whenever its keys
+// free up, and two operations that share no key never wait on each other.
 type OperationKeys struct {
-	mutex sync.Mutex
-	locks map[string]*operationKey
+	mutex   sync.Mutex
+	held    map[string]struct{}
+	waiters []*operationKeyWaiter
 }
 
-type operationKey struct {
-	holders int
-	slot    chan struct{}
+type operationKeyWaiter struct {
+	keys    []string
+	granted chan struct{}
 }
 
 func NewOperationKeys() *OperationKeys {
-	return &OperationKeys{locks: make(map[string]*operationKey)}
+	return &OperationKeys{held: make(map[string]struct{})}
 }
 
 func worktreeOperationKey(worktreeID string) string {
@@ -40,99 +48,100 @@ func repositoryOperationKey(repositoryID string) string {
 
 // Acquire blocks until every named key is held or ctx ends. Empty names are
 // ignored and duplicates collapse. The returned release must be called
-// exactly once; it is safe to call when no keys were requested.
+// exactly once; it is safe to call when no keys were requested and calling it
+// again is a no-op.
 //
-// Keys are taken all-or-nothing: an operation never waits for one key while
-// holding another, so an archive queued behind its worktree's preparation
-// does not also stall unrelated worktrees that merely share its repository.
+// An uncontended set is taken immediately even when ctx has already ended:
+// the operation then fails inside its own action with the lifecycle error
+// rather than being refused free resources. A waiter whose ctx ends before
+// it is granted leaves the queue without ever holding a key.
 func (keys *OperationKeys) Acquire(ctx context.Context, names ...string) (func(), error) {
-	if keys == nil {
+	ordered := uniqueSortedKeys(names)
+	if keys == nil || len(ordered) == 0 {
 		return func() {}, nil
 	}
-	ordered := uniqueSortedKeys(names)
-	for {
-		held, blocked := keys.tryAcquire(ordered)
-		if blocked == "" {
-			var once sync.Once
-			return func() { once.Do(func() { keys.unlockAll(held) }) }, nil
-		}
-		keys.unlockAll(held)
-		// Wait for the contended key with nothing held, then retry the full
-		// set. An uncontended set is taken immediately even when ctx has
-		// already ended: the operation then fails inside its own action with
-		// the lifecycle error rather than being refused free resources.
-		slot := keys.reserve(blocked)
-		select {
-		case slot <- struct{}{}:
-			keys.unlock(blocked)
-		case <-ctx.Done():
-			keys.abandon(blocked)
-			return func() {}, ctx.Err()
-		}
-	}
-}
+	waiter := &operationKeyWaiter{keys: ordered, granted: make(chan struct{})}
+	keys.mutex.Lock()
+	keys.waiters = append(keys.waiters, waiter)
+	keys.grantInOrder()
+	keys.mutex.Unlock()
 
-func (keys *OperationKeys) tryAcquire(ordered []string) ([]string, string) {
-	held := make([]string, 0, len(ordered))
-	for _, name := range ordered {
-		slot := keys.reserve(name)
-		select {
-		case slot <- struct{}{}:
-			held = append(held, name)
-		default:
-			keys.abandon(name)
-			return held, name
-		}
+	select {
+	case <-waiter.granted:
+		return keys.releaser(ordered), nil
+	case <-ctx.Done():
 	}
-	return held, ""
-}
-
-func (keys *OperationKeys) unlockAll(held []string) {
-	for index := len(held) - 1; index >= 0; index-- {
-		keys.unlock(held[index])
-	}
-}
-
-// reserve registers interest in a key so it survives until every holder and
-// waiter has released it, and returns the single-slot channel guarding it.
-func (keys *OperationKeys) reserve(name string) chan struct{} {
 	keys.mutex.Lock()
 	defer keys.mutex.Unlock()
-	lock, exists := keys.locks[name]
-	if !exists {
-		lock = &operationKey{slot: make(chan struct{}, 1)}
-		keys.locks[name] = lock
+	select {
+	case <-waiter.granted:
+		// Granted concurrently with cancellation: the keys are held, so hand
+		// them to the caller rather than leaking them.
+		return keys.releaser(ordered), nil
+	default:
 	}
-	lock.holders++
-	return lock.slot
+	keys.removeWaiter(waiter)
+	keys.grantInOrder()
+	return func() {}, ctx.Err()
 }
 
-// unlock frees a key the caller holds; abandon drops a waiter that never
-// acquired the slot and therefore must not drain it.
-func (keys *OperationKeys) unlock(name string) {
+func (keys *OperationKeys) releaser(ordered []string) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			keys.mutex.Lock()
+			defer keys.mutex.Unlock()
+			for _, name := range ordered {
+				delete(keys.held, name)
+			}
+			keys.grantInOrder()
+		})
+	}
+}
+
+// grantInOrder walks the queue from the oldest waiter and grants every waiter
+// whose keys are all free at that point. Callers hold keys.mutex.
+func (keys *OperationKeys) grantInOrder() {
+	remaining := keys.waiters[:0]
+	for _, waiter := range keys.waiters {
+		if keys.grantable(waiter) {
+			for _, name := range waiter.keys {
+				keys.held[name] = struct{}{}
+			}
+			close(waiter.granted)
+			continue
+		}
+		remaining = append(remaining, waiter)
+	}
+	for index := len(remaining); index < len(keys.waiters); index++ {
+		keys.waiters[index] = nil
+	}
+	keys.waiters = remaining
+}
+
+func (keys *OperationKeys) grantable(waiter *operationKeyWaiter) bool {
+	for _, name := range waiter.keys {
+		if _, held := keys.held[name]; held {
+			return false
+		}
+	}
+	return true
+}
+
+func (keys *OperationKeys) removeWaiter(waiter *operationKeyWaiter) {
+	for index, queued := range keys.waiters {
+		if queued == waiter {
+			keys.waiters = append(keys.waiters[:index], keys.waiters[index+1:]...)
+			return
+		}
+	}
+}
+
+// idle reports whether no key is held and no operation is queued.
+func (keys *OperationKeys) idle() bool {
 	keys.mutex.Lock()
 	defer keys.mutex.Unlock()
-	lock, exists := keys.locks[name]
-	if !exists {
-		return
-	}
-	<-lock.slot
-	keys.forget(name, lock)
-}
-
-func (keys *OperationKeys) abandon(name string) {
-	keys.mutex.Lock()
-	defer keys.mutex.Unlock()
-	if lock, exists := keys.locks[name]; exists {
-		keys.forget(name, lock)
-	}
-}
-
-func (keys *OperationKeys) forget(name string, lock *operationKey) {
-	lock.holders--
-	if lock.holders <= 0 {
-		delete(keys.locks, name)
-	}
+	return len(keys.held) == 0 && len(keys.waiters) == 0
 }
 
 func uniqueSortedKeys(names []string) []string {
