@@ -86,11 +86,11 @@ func TestFailedRepositoryRefreshPreservesDataAndMarksObservationStale(t *testing
 	}
 }
 
-// TestRepositoryObserverRestartsOnTopologyChangeDespiteStoppedGhostEnvironment
-// proves that a stopped environment whose worktree has disappeared does not
-// suppress the restart that registers a newly discovered worktree, while a
-// live environment in the same situation still does.
-func TestRepositoryObserverRestartsOnTopologyChangeDespiteStoppedGhostEnvironment(t *testing.T) {
+// TestRepositoryObserverDropsStoppedGhostWorktrees proves that stopped
+// environment history neither republishes a missing worktree nor suppresses
+// the restart that registers a newly discovered worktree. A live environment
+// still pins its worktree and suppresses the unsafe restart.
+func TestRepositoryObserverDropsStoppedGhostWorktrees(t *testing.T) {
 	observedAt := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	for _, testCase := range []struct {
 		name          string
@@ -131,9 +131,12 @@ func TestRepositoryObserverRestartsOnTopologyChangeDespiteStoppedGhostEnvironmen
 			if (restarts == 1) != testCase.expectRestart {
 				t.Fatalf("restarts=%d expectRestart=%v", restarts, testCase.expectRestart)
 			}
-			// The ghost worktree stays published so the environment remains addressable.
-			if len(store.snapshot.Repositories) != 1 || len(store.snapshot.Repositories[0].Worktrees) != 2 {
-				t.Fatalf("ghost worktree was dropped: %#v", store.snapshot.Repositories)
+			worktreeCount := 2
+			if testCase.ghostState == "stopped" {
+				worktreeCount = 1
+			}
+			if len(store.snapshot.Repositories) != 1 || len(store.snapshot.Repositories[0].Worktrees) != worktreeCount {
+				t.Fatalf("published worktrees: %#v", store.snapshot.Repositories)
 			}
 		})
 	}

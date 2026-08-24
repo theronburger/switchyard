@@ -42,7 +42,7 @@ Only positively owned process groups and labelled Docker resources may be stoppe
 
 ### D-009a: Workspace precedes environment
 
-Repository preparation is a repository-neutral durable workspace lifecycle. Existing worktrees are auto-discovered as run-only `adopted`; Switchyard-created worktrees are `managed`. Explicit adoption promotes only a clean, pushed, exact-repository checkout inside the configured managed root into `managed` ownership. Every environment start ensures the workspace fingerprint and readiness before service builds. Only managed worktrees with live identity proof may be archived, never with force.
+Repository preparation is a repository-neutral durable workspace lifecycle. Existing worktrees are auto-discovered as run-only `adopted`; Switchyard-created worktrees are `managed`. Explicit adoption promotes only a clean, pushed, exact-repository checkout inside the configured managed root into `managed` ownership. Every environment start ensures the workspace fingerprint and readiness before service builds. Removal is available for every exact, registered, non-primary worktree regardless of creator: Git must prove the live repository identity, and Switchyard still refuses locked, active, occupied, dirty, unpushed, foreign, or unverifiable worktrees. Removal never uses force.
 
 ### D-010: Aggressive bounded parallelism
 

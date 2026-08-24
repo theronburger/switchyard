@@ -38,3 +38,25 @@ func TestConfiguredRepositoryDiscoveryIsConcurrentOrderedAndIsolated(t *testing.
 		t.Fatalf("profile maps: keys=%+v profiles=%+v", discovered.ProfileKeys, discovered.Profiles)
 	}
 }
+
+func TestConfiguredRepositoryDiscoveryOmitsPrunableWorktrees(t *testing.T) {
+	document := configuration.Document{Repositories: map[string]configuration.Repository{
+		"sample": {Enabled: true, DisplayName: "Sample", Root: "/tmp/sample"},
+	}}
+	discovered := discoverConfiguredRepositories(context.Background(), time.Now(), document, func(
+		_ context.Context, key string, profile configuration.Repository,
+	) inventory.DiscoveryResult {
+		return inventory.DiscoveryResult{Repository: &contractv2.Repository{
+			ID: "repository_sample", ProfileKey: key, RootPath: profile.Root,
+			Worktrees: []contractv2.Worktree{
+				{ID: "worktree_primary", Path: profile.Root, IsPrimary: true},
+				{ID: "worktree_missing", Path: "/tmp/missing", Git: contractv2.WorktreeState{Prunable: true}},
+			},
+		}}
+	})
+	if !discovered.Complete || len(discovered.Repositories) != 1 ||
+		len(discovered.Repositories[0].Worktrees) != 1 ||
+		discovered.Repositories[0].Worktrees[0].ID != "worktree_primary" {
+		t.Fatalf("prunable worktree remained current: %+v", discovered.Repositories)
+	}
+}

@@ -609,10 +609,10 @@ struct RepositorySettingsView: View {
                     showsCleanup = true
                     Task { await model.planCleanup(scope: CleanupScope(kind: "repository", id: repository.id)) }
                 } label: {
-                    Label("Review cleanup for this repository…", systemImage: "trash.slash")
+                    Label("Clean repository artifacts…", systemImage: "trash.slash")
                 }
                 .disabled(model.isFixtureMode || !model.lifecycleState.isOperational)
-                .help("Plan and review positively owned resources scoped to this repository before removing anything")
+                .help("Plan and review stale Switchyard runtime artifacts scoped to this repository")
             }
         }
         .padding(16)

@@ -26,7 +26,7 @@ var (
 	ErrManagedConfig       = errors.New("managed workspace configuration is invalid")
 	ErrManagedRequest      = errors.New("managed workspace request is invalid")
 	ErrManagedExists       = errors.New("managed workspace already exists")
-	ErrManagedForeign      = errors.New("workspace is not positively owned by Switchyard")
+	ErrManagedForeign      = errors.New("workspace repository identity could not be verified")
 	ErrManagedDirty        = errors.New("managed workspace has local changes")
 	ErrManagedUnpushed     = errors.New("managed workspace has unpushed commits")
 	ErrManagedGit          = errors.New("managed workspace Git operation failed")
@@ -160,6 +160,12 @@ type ManagedResult struct {
 	ArchivedAt            *time.Time
 }
 
+type removableWorktree struct {
+	branch                string
+	headRevision          string
+	administrativeGitPath string
+}
+
 type managedRecord struct {
 	SchemaVersion        int        `json:"schemaVersion"`
 	RepositoryID         string     `json:"repositoryId"`
@@ -284,57 +290,155 @@ func (manager *ManagedManager) Archive(
 	request ArchiveManagedRequest,
 ) (ManagedResult, error) {
 	repository, found := manager.repositories[request.RepositoryID]
-	if !found || !cleanAbsolutePath(request.WorktreePath) ||
-		!pathInside(repository.ManagedRoot, request.WorktreePath) {
+	if !found || !cleanAbsolutePath(request.WorktreePath) || request.WorktreePath == repository.Root {
 		return ManagedResult{}, ErrManagedRequest
 	}
 	recordPath := manager.recordPath(request.WorktreePath)
-	record, err := readManagedRecord(recordPath)
-	if err != nil || record.State != "ready" || record.RepositoryID != repository.ID ||
-		record.RepositoryRoot != repository.Root || record.WorktreePath != request.WorktreePath {
+	record, recordErr := readManagedRecord(recordPath)
+	hasManagedRecord := recordErr == nil && record.State == "ready" && record.RepositoryID == repository.ID &&
+		record.RepositoryRoot == repository.Root && record.WorktreePath == request.WorktreePath
+
+	worktreeInfo, err := os.Lstat(request.WorktreePath)
+	if errors.Is(err, os.ErrNotExist) {
+		if _, err := manager.git(ctx, repository.Root, "worktree", "remove", request.WorktreePath); err != nil {
+			return ManagedResult{}, err
+		}
+		return manager.completeArchive(repository, request.WorktreePath, removableWorktree{}, record, hasManagedRecord)
+	}
+	if err != nil || !worktreeInfo.IsDir() || worktreeInfo.Mode()&os.ModeSymlink != 0 {
 		return ManagedResult{}, ErrManagedForeign
 	}
-	administrativeOutput, err := manager.git(ctx, request.WorktreePath, "rev-parse", "--absolute-git-dir")
+	worktree, err := manager.inspectRemovableWorktree(ctx, repository, request.WorktreePath, record, hasManagedRecord)
 	if err != nil {
-		return ManagedResult{}, ErrManagedForeign
-	}
-	administrativePath, valid := canonicalAbsoluteLine(administrativeOutput.Stdout)
-	if !valid || administrativePath != record.AdministrativeGitDir {
-		return ManagedResult{}, ErrManagedForeign
-	}
-	statusOutput, err := manager.git(ctx, request.WorktreePath, "status", "--porcelain=v2", "--branch", "-z")
-	if err != nil {
-		return ManagedResult{}, ErrManagedGit
-	}
-	dirty, ahead, hasUpstream, valid := parseManagedStatus(statusOutput.Stdout)
-	if !valid {
-		return ManagedResult{}, ErrManagedGit
-	}
-	if dirty {
-		return ManagedResult{}, ErrManagedDirty
-	}
-	headOutput, err := manager.git(ctx, request.WorktreePath, "rev-parse", "HEAD")
-	if err != nil {
-		return ManagedResult{}, ErrManagedGit
-	}
-	headRevision, valid := canonicalGitObjectID(headOutput.Stdout)
-	if !valid {
-		return ManagedResult{}, ErrManagedGit
-	}
-	if ahead > 0 || !hasUpstream && headRevision != record.StartRevision {
-		return ManagedResult{}, ErrManagedUnpushed
+		return ManagedResult{}, err
 	}
 	if _, err := manager.git(ctx, repository.Root, "worktree", "remove", request.WorktreePath); err != nil {
 		return ManagedResult{}, err
 	}
+	return manager.completeArchive(repository, request.WorktreePath, worktree, record, hasManagedRecord)
+}
+
+func (manager *ManagedManager) inspectRemovableWorktree(
+	ctx context.Context,
+	repository ManagedRepository,
+	worktreePath string,
+	record managedRecord,
+	hasManagedRecord bool,
+) (removableWorktree, error) {
+	repositoryCommonOutput, err := manager.git(
+		ctx, repository.Root, "rev-parse", "--path-format=absolute", "--git-common-dir",
+	)
+	if err != nil {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	repositoryCommon, valid := canonicalAbsoluteLine(repositoryCommonOutput.Stdout)
+	if !valid {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	worktreeCommonOutput, err := manager.git(
+		ctx, worktreePath, "rev-parse", "--path-format=absolute", "--git-common-dir",
+	)
+	if err != nil {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	worktreeCommon, valid := canonicalAbsoluteLine(worktreeCommonOutput.Stdout)
+	if !valid || worktreeCommon != repositoryCommon {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	administrativeOutput, err := manager.git(ctx, worktreePath, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	administrativePath, valid := canonicalAbsoluteLine(administrativeOutput.Stdout)
+	if !valid {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	branchOutput, err := manager.git(ctx, worktreePath, "branch", "--show-current")
+	if err != nil {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	branch, valid := canonicalManagedLine(branchOutput.Stdout, 256)
+	if !valid {
+		return removableWorktree{}, ErrManagedForeign
+	}
+	statusOutput, err := manager.git(ctx, worktreePath, "status", "--porcelain=v2", "--branch", "-z")
+	if err != nil {
+		return removableWorktree{}, ErrManagedGit
+	}
+	dirty, ahead, hasUpstream, valid := parseManagedStatus(statusOutput.Stdout)
+	if !valid {
+		return removableWorktree{}, ErrManagedGit
+	}
+	if dirty {
+		return removableWorktree{}, ErrManagedDirty
+	}
+	headOutput, err := manager.git(ctx, worktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		return removableWorktree{}, ErrManagedGit
+	}
+	headRevision, valid := canonicalGitObjectID(headOutput.Stdout)
+	if !valid {
+		return removableWorktree{}, ErrManagedGit
+	}
+	if ahead > 0 || !hasUpstream && !manager.headIsPublished(ctx, repository, worktreePath, headRevision, record, hasManagedRecord) {
+		return removableWorktree{}, ErrManagedUnpushed
+	}
+	return removableWorktree{
+		branch: branch, headRevision: headRevision, administrativeGitPath: administrativePath,
+	}, nil
+}
+
+func (manager *ManagedManager) completeArchive(
+	repository ManagedRepository,
+	worktreePath string,
+	worktree removableWorktree,
+	record managedRecord,
+	hasManagedRecord bool,
+) (ManagedResult, error) {
 	archivedAt := manager.now().UTC()
+	if !hasManagedRecord {
+		return ManagedResult{
+			RepositoryID: repository.ID, WorktreePath: worktreePath, Branch: worktree.branch,
+			HeadRevision: worktree.headRevision, AdministrativeGitPath: worktree.administrativeGitPath,
+			State: "archived", ArchivedAt: &archivedAt,
+		}, nil
+	}
 	record.State = "archived"
-	record.HeadRevision = headRevision
+	if worktree.headRevision != "" {
+		record.HeadRevision = worktree.headRevision
+	}
 	record.ArchivedAt = &archivedAt
-	if err := writeManagedRecord(recordPath, record, true); err != nil {
+	if err := writeManagedRecord(manager.recordPath(worktreePath), record, true); err != nil {
 		return ManagedResult{}, ErrManagedRecord
 	}
 	return managedResult(record), nil
+}
+
+func (manager *ManagedManager) headIsPublished(
+	ctx context.Context,
+	repository ManagedRepository,
+	worktreePath string,
+	headRevision string,
+	record managedRecord,
+	hasManagedRecord bool,
+) bool {
+	if hasManagedRecord && headRevision == record.StartRevision {
+		return true
+	}
+	for _, arguments := range [][]string{
+		{"rev-list", "--count", "HEAD", "--not", "--remotes"},
+		{"rev-list", "--count", "HEAD", "--not", repository.DefaultBase},
+	} {
+		output, err := manager.git(ctx, worktreePath, arguments...)
+		if err != nil {
+			continue
+		}
+		count, valid := canonicalNonNegativeInteger(output.Stdout)
+		if valid && count == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (manager *ManagedManager) Adopt(
@@ -666,6 +770,15 @@ func canonicalGitObjectID(output []byte) (string, bool) {
 		}
 	}
 	return value, true
+}
+
+func canonicalNonNegativeInteger(output []byte) (int, bool) {
+	value := strings.TrimSuffix(strings.TrimSuffix(string(output), "\n"), "\r")
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	return parsed, err == nil && parsed >= 0
 }
 
 // parseManagedStatus reads porcelain v2 branch headers. hasUpstream is true

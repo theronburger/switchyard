@@ -864,10 +864,10 @@ func toolDefinitions() []toolDefinition {
 			"idempotencyKey": map[string]any{"type": "string", "description": "Stable key reused when retrying this exact adoption."},
 			"worktreeId":     map[string]any{"type": "string", "description": "Exact adopted worktree ID from switchyard_context."},
 		}, []string{"requestId", "idempotencyKey", "worktreeId"}),
-		mutationToolDefinition("switchyard_archive_worktree", "Archive one Switchyard-managed worktree. Refuses primary, active, dirty, unpushed, foreign, or unverifiable worktrees.", true, map[string]any{
+		mutationToolDefinition("switchyard_archive_worktree", "Remove one exact Git-registered linked worktree, regardless of which tool created it. Refuses primary, locked, active, occupied, dirty, unpushed, foreign, or unverifiable worktrees.", true, map[string]any{
 			"requestId":      map[string]any{"type": "string", "description": "Caller-generated opaque request ID."},
 			"idempotencyKey": map[string]any{"type": "string", "description": "Stable key reused when retrying this exact archive."},
-			"worktreeId":     map[string]any{"type": "string", "description": "Exact managed worktree ID from switchyard_context."},
+			"worktreeId":     map[string]any{"type": "string", "description": "Exact non-primary worktree ID from switchyard_context."},
 		}, []string{"requestId", "idempotencyKey", "worktreeId"}),
 	}
 }

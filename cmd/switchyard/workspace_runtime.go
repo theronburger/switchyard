@@ -29,6 +29,7 @@ type managedWorkspaceTarget struct {
 	repositoryID string
 	path         string
 	primary      bool
+	locked       bool
 }
 
 func newManagedWorkspaceResolver(
@@ -44,6 +45,7 @@ func newManagedWorkspaceResolver(
 		for _, worktree := range repository.Worktrees {
 			resolver.worktrees[worktree.ID] = managedWorkspaceTarget{
 				repositoryID: repository.ID, path: worktree.Path, primary: worktree.IsPrimary,
+				locked: worktree.Git.Locked,
 			}
 		}
 	}
@@ -76,7 +78,12 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 	}
 	if target.primary {
 		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
-			http.StatusConflict, "PRIMARY_WORKTREE_PROTECTED", "The primary checkout cannot be archived.",
+			http.StatusConflict, "PRIMARY_WORKTREE_PROTECTED", "The primary checkout cannot be removed.",
+		)
+	}
+	if target.locked {
+		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
+			http.StatusConflict, "WORKTREE_LOCKED", "Unlock this worktree before removing it.",
 		)
 	}
 	if resolver.store == nil {
@@ -94,7 +101,7 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 		if environment.WorktreeID == request.WorktreeID &&
 			(environment.DesiredState != "stopped" || environment.ObservedState != "stopped") {
 			return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
-				http.StatusConflict, "WORKTREE_ENVIRONMENT_ACTIVE", "Stop this worktree's environment before archiving it.",
+				http.StatusConflict, "WORKTREE_ENVIRONMENT_ACTIVE", "Stop this worktree's environment before removing it.",
 			)
 		}
 	}
@@ -109,7 +116,7 @@ func (resolver managedWorkspaceResolver) ResolveArchive(
 	}
 	if len(held) > 0 {
 		return workspacecontrol.ArchiveManagedRequest{}, workspaceActionError(
-			http.StatusConflict, "WORKTREE_OCCUPIED", "An agent task still holds this worktree. Release the handoff before archiving it.",
+			http.StatusConflict, "WORKTREE_OCCUPIED", "An agent task still holds this worktree. Release the handoff before removing it.",
 		)
 	}
 	return workspacecontrol.ArchiveManagedRequest{

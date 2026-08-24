@@ -20,9 +20,9 @@ struct CleanupReviewSheet: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Review cleanup")
+            Text("Review stale artifacts")
                 .font(.title2.bold())
-            Text("Only resources with verified Switchyard ownership can be selected. Protected and changed resources remain untouched.")
+            Text("This removes stale Switchyard runtime artifacts, not Git worktrees. Remove a linked checkout from its worktree page.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -64,9 +64,9 @@ struct CleanupReviewSheet: View {
             VStack(alignment: .leading, spacing: 18) {
                 if plan.candidates.isEmpty {
                     ContentUnavailableView(
-                        "Nothing to remove",
+                        "No stale artifacts",
                         systemImage: "sparkles",
-                        description: Text("No stale positively owned resources were found.")
+                        description: Text("No stale Switchyard runtime artifacts were found.")
                     )
                 } else {
                     VStack(alignment: .leading, spacing: 8) {

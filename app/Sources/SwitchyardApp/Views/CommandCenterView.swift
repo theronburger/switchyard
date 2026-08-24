@@ -303,10 +303,10 @@ struct CommandCenterView: View {
                 showsCleanup = true
                 Task { await model.planCleanup() }
             } label: {
-                Label("Cleanup…", systemImage: "trash.slash")
+                Label("Clean Artifacts…", systemImage: "trash.slash")
             }
             .disabled(model.isFixtureMode || !model.lifecycleState.isOperational)
-            .help("Review positively owned resources before removing anything")
+            .help("Review stale Switchyard runtime artifacts before removing them")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {

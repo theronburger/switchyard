@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,7 +71,7 @@ func TestManagedManagerCreatesAndArchivesOnlyItsCleanOwnedWorktree(t *testing.T)
 	}
 }
 
-func TestManagedManagerRefusesUnpushedAndForeignWorktrees(t *testing.T) {
+func TestManagedManagerRefusesUnpushedAndRemovesExternalWorktrees(t *testing.T) {
 	repository := initializeManagedTestRepository(t)
 	managedRoot := filepath.Join(t.TempDir(), "worktrees")
 	manager, err := NewManagedManager(ManagedConfig{
@@ -114,16 +115,70 @@ func TestManagedManagerRefusesUnpushedAndForeignWorktrees(t *testing.T) {
 		t.Fatalf("unpushed worktree was removed: %v", err)
 	}
 
+	externalUnpushedPath := filepath.Join(managedRoot, "external-unpushed")
+	runManagedGit(t, repository, "worktree", "add", "-b", "feature/external-unpushed", externalUnpushedPath, "main")
+	writeManagedTestFile(t, externalUnpushedPath, "external.txt", "new\n")
+	runManagedGit(t, externalUnpushedPath, "add", "external.txt")
+	runManagedGit(t, externalUnpushedPath, "commit", "-m", "external local commit")
+	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{
+		RepositoryID: "repository_01", WorktreePath: externalUnpushedPath,
+	})
+	if !errors.Is(err, ErrManagedUnpushed) {
+		t.Fatalf("external unpushed archive error: %v", err)
+	}
+	if _, err := os.Stat(externalUnpushedPath); err != nil {
+		t.Fatalf("external unpushed worktree was removed: %v", err)
+	}
+
 	foreignPath := filepath.Join(managedRoot, "foreign")
 	runManagedGit(t, repository, "worktree", "add", "-b", "feature/foreign", foreignPath, "main")
-	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{
+	removed, err := manager.Archive(context.Background(), ArchiveManagedRequest{
 		RepositoryID: "repository_01", WorktreePath: foreignPath,
 	})
-	if !errors.Is(err, ErrManagedForeign) {
-		t.Fatalf("foreign archive error: %v", err)
+	if err != nil || removed.State != "archived" {
+		t.Fatalf("external archive: result=%+v err=%v", removed, err)
 	}
-	if _, err := os.Stat(foreignPath); err != nil {
-		t.Fatalf("foreign worktree was mutated: %v", err)
+	if _, err := os.Stat(foreignPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("external worktree still exists: %v", err)
+	}
+
+	unrelatedRepository := initializeManagedTestRepository(t)
+	_, err = manager.Archive(context.Background(), ArchiveManagedRequest{
+		RepositoryID: "repository_01", WorktreePath: unrelatedRepository,
+	})
+	if !errors.Is(err, ErrManagedForeign) {
+		t.Fatalf("unrelated repository archive error: %v", err)
+	}
+}
+
+func TestManagedManagerRemovesMissingRegisteredWorktree(t *testing.T) {
+	repository := initializeManagedTestRepository(t)
+	managedRoot := filepath.Join(t.TempDir(), "worktrees")
+	manager, err := NewManagedManager(ManagedConfig{
+		GitExecutable: testGitExecutable, OwnershipRoot: filepath.Join(t.TempDir(), "ownership"),
+		Repositories: []ManagedRepository{{
+			ID: "repository_01", Root: repository, ManagedRoot: managedRoot, DefaultBase: "main",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(t.TempDir(), "external")
+	movedPath := filepath.Join(t.TempDir(), "moved")
+	runManagedGit(t, repository, "worktree", "add", "-b", "feature/missing", externalPath, "main")
+	if err := os.Rename(externalPath, movedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := manager.Archive(context.Background(), ArchiveManagedRequest{
+		RepositoryID: "repository_01", WorktreePath: externalPath,
+	})
+	if err != nil || removed.State != "archived" {
+		t.Fatalf("missing worktree archive: result=%+v err=%v", removed, err)
+	}
+	output := runManagedGitOutput(t, repository, "worktree", "list", "--porcelain")
+	if strings.Contains(output, externalPath) {
+		t.Fatalf("missing worktree registration remains: %s", output)
 	}
 }
 
@@ -366,6 +421,17 @@ func runManagedGit(t *testing.T, directory string, arguments ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", arguments, err, output)
 	}
+}
+
+func runManagedGitOutput(t *testing.T, directory string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command(testGitExecutable, append([]string{"-C", directory}, arguments...)...)
+	command.Env = append(os.Environ(), "DEVELOPER_DIR=/Library/Developer/CommandLineTools")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", arguments, err)
+	}
+	return string(output)
 }
 
 func assertManagedGitOutput(t *testing.T, directory string, argument1 string, argument2 string, want string) {

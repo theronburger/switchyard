@@ -36,9 +36,9 @@ Quitting `Switchyard.app` does not stop environments.
 - For creation, resolve the repository ID from `switchyard_inventory`; never guess it. Call `switchyard_create_worktree` with a new branch, optional start point, and stable retry idempotency key. Poll inventory through the brief helper restart, then resolve the returned exact path.
 - Adopt only an eligible non-primary worktree already shown as `adopted`. Resolve its exact worktree ID with `switchyard_context`, then call `switchyard_adopt_worktree`. Preserve refusals for dirty, detached, unpushed, upstream-less, foreign, out-of-root, symlinked, or unverifiable worktrees.
 
-## Archive a managed worktree
+## Remove a linked worktree
 
-Archive only when explicitly requested. Resolve the exact path, verify `managed` ownership, stop its environment, then call `switchyard_archive_worktree`. Never force archive or clean/reset a checkout to make it eligible.
+Remove only when explicitly requested. Resolve the exact registered non-primary worktree, stop its environment, then call `switchyard_archive_worktree`. `managed` ownership is not required. Never force removal or clean/reset a checkout to make it eligible; preserve refusals for locked, active, occupied, dirty, unpushed, foreign, or unverifiable worktrees.
 
 ## Safety boundaries
 
@@ -50,4 +50,4 @@ Never work around Switchyard by:
 - editing ownership records, runtime files, port leases, or generated `.switchyard.*` projections;
 - modifying consuming-repository tracked files, public `.gitignore`, or private environment profiles.
 
-Switchyard acts only on positively owned process groups, labelled Docker resources, and verified managed worktrees. Preserve a refusal when ownership cannot be proven.
+Switchyard acts only on positively owned process groups, labelled Docker resources, and exact Git-registered worktrees whose repository identity it can verify. Preserve a refusal when identity or safety cannot be proven.
