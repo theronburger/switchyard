@@ -135,6 +135,7 @@ func discoverConfiguredRepositories(
 	for _, discovered := range ordered {
 		if discovered.discovery.Repository != nil {
 			repository := *discovered.discovery.Repository
+			repository.Worktrees = currentWorktrees(repository.Worktrees)
 			repository.DisplayName = discovered.profile.DisplayName
 			runtime := configuredRuntimeCatalog(discovered.profile)
 			repository.Runtime = &runtime
@@ -165,6 +166,16 @@ func discoverConfiguredRepositories(
 	result.Alerts = deduplicateInventoryAlerts(result.Alerts)
 	sort.Slice(result.Alerts, func(left, right int) bool { return result.Alerts[left].ID < result.Alerts[right].ID })
 	return result
+}
+
+func currentWorktrees(worktrees []contractv2.Worktree) []contractv2.Worktree {
+	current := make([]contractv2.Worktree, 0, len(worktrees))
+	for _, worktree := range worktrees {
+		if !worktree.Git.Prunable {
+			current = append(current, worktree)
+		}
+	}
+	return current
 }
 
 func configuredRuntimeCatalog(profile configuration.Repository) contractv2.RepositoryRuntime {

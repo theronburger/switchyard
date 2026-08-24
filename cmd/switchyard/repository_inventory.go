@@ -130,6 +130,9 @@ func mergeRepositoryInventory(snapshot contractv2.StatusSnapshot, discovered rep
 			knownRepositories[repository.ID] = index
 		}
 		for _, environment := range snapshot.Environments {
+			if environment.ObservedState == "stopped" {
+				continue
+			}
 			repositoryIndex, repositoryFound := knownRepositories[environment.RepositoryID]
 			if !repositoryFound {
 				for _, previous := range snapshot.Repositories {

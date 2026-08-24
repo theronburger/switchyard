@@ -128,3 +128,18 @@ func TestManagedWorkspaceResolverRefusesToArchiveAnOccupiedWorktree(t *testing.T
 		t.Fatalf("released worktree should archive: %v", err)
 	}
 }
+
+func TestManagedWorkspaceResolverRefusesToRemoveLockedWorktree(t *testing.T) {
+	resolver := newManagedWorkspaceResolver(nil, repositoryInventory{Repositories: []contractv2.Repository{{
+		ID: "repository_01", Worktrees: []contractv2.Worktree{{
+			ID: "worktree_locked", Path: "/external/locked", Git: contractv2.WorktreeState{Locked: true},
+		}},
+	}}})
+	_, err := resolver.ResolveArchive(context.Background(), contractv2.ArchiveWorktreeRequest{
+		WorktreeID: "worktree_locked",
+	})
+	var actionError *daemon.ActionError
+	if !errors.As(err, &actionError) || actionError.Contract.Code != "WORKTREE_LOCKED" {
+		t.Fatalf("locked worktree error: %v", err)
+	}
+}

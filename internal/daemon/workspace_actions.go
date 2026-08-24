@@ -323,14 +323,14 @@ func workspaceFailure(err error, resourceKind, resourceID string) contractv2.Con
 		failure.NextAction = "commit_or_stash_changes"
 	case errors.Is(err, workspacecontrol.ErrManagedUnpushed):
 		failure.Code = "WORKSPACE_UNPUSHED"
-		failure.Message = "The worktree has unpushed commits and cannot be archived safely."
+		failure.Message = "The worktree has unpushed commits and cannot be removed safely."
 		failure.Retryable = false
 		failure.NextAction = "push_branch"
 	case errors.Is(err, workspacecontrol.ErrManagedForeign):
 		failure.Code = "WORKSPACE_NOT_OWNED"
-		failure.Message = "Switchyard does not own this worktree or could not verify its repository identity."
+		failure.Message = "Switchyard could not verify this worktree's repository identity."
 		failure.Retryable = false
-		failure.NextAction = "inspect_workspace_ownership"
+		failure.NextAction = "inspect_workspace_identity"
 	case errors.Is(err, workspacecontrol.ErrManagedRequest):
 		failure.Code = "WORKSPACE_NOT_ELIGIBLE"
 		failure.Message = "The worktree does not satisfy the requested ownership action's safety requirements."

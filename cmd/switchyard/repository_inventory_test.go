@@ -76,6 +76,25 @@ func TestMergeRepositoryInventoryPreservesReferencedWorktreeInRefreshedRepositor
 	}
 }
 
+func TestMergeRepositoryInventoryDropsWorktreeReferencedOnlyByStoppedEnvironment(t *testing.T) {
+	previous := inventoryTestRepository("repo_test", "worktree_stopped", "/tmp/stopped")
+	discovered := inventoryTestRepository("repo_test", "worktree_current", "/tmp/current")
+	merged := mergeRepositoryInventory(contractv2.StatusSnapshot{
+		Repositories: []contractv2.Repository{previous},
+		Environments: []contractv2.Environment{{
+			ID: "environment_stopped", RepositoryID: previous.ID, WorktreeID: previous.Worktrees[0].ID,
+			DesiredState: "stopped", ObservedState: "stopped",
+		}},
+		Alerts: []contractv2.Alert{},
+	}, repositoryInventory{
+		Repositories: []contractv2.Repository{discovered}, Alerts: []contractv2.Alert{}, Complete: true,
+	})
+	if len(merged.Repositories) != 1 || len(merged.Repositories[0].Worktrees) != 1 ||
+		merged.Repositories[0].Worktrees[0].ID != "worktree_current" {
+		t.Fatalf("stopped worktree history remained published: %#v", merged.Repositories)
+	}
+}
+
 func TestInventoryAlertsDeduplicateAndPreferErrors(t *testing.T) {
 	now := time.Now().UTC()
 	warning := newInventoryAlert(now, "SAME_CODE", "Warning.", "warning")

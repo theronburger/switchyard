@@ -31,16 +31,16 @@ struct WorktreeDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .confirmationDialog(
-            "Archive this managed worktree?",
+            "Remove this worktree?",
             isPresented: $confirmsArchive,
             titleVisibility: .visible
         ) {
-            Button("Archive worktree", role: .destructive) {
+            Button("Remove worktree", role: .destructive) {
                 Task { await model.archiveWorktree(worktree) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Switchyard will refuse if the worktree is dirty, has unpushed commits, or still has an active environment.")
+            Text("Switchyard will remove the entire linked checkout. It will refuse if the worktree is locked, dirty, has unpushed commits, or still has an active environment.")
         }
         .confirmationDialog(
             "Take ownership of this external worktree?",
@@ -85,11 +85,11 @@ struct WorktreeDetailView: View {
                     }
                     .disabled(!model.canSubmitWorkspaceAction)
                 }
-                if worktree.workspace?.ownership == .managed && !worktree.isPrimary {
+                if !worktree.isPrimary {
                     Button(role: .destructive) {
                         confirmsArchive = true
                     } label: {
-                        Label("Archive", systemImage: "archivebox")
+                        Label("Remove", systemImage: "trash")
                     }
                     .disabled(!model.canSubmitWorkspaceAction)
                 }

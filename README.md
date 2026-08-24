@@ -75,7 +75,7 @@ SwiftUI app ────────────┘                             
                                                        └── SQLite and event history
 ```
 
-The daemon is the only runtime-state writer. MCP has no repository or lifecycle logic. Switchyard signals only positively owned process groups, removes only labelled owned Docker resources, and refuses to archive dirty, unpushed, active, locked, or unverifiable worktrees. Cleanup is plan-then-apply; global Docker prune and kill-by-name are never used.
+The daemon is the only runtime-state writer. MCP has no repository or lifecycle logic. Switchyard signals only positively owned process groups, removes only labelled owned Docker resources, and removes only exact Git-registered linked worktrees after re-verifying repository identity and clean, pushed, unlocked, inactive state. Worktree removal never requires Switchyard to have created the checkout and never uses force. Runtime-artifact cleanup is plan-then-apply; global Docker prune and kill-by-name are never used.
 
 Switchyard never edits a configured repository's tracked files or public `.gitignore`. Personal configuration and generated artifacts live outside repositories unless an accepted profile explicitly projects a bounded runtime artifact into a worktree.
 
