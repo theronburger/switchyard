@@ -4,6 +4,13 @@ All notable changes are documented here. The project follows [Semantic Versionin
 
 Release Please generates each version section from Conventional Commits when it opens the release pull request. Do not add an Unreleased section; notes for non-conventional commits are added by editing the release pull request body before merge.
 
+## [0.2.3](https://github.com/theronburger/switchyard/compare/v0.2.2...v0.2.3) (2026-08-24)
+
+
+### Fixed
+
+* **workspace:** remove external worktrees ([2babfc8](https://github.com/theronburger/switchyard/commit/2babfc8db71d5000f8b1c02865234a53b0a07734))
+
 ## [0.2.2](https://github.com/theronburger/switchyard/compare/v0.2.1...v0.2.2) (2026-08-21)
 
 
