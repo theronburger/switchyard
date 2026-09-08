@@ -3,7 +3,6 @@ import Darwin
 import Foundation
 import Security
 import SwiftUI
-import SwitchyardKit
 
 enum CodexTaskIntegrationError: LocalizedError, Equatable {
     case notInstalled
@@ -334,7 +333,7 @@ private final class CodexJSONLineInbox: @unchecked Sendable {
 
 struct CodexTaskLocator: Sendable {
     var executableURL: @Sendable () -> URL? = {
-        AgentConnectionPaths.standard().codexExecutableURL
+        AgentTools.executable("codex")
     }
     var query: any CodexTaskQuerying = CodexAppServerTaskQuery()
 
@@ -348,7 +347,7 @@ struct CodexTaskLocator: Sendable {
 /// recorded cwd exactly matches it. Switchyard never creates or mutates the
 /// task; it only asks Codex for identifiers and opens the owner's selection.
 struct OpenCodexTaskButton: View {
-    let worktree: Worktree
+    let worktree: Workspace
     var locator = CodexTaskLocator()
     var opener = CodexTaskOpener()
     @State private var tasks: [CodexTaskReference]?

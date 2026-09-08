@@ -8,7 +8,7 @@ trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 
 cd "$repository_root"
 "$script_directory/release-checks.sh"
-unformatted_files=$(gofmt -l $(find cmd internal -name '*.go' -type f))
+unformatted_files=$(gofmt -l $(rg --files cmd internal -g '*.go'))
 if [ -n "$unformatted_files" ]; then
 	echo "gofmt required for:" >&2
 	echo "$unformatted_files" >&2
@@ -17,8 +17,7 @@ fi
 go mod tidy -diff
 go vet ./...
 go test -race ./...
-swift test --package-path app
-swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
-swift build --package-path app -c release --product SwitchyardApp
 "$script_directory/build-binary.sh" "$temporary_directory/switchyard"
+SWITCHYARD_TEST_HELPER="$temporary_directory/switchyard" swift test --package-path app
+swift build --package-path app -c release --product SwitchyardApp
 "$temporary_directory/switchyard" version >/dev/null

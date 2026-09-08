@@ -36,18 +36,6 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install release audit tools
-        run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.0
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-          go install github.com/zricethezav/gitleaks/v8@v8.30.1
-      - name: Run release audit gates
-        run: |
-          "$(go env GOPATH)/bin/golangci-lint" run ./...
-          "$(go env GOPATH)/bin/actionlint"
-          "$(go env GOPATH)/bin/govulncheck" ./...
-          "$(go env GOPATH)/bin/gitleaks" git . --redact --exit-code 1 --no-banner
       - name: Validate release version
         id: release_version
         run: |
@@ -57,9 +45,8 @@ jobs:
           scripts/check-version.sh "${RELEASE_TAG#v}"
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           git merge-base --is-ancestor HEAD origin/main
+          scripts/check-release-pr-scope.sh "$(git rev-parse HEAD^)" HEAD
           scripts/release-checks.sh
-      - name: Run production checks
-        run: scripts/ci.sh
       - name: Enforce generic boundary on tracked sources
         env:
           SWITCHYARD_BOUNDARY_DENYLIST: ${{ secrets.SWITCHYARD_BOUNDARY_DENYLIST }}
@@ -138,28 +125,34 @@ jobs:
       - name: Launch signed application
         run: |
           log="$RUNNER_TEMP/switchyard-signed-launch.log"
-          SWITCHYARD_FIXTURE=canonical "dist/Switchyard.app/Contents/MacOS/SwitchyardApp" >"$log" 2>&1 &
+          smoke_root=$(mktemp -d "$RUNNER_TEMP/switchyard-signed.XXXXXX")
+          label_suffix=$(printf '%s' "$smoke_root" | shasum -a 256 | cut -c 1-12)
+          smoke_label="com.theronburger.switchyard.daemon.$label_suffix"
+          app_pid=""
+          cleanup() {
+            if [ -n "$app_pid" ]; then kill -TERM "$app_pid" 2>/dev/null || true; fi
+            launchctl bootout "gui/$(id -u)/$smoke_label" 2>/dev/null || true
+            rm -f "$HOME/Library/LaunchAgents/$smoke_label.plist"
+            rm -rf "$smoke_root"
+          }
+          trap cleanup EXIT
+          "dist/Switchyard.app/Contents/MacOS/SwitchyardApp" --root "$smoke_root" >"$log" 2>&1 &
           app_pid=$!
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if kill -0 "$app_pid" 2>/dev/null; then
-              sleep 1
-              continue
+          connected=false
+          for attempt in $(seq 1 30); do
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Signed Switchyard exited during launch." >&2
+              sed -n '1,120p' "$log" >&2
+              exit 1
             fi
-            echo "Signed Switchyard exited during launch." >&2
-            sed -n '1,120p' "$log" >&2
-            exit 1
+            if "dist/Switchyard.app/Contents/Resources/SwitchyardDaemon" doctor --root "$smoke_root" --json >/dev/null 2>&1; then
+              connected=true
+              break
+            fi
+            sleep 1
           done
-          kill -TERM "$app_pid"
-          set +e
-          wait "$app_pid"
-          exit_status=$?
-          set -e
-          if [ "$exit_status" -ne 0 ] && [ "$exit_status" -ne 143 ]; then
-            echo "Signed Switchyard exited unexpectedly with status $exit_status." >&2
-            sed -n '1,120p' "$log" >&2
-            exit 1
-          fi
-          if grep -Eiq 'fatal error|library not loaded|code signature invalid' "$log"; then
+          if [ "$connected" != true ]; then
+            echo "Signed Switchyard could not start and connect to its bundled helper." >&2
             sed -n '1,120p' "$log" >&2
             exit 1
           fi

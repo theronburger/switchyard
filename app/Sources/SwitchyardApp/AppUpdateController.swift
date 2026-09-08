@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 import Sparkle
-import SwitchyardKit
 
 @MainActor
 @Observable
@@ -48,6 +47,11 @@ final class AppUpdateController: NSObject, SPUUpdaterDelegate {
         guard isAvailable else { return }
         _ = controller
         automaticallyChecksForUpdates = controller.updater.automaticallyChecksForUpdates
+        if automaticallyChecksForUpdates {
+            // Sparkle otherwise waits for its scheduled interval. Check once at
+            // launch so a newly published fix is visible immediately.
+            controller.updater.checkForUpdatesInBackground()
+        }
     }
 
     func checkForUpdates() {

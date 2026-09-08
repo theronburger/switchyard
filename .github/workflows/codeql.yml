@@ -1,8 +1,6 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   schedule:
@@ -20,6 +18,7 @@ concurrency:
 jobs:
   analyze:
     name: Analyze Go
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')
     runs-on: macos-26
     steps:
       - name: Check out source

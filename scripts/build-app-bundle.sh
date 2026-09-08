@@ -38,9 +38,10 @@ cp -R "$repository_root/skills/switchyard" "$contents/Resources/skills/switchyar
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $release_version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :SwitchyardChannel $build_channel" "$contents/Info.plist"
 if [ "$build_channel" = "development" ]; then
-	/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.theronburger.switchyard.development" "$contents/Info.plist"
-	/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Switchyard Development" "$contents/Info.plist"
-	/usr/libexec/PlistBuddy -c "Set :CFBundleName Switchyard Development" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 switchyard-rebuild" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.theronburger.switchyard.rebuild" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Switchyard Rebuild" "$contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleName Switchyard Rebuild" "$contents/Info.plist"
 	/usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$contents/Info.plist"
 	/usr/libexec/PlistBuddy -c "Set :SUAutomaticallyUpdate false" "$contents/Info.plist"
 fi
