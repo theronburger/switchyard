@@ -9,9 +9,42 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/theronburger/switchyard/internal/workspaces"
 )
+
+func TestClientWaitsForLargeWorktreeMutations(t *testing.T) {
+	t.Parallel()
+	for _, route := range []string{"prune", "create"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case <-time.After(31 * time.Second):
+					_, _ = w.Write([]byte(`{}`))
+				case <-r.Context().Done():
+				}
+			}))
+			defer server.Close()
+			root := t.TempDir()
+			directory := filepath.Join(root, "daemon")
+			if err := os.Mkdir(directory, 0700); err != nil {
+				t.Fatal(err)
+			}
+			descriptor, _ := json.Marshal(Descriptor{Version: 3, Endpoint: server.URL})
+			if err := os.WriteFile(filepath.Join(directory, "runtime.json"), descriptor, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(directory, "token"), []byte("test-token"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := (Client{Root: root}).Request(context.Background(), http.MethodPost, "/api/"+route, struct{}{}, nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestLocalAPIBoundary(t *testing.T) {
 	engine, err := workspaces.New(filepath.Join(t.TempDir(), "config.json"))

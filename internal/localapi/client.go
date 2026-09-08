@@ -23,9 +23,16 @@ type Descriptor struct {
 
 type Client struct{ Root string }
 
-var loopbackHTTPClient = http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 4, IdleConnTimeout: 30 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+var loopbackHTTPClient = http.Client{Transport: &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 4, IdleConnTimeout: 30 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 func (c Client) Request(ctx context.Context, method, path string, body, result any) error {
+	timeout := 30 * time.Second
+	gitMutation := method == http.MethodPost && (path == "/api/prune" || path == "/api/create")
+	if gitMutation {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	raw, err := os.ReadFile(filepath.Join(c.Root, "daemon", "runtime.json"))
 	if err != nil {
 		return errors.New("Switchyard is not running. Open the app to start its helper.")
@@ -58,6 +65,12 @@ func (c Client) Request(ctx context.Context, method, path string, body, result a
 	request.Header.Set("Content-Type", "application/json")
 	response, err := loopbackHTTPClient.Do(request)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			if gitMutation {
+				return errors.New("Stopped waiting for Git. The helper may still be finishing this action; refresh the worktree list before retrying.")
+			}
+			return errors.New("The request did not finish in time. Try again.")
+		}
 		return errors.New("Cannot reach Switchyard. Reopen the app to reconnect.")
 	}
 	defer func() { _ = response.Body.Close() }()

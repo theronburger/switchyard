@@ -29,6 +29,8 @@ removing anything. Protect:
 - directories whose Git registration or repository identity cannot be verified.
 
 Use `git worktree remove` without force for one exact registered directory.
+Once Git starts creating or removing a worktree, let it finish even if its
+client disconnects. Interrupting filesystem changes can leave a partial checkout.
 Do not reset, clean, recursively delete a checkout, or run a global Git worktree
 prune. Removing one missing worktree registration must leave other missing and
 foreign registrations intact. Ordinary Git creation must not overwrite an

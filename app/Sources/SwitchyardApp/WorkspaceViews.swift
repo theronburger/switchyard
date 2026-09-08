@@ -178,7 +178,7 @@ struct WorkspaceDetail: View {
                     if !workspace.primary {
                         HStack {
                             Spacer()
-                            Button("Delete worktree…", role: .destructive) { Task { await previewPrune() } }
+                            Button(planning ? "Checking worktree…" : "Delete worktree…", role: .destructive) { Task { await previewPrune() } }
                                 .disabled(transitioning || planning)
                         }.padding(.top, 16)
                     }

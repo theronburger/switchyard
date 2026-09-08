@@ -215,9 +215,9 @@ struct PruneView: View {
             } else { Text("Git will remove this linked checkout. Switchyard checks it again before deletion.").foregroundStyle(.secondary) }
             if let error = model.errors[plan.path] { Notice(text: error) }
             HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button(model.busy[plan.path] == nil ? "Cancel" : "Close", role: .cancel) { dismiss() }
                 Spacer()
-                Button("Delete worktree", role: .destructive) { Task { if await model.prune(path: plan.path) { dismiss() } } }
+                Button(model.busy[plan.path] == nil ? "Delete worktree" : "Deleting…", role: .destructive) { Task { if await model.prune(path: plan.path) { dismiss() } } }
                     .disabled(!(plan.blockers ?? []).isEmpty || model.busy[plan.path] != nil)
             }
         }.padding(24).frame(width: 550)

@@ -16,6 +16,10 @@ Verified on macOS with the canonical replacement source and API v3.
   recovery. Explicit empty service selections do not start all services.
 - Git tests preview and recheck pruning. Primary, dirty, unpushed, locked, active
   and unrelated worktrees survive. Missing registrations are removed individually.
+  A large prepared worktree was removed through the native app. Removal continues
+  if its client disconnects, and transport tests exercise responses beyond the
+  ordinary 30-second request limit. Individual actions inspect only their selected
+  worktree; inventory still reports every registered worktree.
 - A freshly packaged native app was opened and operated. Existing Git worktrees
   appeared without adoption. Starting one workspace while switching to another
   kept the operation, choices and displayed run attached to their exact paths.

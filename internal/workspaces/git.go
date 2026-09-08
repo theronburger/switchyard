@@ -47,7 +47,7 @@ func Discover(ctx context.Context, repositories []RepositoryConfig) ([]Workspace
 		if err := ctx.Err(); err != nil {
 			return workspaces, errors.Join(append(failures, err)...)
 		}
-		found, err := discoverRepository(ctx, repository)
+		found, err := discoverRepository(ctx, repository, "")
 		if err != nil {
 			failures = append(failures, &GitError{RepositoryID: repository.ID, Reason: err.Error()})
 			continue
@@ -70,7 +70,7 @@ func Discover(ctx context.Context, repositories []RepositoryConfig) ([]Workspace
 	return workspaces, errors.Join(failures...)
 }
 
-func discoverRepository(ctx context.Context, repository RepositoryConfig) ([]Workspace, error) {
+func discoverRepository(ctx context.Context, repository RepositoryConfig, exactPath string) ([]Workspace, error) {
 	root, common, _, err := gitRoot(ctx, repository.Path)
 	if err != nil {
 		return nil, errors.New("Cannot read the configured Git root. Check its directory and Git access.")
@@ -82,6 +82,19 @@ func discoverRepository(ctx context.Context, repository RepositoryConfig) ([]Wor
 	workspaces, err := parseGitWorktrees(output, repository.ID)
 	if err != nil {
 		return nil, err
+	}
+	if exactPath != "" {
+		var selected []Workspace
+		for _, workspace := range workspaces {
+			physical, err := physicalWorkspacePath(workspace.Path)
+			if err == nil && physical == exactPath {
+				selected = append(selected, workspace)
+			}
+		}
+		if len(selected) != 1 {
+			return nil, errors.New("The exact directory is not registered with this repository.")
+		}
+		workspaces = selected
 	}
 	for index := range workspaces {
 		workspace := &workspaces[index]
@@ -222,8 +235,17 @@ func physicalWorkspacePath(path string) (string, error) {
 }
 
 func gitOutput(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(arguments) >= 2 && arguments[0] == "worktree" && (arguments[1] == "remove" || arguments[1] == "add") {
+		// Interrupting Git's filesystem mutation can leave a partially removed or created checkout.
+		ctx = context.WithoutCancel(ctx)
+	} else {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+	}
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", directory}, arguments...)...)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "GIT_") {
@@ -286,14 +308,9 @@ func repositoryWorkspace(ctx context.Context, repository RepositoryConfig, path 
 	if err != nil {
 		return Workspace{}, err
 	}
-	workspaces, err := discoverRepository(ctx, repository)
+	workspaces, err := discoverRepository(ctx, repository, physical)
 	if err != nil {
 		return Workspace{}, err
 	}
-	for _, workspace := range workspaces {
-		if workspace.Path == physical {
-			return workspace, nil
-		}
-	}
-	return Workspace{}, errors.New("The exact directory is not registered with this repository.")
+	return workspaces[0], nil
 }

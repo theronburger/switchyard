@@ -104,11 +104,18 @@ actor WorkspaceClient: WorkspaceAPI {
         var request = URLRequest(url: endpoint)
         request.httpMethod = body == nil ? "GET" : "POST"
         request.httpBody = body
-        request.timeoutInterval = 30
+        let gitMutation = body != nil && (route == "prune" || route == "create")
+        request.timeoutInterval = gitMutation ? 30 * 60 : 30
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("3", forHTTPHeaderField: "X-Switchyard-Version")
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError where gitMutation && (error.code == .timedOut || error.code == .cancelled) {
+            throw WorkspaceAPIError(message: "Stopped waiting for Git. The helper may still be finishing this action; refresh the worktree list before retrying.")
+        }
         guard let http = response as? HTTPURLResponse else { throw WorkspaceAPIError(message: "The helper did not return a response.") }
         guard (200..<300).contains(http.statusCode) else {
             let reason = (try? JSONDecoder().decode(Failure.self, from: data))?.error ?? "The helper could not complete the request (\(http.statusCode))."

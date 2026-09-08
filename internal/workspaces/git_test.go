@@ -8,7 +8,83 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestGitPruneFinishesAfterClientDisconnects(t *testing.T) {
+	repository := gitFixture(t)
+	path := addGitWorktree(t, repository, "remove", "remove")
+	foreign := addGitWorktree(t, repository, "keep", "keep")
+	plan, err := GitPrunePlan(context.Background(), repository, path)
+	if err != nil || len(plan.Blockers) != 0 {
+		t.Fatalf("prune preview: %+v %v", plan, err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	marker, proceed := filepath.Join(shim, "started"), filepath.Join(shim, "proceed")
+	t.Setenv("SWITCHYARD_TEST_GIT", git)
+	t.Setenv("SWITCHYARD_TEST_STARTED", marker)
+	t.Setenv("SWITCHYARD_TEST_PROCEED", proceed)
+	t.Setenv("SWITCHYARD_TEST_FOREIGN", foreign)
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(`#!/bin/sh
+if [ "$2" = "$SWITCHYARD_TEST_FOREIGN" ] && [ "$3" = status ]; then
+  touch "$SWITCHYARD_TEST_STARTED.unrelated"
+fi
+if [ "$3" = worktree ] && [ "$4" = remove ]; then
+  touch "$SWITCHYARD_TEST_STARTED"
+  while [ ! -f "$SWITCHYARD_TEST_PROCEED" ]; do sleep 0.01; done
+fi
+exec "$SWITCHYARD_TEST_GIT" "$@"
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() { _ = os.WriteFile(proceed, nil, 0600) }()
+	finished := make(chan error, 1)
+	go func() { finished <- GitPrune(ctx, repository, path) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Git removal did not begin")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := os.WriteFile(proceed, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Git removal did not finish")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed worktree remains: %v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("unrelated worktree changed: %v", err)
+	}
+	if _, err := os.Stat(marker + ".unrelated"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removing one worktree unnecessarily inspected an unrelated checkout: %v", err)
+	}
+	if err := GitPrune(ctx, repository, foreign); err == nil {
+		t.Fatalf("cancelled preflight: %v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("cancelled preflight removed worktree: %v", err)
+	}
+}
 
 func TestDiscoverKeepsExactWorktreePathsAndPartialRepositoryResults(t *testing.T) {
 	repository := gitFixture(t)
