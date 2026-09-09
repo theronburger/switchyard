@@ -48,6 +48,11 @@ Verified on macOS with the canonical replacement source and API v3.
   web administration app rendered its login page. Stopping each run removed its
   containers and preserved the pre-existing container. These checks establish
   startup and local HTTP behavior, not authenticated business workflows.
+  Two hardcoded client endpoints in the consuming code were redirected through
+  private local build recipes. Actual SDK requests reached the assigned queue and
+  database ports, and two backends ran together. The web app also started after a
+  missing-setting failure. Queue initialization uses resolved service resources;
+  the older compose files alone did not list every required queue.
 - Configuration resolution was checked for every configured serverless backend
   against two targets. Missing private environment values remain a prerequisite
   for some service/target combinations; the private preflight reports setting
