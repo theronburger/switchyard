@@ -11,6 +11,11 @@ Every request requires `Authorization: Bearer <local token>` and
 `daemon/runtime.json` and its separate token in `daemon/token` under the selected
 support root. Browser-origin requests are rejected. No token belongs in a URL.
 
+Requests reload valid external edits to `config.json`. If an edit is invalid,
+status retains the last valid configuration and includes `configurationError`.
+Stop and log reads remain available; configuration-dependent mutations are
+refused until the file is fixed. `POST /api/config` can replace an invalid file.
+
 | Request | Body or query | Result |
 | --- | --- | --- |
 | `GET /api/status` | None | `Snapshot` |

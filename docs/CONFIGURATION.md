@@ -1,9 +1,15 @@
 # Private configuration
 
 Configure the commands that make one fresh Git worktree ready, then the commands
-that keep each service running. Save in the app, or use `sy config set FILE` to
-send a configuration file to the running helper. Saving validates and applies
-the configuration. Later runs use it; running processes keep their current setup.
+that keep each service running. In Repositories, the configuration icons copy
+the file path, open its folder, or open it in your default editor. Save the file
+there; the helper validates and applies changes on its next request. The app
+refreshes every two seconds. `sy config set FILE` also applies a configuration.
+Later runs use it; running processes keep their current setup.
+
+Invalid edits show an error and leave the last valid settings and running
+services available. Fix and save the file to apply the changes. Stop still works
+while the file is invalid; starting or saving choices waits for a valid file.
 
 The release stores `config.json` in
 `~/Library/Application Support/Switchyard/`. Development builds use
@@ -79,6 +85,13 @@ and defaults to `.`; it must exist and resolve inside that workspace. Keep servi
 commands in the foreground. Do not background them or start a second process
 manager. Use absolute executable paths or set `PATH` explicitly if a tool is
 available only through your interactive shell setup.
+
+Container prerequisites can be ordinary configured services too. Give an attached
+`docker run --rm` command its assigned ports, readiness check and a preparation
+command that starts your local container runtime if necessary. Other services
+declare it as a dependency. Switchyard itself does not require a container runtime.
+Use an explicit local Docker context and keep its lifecycle commands in private
+configuration. Do not use detached containers or global cleanup commands.
 
 For finite setup and service preparation, `timeoutSeconds` defaults to 900.
 The service's long-running `command` is stopped through Stop; its command timeout

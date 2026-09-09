@@ -1,6 +1,7 @@
 package workspaces
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,50 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestExternalConfigChangesPreserveRunsAndRejectInvalidEdits(t *testing.T) {
+	engine, config, primary, _ := engineFixture(t)
+	startEngineRun(t, engine, primary, "external-config")
+	running := waitEngineState(t, engine, primary, "running")
+	config.Repositories[0].Name = "Edited outside the app"
+	if err := SaveConfig(engine.configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ReloadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if engine.Config().Repositories[0].Name != "Edited outside the app" {
+		t.Fatal("external edit was not applied")
+	}
+	if current := waitEngineState(t, engine, primary, "running"); current.ID != running.ID {
+		t.Fatal("reload restarted the run")
+	}
+	if err := os.WriteFile(engine.configPath, []byte(`{"schemaVersion":`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ReloadConfig(); err == nil {
+		t.Fatal("invalid edit was accepted")
+	}
+	if engine.Config().Repositories[0].Name != "Edited outside the app" {
+		t.Fatal("invalid edit replaced usable configuration")
+	}
+	removed := Config{SchemaVersion: 1, Repositories: []RepositoryConfig{}, Choices: map[string]Choices{}}
+	if err := SaveConfig(engine.configPath, removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ReloadConfig(); err == nil {
+		t.Fatal("reload hid an active workspace")
+	}
+	if _, err := engine.Stop(context.Background(), primary); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ReloadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if len(engine.Config().Repositories) != 0 {
+		t.Fatal("fixed edit was not accepted after stopping")
+	}
+}
 
 func TestV3ConfigurationAndStatusFixtures(t *testing.T) {
 	config, err := LoadConfig(filepath.Join("..", "..", "contracts", "v3", "config.json"))

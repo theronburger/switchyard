@@ -33,6 +33,11 @@ replaces the private file atomically. Future runs use the saved configuration;
 an active run keeps its accepted inputs. The file format is version 1 and the
 HTTP API is version 3.
 
+Clients can open that file in an external editor. Each API request checks for
+valid changes; no file watcher or separate configuration process is needed.
+An invalid edit retains the last valid configuration and appears as
+`configurationError` in status. Stop and status remain available.
+
 Git supplies registered worktrees through `git worktree list --porcelain -z`.
 The physical directory identifies a workspace across clients. Branch names and
 directory basenames are display information. Context reads resolve child

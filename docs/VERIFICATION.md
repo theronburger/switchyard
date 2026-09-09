@@ -37,6 +37,25 @@ Verified on macOS with the canonical replacement source and API v3.
   Homebrew integration and publication checks remain in place.
 - The generic boundary scan passes for source and the built application using a
   denylist kept outside the repository.
+- The rebuilt configuration screen has no JSON editor. Its three icon buttons
+  were exercised: the clipboard contained the exact configuration path, Finder
+  opened its parent folder, and the system's default JSON app opened the file.
+  An external edit appeared without replacing the helper. Go and Swift transport
+  tests cover invalid external edits, recovery, and retaining active runs.
+- The expanded private configuration contains 18 application services and two
+  container dependencies. Real runs exercised a Lambda-only service, an HTTP
+  backend with local queues, and another backend with queues and DynamoDB. The
+  web administration app rendered its login page. Stopping each run removed its
+  containers and preserved the pre-existing container. These checks establish
+  startup and local HTTP behavior, not authenticated business workflows.
+- Configuration resolution was checked for every configured serverless backend
+  against two targets. Missing private environment values remain a prerequisite
+  for some service/target combinations; the private preflight reports setting
+  names without logging resolved credentials. The service catalog alone is not
+  evidence that every service can run against every target.
+- The private container prerequisite was checked against the running Colima
+  daemon. Stubbed commands exercised already-running, start-needed and start
+  failure cases. The user's actual VM was not shut down for testing.
 
 The local release packaging run used ad-hoc signing. Publisher signing, uploaded
 asset verification, and a real Sparkle upgrade through the published feed require

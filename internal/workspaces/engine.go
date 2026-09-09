@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -35,6 +37,11 @@ func New(configPath string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
+		if err := SaveConfig(configPath, config); err != nil {
+			return nil, err
+		}
+	}
 	return &Engine{configPath: configPath, config: config, instance: newID(), revision: 1,
 		runs: make(map[string]*workspaceRun), requests: make(map[string]*workspaceRun)}, nil
 }
@@ -54,6 +61,39 @@ func (engine *Engine) SetConfig(config Config) error {
 	}
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
+	if err := engine.checkConfigChange(config); err != nil {
+		return err
+	}
+	if err := SaveConfig(engine.configPath, config); err != nil {
+		return err
+	}
+	engine.config = config
+	engine.revision++
+	return nil
+}
+
+func (engine *Engine) ReloadConfig() error {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if _, err := os.Stat(engine.configPath); err != nil {
+		return errors.New("Cannot read config.json. Restore the file to apply configuration changes.")
+	}
+	config, err := LoadConfig(engine.configPath)
+	if err != nil {
+		return fmt.Errorf("Fix config.json to apply changes: %w", err)
+	}
+	if reflect.DeepEqual(config, engine.config) {
+		return nil
+	}
+	if err := engine.checkConfigChange(config); err != nil {
+		return err
+	}
+	engine.config = config
+	engine.revision++
+	return nil
+}
+
+func (engine *Engine) checkConfigChange(config Config) error {
 	if engine.closed {
 		return errors.New("Switchyard is shutting down")
 	}
@@ -76,11 +116,6 @@ func (engine *Engine) SetConfig(config Config) error {
 			return errors.New("stop workspace runs before removing their repository or changing its directory")
 		}
 	}
-	if err := SaveConfig(engine.configPath, config); err != nil {
-		return err
-	}
-	engine.config = copyJSON(config)
-	engine.revision++
 	return nil
 }
 

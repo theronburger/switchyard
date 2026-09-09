@@ -4,11 +4,9 @@ import SwiftUI
 struct ConfigurationView: View {
     @Bindable var model: WorkspaceModel
     @State private var json = ""
-    @State private var savedJSON = ""
     @State private var error: String?
     @State private var busy = false
     @State private var showsAdd = false
-    @State private var advanced = false
 
     var body: some View {
         ScrollView {
@@ -19,7 +17,7 @@ struct ConfigurationView: View {
                         Text("Private commands and settings for your workspaces.").foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Add repository…") { showsAdd = true }.buttonStyle(.borderedProminent).disabled(busy || json.isEmpty)
+                    Button("Add repository…") { Task { if await load() { showsAdd = true } } }.buttonStyle(.borderedProminent).disabled(busy)
                 }
                 ForEach(model.repositories) { repository in
                     VStack(alignment: .leading, spacing: 10) {
@@ -33,24 +31,25 @@ struct ConfigurationView: View {
                     ContentUnavailableView("No repositories configured", systemImage: "folder.badge.plus", description: Text("Add a repository and the commands you already use to run it."))
                 }
                 if let error { Notice(text: error) }
-                DisclosureGroup("Edit configuration JSON", isExpanded: $advanced) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Saving accepts these commands for execution. The configuration stays in Switchyard's private storage.").font(.caption).foregroundStyle(.secondary)
-                        TextEditor(text: $json).font(.system(.caption, design: .monospaced)).frame(minHeight: 400).disabled(busy)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
-                        HStack {
-                            Button("Reload") { Task { await load() } }.disabled(busy)
-                            Spacer()
-                            if busy { ProgressView().controlSize(.small) }
-                            Button("Save configuration") { Task { await save(json) } }.buttonStyle(.borderedProminent).disabled(busy || json == savedJSON)
-                        }
-                    }.padding(.top, 12)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Configuration file").font(.headline)
+                        Spacer()
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(configURL.path, forType: .string)
+                        } label: { Image(systemName: "doc.on.doc") }
+                        .help("Copy configuration path").accessibilityLabel("Copy configuration path")
+                        Button { open(configURL.deletingLastPathComponent()) } label: { Image(systemName: "folder") }
+                            .help("Open configuration folder").accessibilityLabel("Open configuration folder")
+                        Button { open(configURL) } label: { Image(systemName: "arrow.up.forward.app") }
+                            .help("Open configuration in default app").accessibilityLabel("Open configuration in default app")
+                    }.buttonStyle(.borderless)
+                    Text(configURL.path).font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Edit and save in your editor. Valid changes apply automatically to future runs.").font(.caption).foregroundStyle(.secondary)
+                    if let error = model.snapshot?.configurationError { Notice(text: error) }
                 }.card()
             }.padding(28).frame(maxWidth: 1080, alignment: .leading)
-        }
-        .task { await load() }
-        .onChange(of: model.snapshot?.instanceId) { _, _ in
-            if json.isEmpty { Task { await load() } }
         }
         .sheet(isPresented: $showsAdd) {
             AddRepositoryView(existingJSON: json) { updated in
@@ -58,16 +57,20 @@ struct ConfigurationView: View {
             }
         }
     }
-    private func load() async {
+    private var configURL: URL { model.installation.root.appending(path: "config.json") }
+    private func open(_ url: URL) {
+        if !NSWorkspace.shared.open(url) { error = "Could not open \(url.lastPathComponent) in its default app." }
+    }
+    private func load() async -> Bool {
         busy = true; defer { busy = false }
-        do { json = try await model.api.configuration(); savedJSON = json; error = nil }
-        catch { self.error = error.localizedDescription }
+        do { json = try await model.api.configuration(); error = nil; return true }
+        catch { self.error = error.localizedDescription; return false }
     }
     @discardableResult private func save(_ value: String) async -> Bool {
         busy = true; defer { busy = false }
         do {
             try await model.api.saveConfiguration(value)
-            json = value; savedJSON = value; error = nil
+            json = value; error = nil
             await model.refreshAfterMutation()
             return true
         } catch { self.error = error.localizedDescription; return false }
@@ -108,7 +111,7 @@ struct AddRepositoryView: View {
                 TextField("Port environment variable", text: $portVariable)
                 TextField("Readiness URL path", text: $readinessPath)
             }.textFieldStyle(.roundedBorder)
-            Text("Commands run in each worktree. Saving authorizes these commands. Add more services, targets, dependencies and variables in the JSON editor.").font(.caption).foregroundStyle(.secondary)
+            Text("Commands run in each worktree. Saving authorizes these commands. Edit the configuration file to add more services, targets, dependencies and variables.").font(.caption).foregroundStyle(.secondary)
             if let error { Notice(text: error) }
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }

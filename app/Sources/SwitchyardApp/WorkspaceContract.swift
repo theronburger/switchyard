@@ -1,6 +1,7 @@
 import Foundation
 
 struct WorkspaceSnapshot: Decodable, Sendable {
+	var configurationError: String?
     let version: Int
     let instanceId: String
     let revision: UInt64

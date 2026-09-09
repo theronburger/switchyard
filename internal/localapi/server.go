@@ -29,9 +29,19 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var result any
 	var err error
+	configError := s.Engine.ReloadConfig()
+	if configError != nil && r.Method == http.MethodPost && r.URL.Path != "/api/stop" && r.URL.Path != "/api/config" {
+		writeError(w, http.StatusBadRequest, configError.Error())
+		return
+	}
 	switch r.Method + " " + r.URL.Path {
 	case "GET /api/status":
-		result, err = s.Engine.Status(r.Context())
+		var snapshot workspaces.Snapshot
+		snapshot, err = s.Engine.Status(r.Context())
+		if configError != nil {
+			snapshot.ConfigurationError = configError.Error()
+		}
+		result = snapshot
 	case "GET /api/context":
 		var status workspaces.Snapshot
 		status, err = s.Engine.Status(r.Context())
@@ -40,6 +50,7 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "GET /api/config":
 		result = s.Engine.Config()
+		err = configError
 	case "POST /api/config":
 		var config workspaces.Config
 		err = decode(r, &config)

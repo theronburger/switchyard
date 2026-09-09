@@ -54,6 +54,14 @@ struct WorkspaceTransportTests {
         let after = try await client.status()
         #expect(after.revision > status.revision)
         #expect(after.instanceId == status.instanceId)
+        let configURL = root.appending(path: "config.json")
+        try Data("{".utf8).write(to: configURL, options: .atomic)
+        let invalid = try await client.status()
+        #expect(invalid.configurationError != nil)
+        #expect(invalid.instanceId == status.instanceId)
+        try Data(config.utf8).write(to: configURL, options: .atomic)
+        let repaired = try await client.status()
+        #expect(repaired.configurationError == nil)
         await #expect(throws: (any Error).self) { _ = try await client.prunePlan(path: root.path) }
         #expect(FileManager.default.fileExists(atPath: root.path))
     }

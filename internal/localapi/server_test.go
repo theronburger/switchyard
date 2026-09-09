@@ -87,6 +87,39 @@ func TestLocalAPIBoundary(t *testing.T) {
 	}
 }
 
+func TestInvalidExternalConfigKeepsStatusAvailableAndPreventsOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	engine, err := workspaces.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Close(context.Background()) }()
+	broken := []byte(`{"schemaVersion":`)
+	if err := os.WriteFile(path, broken, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := Server{Engine: engine, Token: "test-token"}
+	for _, action := range []string{"GET /api/status", "POST /api/choices", "POST /api/run"} {
+		method, route, _ := strings.Cut(action, " ")
+		request := httptest.NewRequest(method, route, strings.NewReader(`{}`))
+		request.Header.Set("Authorization", "Bearer test-token")
+		request.Header.Set("X-Switchyard-Version", "3")
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if method == "GET" {
+			if response.Code != 200 || !strings.Contains(response.Body.String(), "configurationError") {
+				t.Fatalf("status became unavailable: %s", response.Body.String())
+			}
+		} else if response.Code != 400 {
+			t.Fatalf("mutation ignored invalid config: %d", response.Code)
+		}
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != string(broken) {
+		t.Fatal("invalid external edit was overwritten")
+	}
+}
+
 func TestClientRejectsNonlocalDescriptorBeforeSendingToken(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "daemon")

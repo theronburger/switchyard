@@ -65,11 +65,12 @@ type Choices struct {
 }
 
 type Snapshot struct {
-	Version      int                 `json:"version"`
-	InstanceID   string              `json:"instanceId"`
-	Revision     uint64              `json:"revision"`
-	Repositories []RepositorySummary `json:"repositories"`
-	Workspaces   []Workspace         `json:"workspaces"`
+	ConfigurationError string              `json:"configurationError,omitempty"`
+	Version            int                 `json:"version"`
+	InstanceID         string              `json:"instanceId"`
+	Revision           uint64              `json:"revision"`
+	Repositories       []RepositorySummary `json:"repositories"`
+	Workspaces         []Workspace         `json:"workspaces"`
 }
 
 type RepositorySummary struct {
