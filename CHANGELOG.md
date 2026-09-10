@@ -4,6 +4,17 @@ All notable changes are documented here. The project follows [Semantic Versionin
 
 Release Please generates each version section from Conventional Commits when it opens the release pull request. Do not add an Unreleased section; notes for non-conventional commits are added by editing the release pull request body before merge.
 
+## [0.3.0](https://github.com/theronburger/switchyard/compare/v0.2.3...v0.3.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* rebuild workspace execution and migrate prepared installations
+
+### Added
+
+* rebuild workspace execution and migrate prepared installations ([bc05697](https://github.com/theronburger/switchyard/commit/bc05697d7a82c04c5729f2e60e7b582d70cfbc0d))
+
 ## [0.2.3](https://github.com/theronburger/switchyard/compare/v0.2.2...v0.2.3) (2026-08-24)
 
 
