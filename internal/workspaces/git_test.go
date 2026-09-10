@@ -401,3 +401,27 @@ func writeGitFile(t *testing.T, directory, name, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestGitCreateTreatsShellSyntaxAsLiteralBranchData(t *testing.T) {
+	repository := gitFixture(t)
+	marker := filepath.Join(t.TempDir(), "must-not-exist")
+	t.Setenv("SWITCHYARD_TEST_MARKER", marker)
+	branch := "topic/$(touch${IFS}${SWITCHYARD_TEST_MARKER})"
+	created, err := GitCreate(context.Background(), repository, CreateRequest{RepositoryID: repository.ID, Branch: branch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(gitTest(t, created, "branch", "--show-current")); got != branch {
+		t.Fatalf("branch changed: %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("branch text executed as a shell command")
+	}
+	resolved, err := ResolvePath(context.Background(), created)
+	if err != nil || resolved != created {
+		t.Fatalf("literal worktree path failed: %q %v", resolved, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("path text executed as a shell command")
+	}
+}
