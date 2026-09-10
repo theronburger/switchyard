@@ -36,6 +36,7 @@ struct AppInstallation: Sendable {
         guard manager.isExecutableFile(atPath: bundled.path) else {
             throw WorkspaceAPIError(message: "This build is missing its bundled helper. Open the packaged Switchyard app.")
         }
+        try AppUpgrade(root: root, helper: helper, bundled: bundled).prepare()
         try manager.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
         try manager.createDirectory(at: root.appending(path: "daemon"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let bytes = try Data(contentsOf: bundled, options: .mappedIfSafe)
@@ -43,6 +44,9 @@ struct AppInstallation: Sendable {
         if changed {
             try bytes.write(to: helper, options: .atomic)
             try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        }
+        if channel == .release {
+            try AppUpgrade.repairBundledSkill(home: manager.homeDirectoryForCurrentUser, bundledSkill: Bundle.main.bundleURL.appending(path: "Contents/Resources/skills/switchyard/SKILL.md"))
         }
         let agents = manager.homeDirectoryForCurrentUser.appending(path: "Library/LaunchAgents")
         try manager.createDirectory(at: agents, withIntermediateDirectories: true)

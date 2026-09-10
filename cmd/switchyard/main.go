@@ -43,6 +43,11 @@ func run(args []string) error {
 		}
 		fmt.Println(version)
 		return nil
+	case "upgrade":
+		if len(options.positional) != 1 || (options.positional[0] != "check" && options.positional[0] != "apply") {
+			return errors.New("upgrade requires check or apply")
+		}
+		return workspaces.UpgradeConfig(options.root, options.positional[0] == "apply")
 	case "daemon":
 		return serve(options.root)
 	case "mcp":

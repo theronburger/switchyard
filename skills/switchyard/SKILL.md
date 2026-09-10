@@ -39,7 +39,7 @@ Use `switchyard_inventory` only when deliberately looking across workspaces.
 - `switchyard_prepare` runs repository setup alone. Success is the same run ID
   with state `stopped`, step `Prepared`, and no error.
 - `switchyard_configure` saves the workspace's target and service choices.
-  Repository commands are edited in the app's configuration screen; Save accepts them.
+  Open the private configuration from the app’s Repositories screen. Valid external saves apply automatically.
 
 Verify URLs directly when claiming the app works. Do not equate a process PID
 with a functional app. Investigate missing ignored local files in the private

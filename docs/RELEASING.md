@@ -154,12 +154,33 @@ brew uninstall --cask switchyard
 The bundled skill documents the current MCP tools. Agent registration is explicit
 in Setup. Existing user-authored skills are not overwritten by the native app.
 
-## Execution rebuild upgrade
+## Execution rebuild upgrade (0.3.0)
 
-The replacement uses private `config.json`. It does not load the former YAML
-profile compiler or SQLite runtime database. Configure the repository's ordinary
-setup and service commands before first Run; the application offers a repository
-form and advanced configuration editor. Keep the old private files as a backup.
-Stop existing runs before replacing the released helper. The development build
-uses `Switchyard Rebuild`, a separate LaunchAgent and a separate URL scheme, so
-it can be verified alongside an installed release.
+Release 0.3.0 uses the existing Sparkle feed, signing key, bundle identifier and
+Homebrew path. Release Please receives `Release-As: 0.3.0`; it still owns all
+version files and creates the release tag through the normal protected workflow.
+
+Before upgrading a legacy installation, prepare and verify its ordinary private
+commands in `upgrade/config.json` beneath the release support root. Put supporting
+scripts outside consuming repositories, at their final private paths. This local
+staging step supplies the new configuration; the app does not translate the old
+profile compiler or guess repository setup requirements. Never publish the staged
+configuration with the app. Existing valid `config.json` takes precedence.
+
+On launch, the app validates the staged file before changing its helper. It asks
+the previous helper to stop each unstopped environment and waits for completion.
+Failure leaves the helper unchanged and reports the problem. The old YAML and
+helper are backed up under `upgrade/previous`; old runtime files stay in place.
+Then the new config is installed atomically and the app repairs its existing
+LaunchAgent and helper. Repeating the upgrade preserves current configuration.
+A missing or invalid staged config cannot silently turn a legacy install into an
+empty installation. No worktree, foreign process or container is pruned.
+
+The executable path and `mcp --stdio` entry point remain compatible with existing
+agent registrations. The exact unmodified 0.2.3 bundled Codex skill is backed up
+and replaced; customized skills remain untouched. Agent hosts may need a fresh
+session to rediscover the new MCP tool list. Migration does not send messages or
+interrupt their tasks.
+
+Development continues to use its separate support root and LaunchAgent. Switching
+to the published app does not remove development configuration or stop its runs.
