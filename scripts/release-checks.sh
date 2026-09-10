@@ -16,6 +16,7 @@ echo "release-checks: version propagation"
 
 echo "release-checks: script self-tests"
 "$script_directory/check-pr-title.sh" --self-test
+"$script_directory/check-release-pr-scope.sh" --self-test
 "$script_directory/homebrew-cask-version-guard.sh" --self-test
 "$script_directory/verify-appcast.sh" --self-test
 "$script_directory/check-generic-boundary.sh" --self-test
@@ -67,8 +68,8 @@ if grep -Fq 'quit-switchyard.js' "$rendered"; then
 fi
 
 echo "release-checks: LaunchAgent label and bundle identity agree across Swift and Cask"
-grep -Fq '"com.theronburger.switchyard.daemon"' app/Sources/SwitchyardKit/Model/SwitchyardChannel.swift
-grep -Fq '"com.theronburger.switchyard"' app/Sources/SwitchyardKit/Model/SwitchyardChannel.swift
+grep -Fq '"com.theronburger.switchyard.daemon"' app/Sources/SwitchyardApp/AppInstallation.swift
+grep -Fq '"com.theronburger.switchyard"' app/Sources/SwitchyardApp/AppInstallation.swift
 grep -Fq 'Switchyard.app/Contents/Resources/SwitchyardDaemon' "$rendered"
 
 echo "release-checks: Release Please configuration"
@@ -93,6 +94,9 @@ grep -Fq 'environment: release' .github/workflows/release.yml
 grep -Fq 'scripts/homebrew-cask-version-guard.sh' .github/workflows/release.yml
 grep -Fq 'scripts/verify-appcast.sh' .github/workflows/release.yml
 grep -Fq 'scripts/check-version.sh' .github/workflows/release.yml
+grep -Fq 'scripts/check-release-pr-scope.sh' .github/workflows/release.yml
+grep -Fq 'scripts/check-release-pr-scope.sh "$BASE_SHA" "$HEAD_SHA"' .github/workflows/ci.yml
+grep -Fq 'BOUNDARY_RESULT: ${{ needs.boundary.result }}' .github/workflows/ci.yml
 grep -Fq 'scripts/validate-homebrew-cask.sh' .github/workflows/release.yml
 grep -Fq -- '--public-key' .github/workflows/release.yml
 # Release Please must act with a token that starts workflows, and exactly one
@@ -103,6 +107,12 @@ if grep -Fq 'workflow_call' .github/workflows/release.yml || grep -Fq 'uses: ./.
 	echo "release.yml must be triggered only by the tag push; a workflow_call path publishes twice" >&2
 	exit 1
 fi
+if grep -Eq '^  push:' .github/workflows/ci.yml || grep -Eq '^  push:' .github/workflows/codeql.yml; then
+	echo "CI and CodeQL must not repeat source checks after a protected main merge" >&2
+	exit 1
+fi
+grep -Fq "startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')" .github/workflows/ci.yml
+grep -Fq "startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')" .github/workflows/codeql.yml
 
 echo "release-checks: generic-boundary scan wiring"
 grep -Fq 'scripts/check-generic-boundary.sh --require-denylist' .github/workflows/ci.yml

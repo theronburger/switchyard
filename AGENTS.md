@@ -1,52 +1,41 @@
 # Switchyard agent instructions
 
-Read these files before implementation, in order:
+Read before implementation, in order:
 
 1. `README.md`
 2. `docs/DECISIONS.md`
 3. `docs/ARCHITECTURE.md`
-4. the task-specific document under `docs/`
+4. the relevant task document, usually `docs/CONFIGURATION.md`, `docs/SAFETY.md` or `docs/RELEASING.md`
 
-The parent `../AGENTS.md` principles also apply when this checkout lives in the development workspace.
+The parent `../AGENTS.md` principles also apply when this checkout lives in the
+development workspace.
 
-## Invariants
+## Product rules
 
-- The daemon is the only runtime-state writer. The app, CLI, and MCP are clients.
-- MCP contains no lifecycle or repository logic.
-- Repository-specific behavior belongs exclusively in accepted private configuration outside consuming repositories. Product code, tests, fixtures, documentation, and bundled skills contain no consuming-repository identity or catalog.
-- The app owns setup and repair. Do not require the user to start the daemon manually.
-- Never kill processes by executable name. Act only on positively owned process groups.
-- Never perform a global Docker prune. Act only on labelled owned resources after an inspectable plan.
-- Never remove a dirty, unpushed, locked, or active worktree.
-- Do not edit a consuming repository's tracked files, public ignore files, or existing development helpers.
-- Do not log complete process command lines, environment variables, credentials, account identifiers, or transcript contents.
-- A background monitor informs the app. It does not inject chat messages, wake sleeping agents, or interrupt running agents.
+- Keep Run, setup, readiness, logs, Stop and retry coherent for one exact workspace. Validate behavior with real commands; do not trust a UI label as proof.
+- The Go helper executes commands and keeps runtime state. The app, CLI and MCP are clients.
+- Keep repository-specific commands and values in private configuration outside consuming repositories. Product code, fixtures, documentation and bundled skills contain no consuming-repository identity or catalog.
+- The app installs, starts and repairs its helper. Normal use must not require a manual daemon command.
+- Signal only process groups launched for the current run. Never kill by executable name or port, adopt unknown processes, or perform global Docker cleanup.
+- Prune previews and rechecks one exact Git worktree. Never force removal or remove primary, dirty, unpushed, locked, active or invalid worktrees.
+- Do not edit consuming repositories' tracked files, public ignore rules or existing development helpers.
+- Do not expose raw scripts, environment dumps, credentials, account identifiers or transcript contents in status or logs.
+- Background work may inform the app; it must not inject messages, wake agents or interrupt their tasks.
 
 ## Code shape
 
-- Go owns the daemon, core domain, storage, supervisor, adapters, CLI, and MCP.
-- Swift owns the native app and presentation.
-- The cross-language boundary is a small versioned local JSON contract with fixtures.
-- Keep the core generic but concrete. Compile the accepted private schema into finite plans; do not build a dynamic code-plugin framework.
-- Prefer small packages with one owner and one reason to change.
-- Process, lease, health, and cleanup state transitions must be explicit and testable.
-
-## Parallel work
-
-Follow `docs/BUILD_PLAN.md`. Each lane owns disjoint directories. Shared contract, dependency, manifest, and generated files are coordinator-owned unless reassigned explicitly.
-
-Fable runs through the installed `claude-personal-fable` skill or:
-
-```bash
-zsh -lic 'claude-personal --model fable --print "PROMPT"'
-```
-
-Never silently fall back from Fable. The verified canonical model is `claude-fable-5`.
+- Swift owns native presentation and installation in `app/`.
+- Go owns the executable in `cmd/switchyard/`, runtime and Git/configuration in `internal/workspaces/`, and HTTP in `internal/localapi/`.
+- `internal/workspaces/types.go` and `contracts/v3/` define the shared JSON contract.
+- Use ordinary commands, Git operations and small functions. Do not add another lifecycle framework, configuration compiler or parallel state model.
+- Remove superseded code and claims when replacing behavior. Preserve unrelated user changes.
+- If work is delegated, assign disjoint files first. Coordinate shared types, dependencies, manifests and fixtures explicitly.
 
 ## Verification
 
-- Go changes: format, vet, focused tests, then `go test ./...`.
-- Swift changes: focused tests, then the repository's complete Swift check.
+- Go: format, vet, focused tests, then `go test ./...`.
+- Swift: focused tests, then the complete Swift check.
 - UI claims require a freshly built app and visual verification.
-- Lifecycle changes require failure-path tests, not only happy paths.
-- Cleanup changes require a dry-run/plan assertion proving foreign resources survive.
+- Runtime changes need real-process failure, cancellation and stop tests.
+- Prune changes need preview and mutation assertions proving protected and foreign worktrees survive.
+- Follow `docs/BUILD_PLAN.md` for acceptance checks and `docs/RELEASING.md` for packaging and release work.

@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     types: [opened, edited, synchronize, reopened]
   workflow_dispatch:
@@ -21,6 +19,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Release-scope validation compares the pull request's two parents.
+          fetch-depth: 2
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -30,7 +31,18 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: scripts/check-pr-title.sh "$PR_TITLE"
+      - name: Validate release metadata only
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SWITCHYARD_BOUNDARY_DENYLIST: ${{ secrets.SWITCHYARD_BOUNDARY_DENYLIST }}
+        run: |
+          scripts/check-release-pr-scope.sh "$BASE_SHA" "$HEAD_SHA"
+          scripts/release-checks.sh
+          scripts/check-generic-boundary.sh --require-denylist
       - name: Run production checks
+        if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')
         run: scripts/ci.sh
 
   boundary:
@@ -52,6 +64,7 @@ jobs:
 
   lint:
     name: Lint
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')
     runs-on: macos-26
     steps:
       - name: Check out source
@@ -71,6 +84,7 @@ jobs:
 
   vulnerabilities:
     name: Vulnerability scan
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')
     runs-on: macos-26
     steps:
       - name: Check out source
@@ -86,6 +100,7 @@ jobs:
 
   secrets:
     name: Secret and history scan
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--branches--main--components--switchyard')
     runs-on: macos-26
     steps:
       - name: Check out full history
@@ -104,9 +119,23 @@ jobs:
 
   package:
     name: Package universal app
+    if: always() && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--branches--main--components--switchyard'))
     needs: [test, boundary, lint, vulnerabilities, secrets]
     runs-on: macos-26
     steps:
+      - name: Require prerequisite checks
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          BOUNDARY_RESULT: ${{ needs.boundary.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          VULNERABILITY_RESULT: ${{ needs.vulnerabilities.result }}
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$BOUNDARY_RESULT" = success
+          test "$LINT_RESULT" = success
+          test "$VULNERABILITY_RESULT" = success
+          test "$SECRETS_RESULT" = success
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go

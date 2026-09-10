@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "repositories": [
+    {
+      "id": "sample",
+      "name": "Sample app",
+      "path": "/tmp/sample",
+      "defaultTarget": "local",
+      "targets": [
+        { "id": "local", "name": "Local" },
+        { "id": "debug", "name": "Debug", "environment": { "LOG_LEVEL": "debug" } }
+      ],
+      "setup": [
+        { "script": "npm ci", "directory": "apps/api" },
+        { "script": "npm ci", "directory": "apps/web" }
+      ],
+      "services": [
+        {
+          "id": "api",
+          "name": "API",
+          "command": { "script": "exec npm run dev", "directory": "apps/api" },
+          "ports": [ { "name": "http", "environment": "PORT", "preferred": 8080, "url": true } ],
+          "readiness": { "port": "http", "path": "/health", "timeoutSeconds": 60 }
+        },
+        {
+          "id": "web",
+          "name": "Web",
+          "dependencies": ["api"],
+          "command": {
+            "script": "exec npm run dev -- --host 127.0.0.1 --port \"$PORT\" --strictPort",
+            "directory": "apps/web",
+            "environment": { "VITE_API_URL": "http://127.0.0.1:{port:api.http}" }
+          },
+          "ports": [ { "name": "http", "environment": "PORT", "preferred": 5173, "url": true } ],
+          "readiness": { "port": "http", "path": "/", "timeoutSeconds": 60 }
+        }
+      ]
+    }
+  ],
+  "choices": {
+    "/tmp/sample": { "target": "local", "services": ["web"] },
+    "/tmp/sample-worktrees/search": { "target": "debug", "services": ["api"] }
+  }
+}

@@ -1,6 +1,6 @@
-.PHONY: app-bundle check check-format ci format go-check icons release-checks release-dry-run swift-check test race ui-snapshots
+.PHONY: app-bundle check check-format ci format go-check icons release-checks release-dry-run swift-check test race
 
-GO_FILES := $(shell find cmd internal -name '*.go' -type f 2>/dev/null)
+GO_FILES := $(shell rg --files cmd internal -g '*.go')
 
 check: check-format go-check swift-check
 
@@ -15,14 +15,9 @@ go-check:
 	go test ./...
 
 swift-check:
-	swift build --package-path app
-	swift test --package-path app
-	swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
+	./scripts/check-swift.sh
 
-test:
-	go test ./...
-	swift test --package-path app
-	swift run --package-path app SwitchyardContractCheck contracts/v2/fixtures/status.json
+test: go-check swift-check
 
 race:
 	go test -race ./...
@@ -41,7 +36,3 @@ release-dry-run:
 
 icons:
 	./scripts/generate-icons.sh
-
-ui-snapshots:
-	SWITCHYARD_SCREENSHOT_DIR="$(CURDIR)/app/.build/ui-snapshots" swift test --package-path app --filter SwitchyardPresentationTests
-	@echo "Rendered SwiftUI states to $(CURDIR)/app/.build/ui-snapshots"

@@ -30,7 +30,7 @@ The `release` environment requires Theron as a reviewer. Store these values as e
 Two secrets are repository-wide because the workflows that need them run without the protected environment:
 
 - `RELEASE_PLEASE_TOKEN` (Actions secret): a fine-grained personal access token restricted to `theronburger/switchyard` with **Contents: read and write** and **Pull requests: read and write**. Release Please uses it to open the release pull request and push the version tag. The default `GITHUB_TOKEN` cannot start other workflows, so a release pull request it opened would have no CI checks and a tag it pushed would never trigger `release.yml`. `release-please.yml` fails immediately when the secret is missing. Rotate it before expiry like the other release state.
-- `SWITCHYARD_BOUNDARY_DENYLIST` (Actions secret, same value as the environment copy): lets CI enforce the generic boundary on every push and same-repository pull request, including the dry-run bundle. Fork pull requests receive no secrets and get a skipped, non-enforced scan; the enforced scan runs when the change lands.
+- `SWITCHYARD_BOUNDARY_DENYLIST` (Actions secret, same value as the environment copy): lets CI enforce the generic boundary on same-repository pull requests, including the dry-run bundle. Fork pull requests receive no secrets and get a non-enforced scan; the release workflow repeats the enforced source and bundle scans before publication.
 
 GitHub secrets are deployment copies, not backups. Keep the publisher identity and Switchyard Sparkle item in the login Keychains on this Mac and `ssh m4`.
 
@@ -64,31 +64,31 @@ Release Please is the only writer of release versions. One release pull request 
 - `CHANGELOG.md`, where it inserts `## [X.Y.Z](compare-link) (date)` above the newest version heading;
 - the two lines in `packaging/Switchyard-Info.plist` annotated with `<!-- x-release-please-version -->`. The generic updater rewrites only annotated lines; removing an annotation silently freezes the plist and `scripts/check-version.sh` then blocks the release.
 
-Everything else derives from `VERSION` at build time: the Go `-ldflags` version, the bundle's `CFBundleShortVersionString`/`CFBundleVersion`, the archive name, the Cask `version`, and the appcast `sparkle:version`. The app refuses to install a bundled daemon whose `version` output differs from its own `CFBundleShortVersionString`, and every client requires an exact daemon version match, so a drift anywhere surfaces as a handshake error instead of a silent mismatch.
+Everything else derives from `VERSION` at build time: the Go `-ldflags` version, the bundle's `CFBundleShortVersionString`/`CFBundleVersion`, the archive name, the Cask `version`, and the appcast `sparkle:version`. The app installs the exact bundled helper bytes on launch. App, CLI and MCP require local API version 3; the build scripts propagate the release version to both executables.
 
 Rules that follow from this:
 
 - Never edit `VERSION`, the manifest, or the plist version lines by hand. Never add an `Unreleased` section to `CHANGELOG.md`; Release Please would insert the new version below it.
 - Commits that reach `main` must be Conventional Commits. A non-conventional commit (for example a `wip:` subject) is invisible to Release Please and neither bumps the version nor appears in the notes. Add its notes by editing the release pull request body before merge.
 - Before 1.0.0, `bump-minor-pre-major` keeps a `feat!:` or `BREAKING CHANGE` footer at a minor bump. Cutting 1.0.0 is a deliberate `Release-As: 1.0.0` footer, not a side effect.
-- `scripts/release-checks.sh` (`make release-checks`) verifies all of the above plus the Cask template, entitlements, Sparkle plist keys, Release Please configuration (including `draft` and `force-tag-creation`, because a draft release creates no tag unless forced and the tag is what triggers publication), workflow wiring, the single publication entry point, and the publication order. It runs inside `scripts/ci.sh`, so CI and the release workflow both execute it before any secret is imported.
+- `scripts/release-checks.sh` (`make release-checks`) verifies all of the above plus the Cask template, entitlements, Sparkle plist keys, Release Please configuration (including `draft` and `force-tag-creation`, because a draft release creates no tag unless forced and the tag is what triggers publication), workflow wiring, the single publication entry point, and the publication order. It runs inside `scripts/ci.sh`; the release workflow runs it again before any secret is imported because those checks describe the publishing machinery itself.
 
 ## Generic-boundary scan
 
-`scripts/check-generic-boundary.sh` enforces the AGENTS.md invariant that product code, tests, fixtures, docs, bundled skills, and the shipped bundle contain no consuming-repository identity. The identities are supplied from outside the repository (`SWITCHYARD_BOUNDARY_DENYLIST`, or `SWITCHYARD_BOUNDARY_DENYLIST_FILE` pointing outside the checkout) and matched as case-insensitive fixed strings across every tracked file and, with `--bundle`, every file inside `Switchyard.app` including Mach-O strings and resources. A match is reported as `path:line` only. CI runs the enforced scan on pushes and same-repository pull requests and scans the dry-run bundle; the release workflow scans tracked sources before any secret is imported and scans the freshly built bundle before upload. `--require-denylist` makes an absent list a failure, and both CI and release pass it; locally, `make release-checks` runs the scanner's self-test and the scan is skipped unless you export the list.
+`scripts/check-generic-boundary.sh` enforces the AGENTS.md invariant that product code, tests, fixtures, docs, bundled skills, and the shipped bundle contain no consuming-repository identity. The identities are supplied from outside the repository (`SWITCHYARD_BOUNDARY_DENYLIST`, or `SWITCHYARD_BOUNDARY_DENYLIST_FILE` pointing outside the checkout) and matched as case-insensitive fixed strings across every tracked file and, with `--bundle`, every file inside `Switchyard.app` including Mach-O strings and resources. A match is reported as `path:line` only. CI runs the enforced scan on same-repository pull requests and scans the dry-run bundle; the release workflow scans tracked sources before any secret is imported and scans the freshly built bundle before upload. `--require-denylist` makes an absent list a failure, and both CI and release pass it; locally, `make release-checks` runs the scanner's self-test and the scan is skipped unless you export the list.
 
 ## Cut a release
 
 1. Merge conventional commits to `main`. Release Please maintains the version, changelog, manifest, and plist in one release pull request, acting with `RELEASE_PLEASE_TOKEN` so the pull request runs CI like any other.
 2. Approve and merge the green Release Please pull request.
 3. The merge creates the draft release and pushes the version tag; the tag push triggers the protected release workflow. Approve the `release` environment only after its tag and generated files match the reviewed release pull request.
-4. The release workflow reruns `make check`, `make race`, the exact linters, vulnerability scan, and release dry run on macOS.
-   It renders the candidate Cask and validates it with the runner's Homebrew before anything is published: `scripts/validate-homebrew-cask.sh` performs Ruby parsing, a trusted `brew install --cask --dry-run`, and `brew style`. Locally, run the same script and `brew audit`; if this work Mac cannot fetch Homebrew's portable Ruby because of its known RubyGems TLS failure, set `SWITCHYARD_SKIP_BREW_STYLE=1` locally and record that environmental failure separately from successful Cask parse and dry-run checks.
-5. Run the secret, history, configuration, binary-artifact, and hostile Fable reviews before merging the release pull request.
+4. The source commit has already passed the required PR tests, lint, vulnerability, history, CodeQL, and universal-package checks. The Release Please PR may change exactly the manifest, changelog, version file, and plist version; `scripts/check-release-pr-scope.sh` enforces that boundary in the PR and again on the tagged commit. CI and CodeQL therefore do not repeat after a protected `main` merge or on a metadata-only release PR.
+5. The tag workflow runs only release-specific gates. It renders the candidate Cask and validates it with the runner's Homebrew before anything is published: `scripts/validate-homebrew-cask.sh` performs Ruby parsing, a trusted `brew install --cask --dry-run`, and `brew style`. Locally, run the same script and `brew audit`; if this work Mac cannot fetch Homebrew's portable Ruby because of its known RubyGems TLS failure, set `SWITCHYARD_SKIP_BREW_STYLE=1` locally and record that environmental failure separately from successful Cask parse and dry-run checks.
+6. Run the secret, history, configuration, and binary-artifact reviews before merging the release pull request.
 
 `release.yml` has exactly one trigger, the `v*` tag push. Release Please pushes that tag with `RELEASE_PLEASE_TOKEN`, and a deliberately hand-pushed tag takes the same path. There is intentionally no `workflow_call` entry point: with a token that starts workflows, calling the release workflow from `release-please.yml` as well would publish the same tag twice; `scripts/release-checks.sh` rejects such a call.
 
-The tag workflow, in order: reruns production checks; enforces the generic boundary on tracked sources; validates the rendered Cask; empties `dist/`; imports the publisher identity into an ephemeral runner Keychain; builds Intel and Apple Silicon binaries and a universal app; scans the built bundle against the denylist; signs nested Sparkle components and the daemon in strict order; verifies entitlements and architectures; derives the Sparkle public key from the private seed and compares it with the bundle; performs a real signed launch; generates the appcast from a directory containing only this release's archive and verifies its Ed25519 signature cryptographically against the bundle's `SUPublicEDKey`; produces checksums and a CycloneDX SBOM; attests the artifacts; uploads the exact-named assets to the still-draft release; downloads them back and re-verifies checksums, byte equality, the signature, and the code signature of the unpacked app; only then marks the release published and `latest` (which arms `releases/latest/download/appcast.xml`); and finally updates the Homebrew Cask behind the downgrade guard. Publication never uses a glob, so a stale archive in the output directory cannot be selected. Swift packages remain pinned in `app/Package.resolved`.
+The tag workflow, in order: proves the tag is the reviewed four-file Release Please commit on `main`; enforces the generic boundary on tracked sources; validates the rendered Cask; empties `dist/`; imports the publisher identity into an ephemeral runner Keychain; builds Intel and Apple Silicon binaries and a universal app; scans the built bundle against the denylist; signs nested Sparkle components and the daemon in strict order; verifies entitlements and architectures; derives the Sparkle public key from the private seed and compares it with the bundle; performs a real signed launch; generates the appcast from a directory containing only this release's archive and verifies its Ed25519 signature cryptographically against the bundle's `SUPublicEDKey`; produces checksums and a CycloneDX SBOM; attests the artifacts; uploads the exact-named assets to the still-draft release; downloads them back and re-verifies checksums, byte equality, the signature, and the code signature of the unpacked app; only then marks the release published and `latest` (which arms `releases/latest/download/appcast.xml`); and finally updates the Homebrew Cask behind the downgrade guard. Publication never uses a glob, so a stale archive in the output directory cannot be selected. Swift packages remain pinned in `app/Package.resolved`.
 
 ## Verify a published release
 
@@ -108,7 +108,7 @@ open -a "Switchyard"
 
 `scripts/verify-appcast.sh` runs in the release workflow against the generated `appcast.xml` and again against the assets downloaded back from the draft release, and can be run against a published feed as well. It proves the single item advertises the exact version, the tagged GitHub asset URL, an Ed25519 signature, and the app's minimum system version. With `--archive <zip> --public-key <SUPublicEDKey>` it also proves the enclosure length equals the archive size and that the signature verifies cryptographically over the archive bytes (`scripts/verify-sparkle-signature.swift`, CryptoKit Ed25519), so a feed signed with the wrong seed is refused before it is armed. Download the feed and archive to files before verifying: the script reads the appcast several times, so `/dev/stdin` or a pipe is exhausted after the first check.
 
-Confirm that the app installs the bundled daemon, the generated LaunchAgent includes `AssociatedBundleIdentifiers = [com.theronburger.switchyard]`, Connection Doctor can inspect and repair detected agents, `sy doctor` passes, the Cask renders the expected release URL and checksum, and **Check for Updates…** reads the signed appcast. A changed LaunchAgent plist must boot out and bootstrap only `com.theronburger.switchyard.daemon`; a helper-only update uses the scoped kickstart path.
+Confirm that the app installs the bundled daemon, the generated LaunchAgent includes `AssociatedBundleIdentifiers = [com.theronburger.switchyard]`, Setup can connect agents and repair the helper, `sy doctor` passes, the Cask renders the expected release URL and checksum, and **Check for Updates…** reads the signed appcast. A changed LaunchAgent plist must boot out and bootstrap only `com.theronburger.switchyard.daemon`; a helper-only update uses the scoped kickstart path.
 
 On `ssh m4`, verify the published install with read-only `sfltool dumpbtm` output and the visible Login Items settings pane. Never use `sfltool resetbtm`. Because the self-signed publisher has no Team Identifier, treat this on-machine attribution check as required rather than inferring attribution from signing metadata.
 
@@ -139,7 +139,7 @@ What each layer does during and after a rollback:
 3. `quit` is a second, idempotent stop for the app.
 4. `delete` removes the app-installed daemon binary under `~/Library/Application Support/Switchyard/bin/switchyard` and the LaunchAgent plist, so nothing can recreate the job mid-uninstall.
 
-`--zap` additionally trashes `~/Library/Application Support/Switchyard` (which contains the accepted private profiles and runtime state) and the app's preferences. Worktrees, repositories, Docker resources, the Homebrew `sy` symlink's target bundle, MCP registrations, and managed skills are never touched by the Cask. `scripts/release-checks.sh` fails if the rendered Cask references any path outside that ownership set or adds a flight hook.
+`--zap` additionally trashes `~/Library/Application Support/Switchyard` (which contains private configuration and helper connection files) and the app's preferences. Worktrees, repositories, Docker resources, the Homebrew `sy` symlink's target bundle, MCP registrations, and managed skills are never touched by the Cask. `scripts/release-checks.sh` fails if the rendered Cask references any path outside that ownership set or adds a flight hook.
 
 ## Uninstall verification
 
@@ -151,4 +151,36 @@ claude mcp remove switchyard --scope user
 brew uninstall --cask switchyard
 ```
 
-Managed skills remain by design. Every tree Switchyard installs carries an owner-only `.switchyard-managed-skill` marker. An explicit repair replaces only a marked tree (or an unmarked tree byte-identical to the bundled release, which it adopts), including local edits inside it. A `switchyard` skill directory the user authored themselves is never moved, renamed, or deleted: Connection Doctor reports it as refused with its path and asks the user to move it aside deliberately.
+The bundled skill documents the current MCP tools. Agent registration is explicit
+in Setup. Existing user-authored skills are not overwritten by the native app.
+
+## Execution rebuild upgrade (0.3.0)
+
+Release 0.3.0 uses the existing Sparkle feed, signing key, bundle identifier and
+Homebrew path. Release Please receives `Release-As: 0.3.0`; it still owns all
+version files and creates the release tag through the normal protected workflow.
+
+Before upgrading a legacy installation, prepare and verify its ordinary private
+commands in `upgrade/config.json` beneath the release support root. Put supporting
+scripts outside consuming repositories, at their final private paths. This local
+staging step supplies the new configuration; the app does not translate the old
+profile compiler or guess repository setup requirements. Never publish the staged
+configuration with the app. Existing valid `config.json` takes precedence.
+
+On launch, the app validates the staged file before changing its helper. It asks
+the previous helper to stop each unstopped environment and waits for completion.
+Failure leaves the helper unchanged and reports the problem. The old YAML and
+helper are backed up under `upgrade/previous`; old runtime files stay in place.
+Then the new config is installed atomically and the app repairs its existing
+LaunchAgent and helper. Repeating the upgrade preserves current configuration.
+A missing or invalid staged config cannot silently turn a legacy install into an
+empty installation. No worktree, foreign process or container is pruned.
+
+The executable path and `mcp --stdio` entry point remain compatible with existing
+agent registrations. The exact unmodified 0.2.3 bundled Codex skill is backed up
+and replaced; customized skills remain untouched. Agent hosts may need a fresh
+session to rediscover the new MCP tool list. Migration does not send messages or
+interrupt their tasks.
+
+Development continues to use its separate support root and LaunchAgent. Switching
+to the published app does not remove development configuration or stop its runs.

@@ -1,0 +1,76 @@
+{
+  "version": 3,
+  "instanceId": "11111111111111111111111111111111",
+  "revision": 12,
+  "repositories": [
+    {
+      "id": "sample",
+      "name": "Sample app",
+      "path": "/tmp/sample",
+      "defaultTarget": "local",
+      "targets": [
+        { "id": "local", "name": "Local" },
+        { "id": "debug", "name": "Debug" }
+      ],
+      "services": [
+        { "id": "api", "name": "API" },
+        { "id": "web", "name": "Web", "dependencies": ["api"] }
+      ]
+    }
+  ],
+  "workspaces": [
+    {
+      "path": "/tmp/sample",
+      "repositoryId": "sample",
+      "branch": "main",
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "primary": true,
+      "locked": false,
+      "missing": false,
+      "dirty": false,
+      "unpushed": false,
+      "choices": { "target": "local", "services": ["web"] },
+      "run": {
+        "id": "22222222222222222222222222222222",
+        "path": "/tmp/sample",
+        "target": "local",
+        "requested": ["web"],
+        "state": "running",
+        "step": "Running",
+        "startedAt": "2026-09-09T08:00:00Z",
+        "services": [
+          { "id": "api", "name": "API", "state": "running", "pid": 41201 },
+          { "id": "web", "name": "Web", "state": "running", "pid": 41202 }
+        ],
+        "urls": {
+          "api.http": "http://localhost:8080",
+          "web.http": "http://localhost:5173"
+        }
+      }
+    },
+    {
+      "path": "/tmp/sample-worktrees/search",
+      "repositoryId": "sample",
+      "branch": "feature/search",
+      "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "primary": false,
+      "locked": false,
+      "missing": false,
+      "dirty": true,
+      "unpushed": true,
+      "choices": { "target": "debug", "services": ["api"] },
+      "run": {
+        "id": "33333333333333333333333333333333",
+        "path": "/tmp/sample-worktrees/search",
+        "target": "debug",
+        "requested": ["api"],
+        "state": "failed",
+        "step": "Setup 2 of 2",
+        "error": "Setup 2 of 2 failed. The command exited with an error. Open the logs, fix the setup, then run again.",
+        "startedAt": "2026-09-09T08:02:00Z",
+        "services": [],
+        "urls": {}
+      }
+    }
+  ]
+}
