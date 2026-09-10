@@ -19,7 +19,7 @@ struct UpgradeTests {
         #!/bin/sh
         cd "$(dirname "$0")"
         case "$1" in
-        version) echo usage ;;
+        version) echo usage; exit 2 ;;
         stop) test ! -e fail || exit 1; touch stopped ;;
         status)
           state=running; test ! -e stopped || state=stopped

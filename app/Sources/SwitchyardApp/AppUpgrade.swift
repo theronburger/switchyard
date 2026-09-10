@@ -19,8 +19,8 @@ struct AppUpgrade {
                 try manager.copyItem(at: legacy, to: backup.appending(path: "configuration.yaml"))
             }
             if manager.isExecutableFile(atPath: helper.path) {
-                let version = try AgentTools.capture(helper, ["version", "--json"])
-                let info = (try? JSONSerialization.jsonObject(with: version)) as? [String: Any]
+                let version = try? AgentTools.capture(helper, ["version", "--json"])
+                let info = version.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
                 if (info?["schemaVersion"] as? Int) != 3 {
                     try stopPreviousRuns()
                     if !manager.fileExists(atPath: backup.appending(path: "switchyard").path) {
